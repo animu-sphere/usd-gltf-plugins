@@ -122,16 +122,89 @@ def uv_document(extension, external=False):
     return document, binary
 
 
-def png_bytes():
-    def chunk(kind, data):
-        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
-    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 6, 0, 0, 0))
-            + chunk(b"IDAT", zlib.compress(b"\0\xff\x80\x40\xff")) + chunk(b"IEND", b""))
+def png_chunk(kind, data):
+    return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
 
 
-PNG = png_bytes()
-# Conversion checks only the signature, so structural tests need no decodable JPEG.
-JPEG = b"\xff\xd8\xff\xe0" + bytes(16)
+def png_declaring(width, height, depth=8, color=6):
+    """A PNG whose chunks are valid, with a header that need not agree with its data."""
+    return (b"\x89PNG\r\n\x1a\n"
+            + png_chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, depth, color, 0, 0, 0))
+            + png_chunk(b"IDAT", zlib.compress(b"\0\xff\x80\x40\xff")) + png_chunk(b"IEND", b""))
+
+
+PNG = png_declaring(1, 1)
+JPEG = (pathlib.Path(__file__).parent / "fixtures" / "textures" / "flat.jpg").read_bytes()
+
+
+def jpeg_marker(data, marker):
+    """The offset of the first occurrence of a segment's marker before the scan."""
+    return data.index(bytes((0xFF, marker)), 2)
+
+
+def jpeg_without(data, marker):
+    start = jpeg_marker(data, marker)
+    return data[:start] + data[start + 2 + struct.unpack_from(">H", data, start + 2)[0]:]
+
+
+def jpeg_with_frame(data, marker=0xC0, precision=8, width=None, height=None):
+    result = bytearray(data)
+    start = jpeg_marker(data, 0xC0)
+    result[start + 1] = marker
+    result[start + 4] = precision
+    if height is not None:
+        struct.pack_into(">H", result, start + 5, height)
+    if width is not None:
+        struct.pack_into(">H", result, start + 7, width)
+    return bytes(result)
+
+
+def damaged_images():
+    """Returns (name, data, message) for images that a structural check must reject."""
+    sof = jpeg_marker(JPEG, 0xC0)
+    sos = jpeg_marker(JPEG, 0xDA)
+    png_damaged = "PNG image is damaged"
+    jpeg_damaged = "JPEG image is damaged"
+    too_large = "image is wider or taller than 16384 pixels"
+    flipped = bytearray(PNG)
+    flipped[45] ^= 0xFF
+    no_iend = PNG[:-12]
+    return (
+        ("png signature only", PNG[:8], png_damaged),
+        ("png cut in IHDR", PNG[:20], png_damaged),
+        ("png cut after IHDR", PNG[:33], png_damaged),
+        ("png cut in IDAT", PNG[:45], png_damaged),
+        ("png without IEND", no_iend, png_damaged),
+        ("png cut in checksum", PNG[:-2], png_damaged),
+        ("png flipped byte", bytes(flipped), "chunk checksum does not match"),
+        ("png without IDAT", b"\x89PNG\r\n\x1a\n" + png_chunk(b"IHDR", PNG[16:29])
+         + png_chunk(b"IEND", b""), "no image data"),
+        ("png IHDR not first", b"\x89PNG\r\n\x1a\n" + png_chunk(b"gAMA", bytes(4)) + PNG[8:],
+         "valid IHDR"),
+        ("png zero width", png_declaring(0, 1), "declares no pixels"),
+        ("png color type", png_declaring(1, 1, color=5), "invalid format"),
+        ("png bit depth", png_declaring(1, 1, depth=7), "invalid format"),
+        ("png without palette", png_declaring(1, 1, color=3), "palette is missing"),
+        ("png too wide", png_declaring(16385, 1), too_large),
+        ("png too tall", png_declaring(1, 16385), too_large),
+        ("png declares 4 billion", png_declaring(0xFFFFFFFF, 0xFFFFFFFF), too_large),
+        ("jpeg signature only", JPEG[:3], jpeg_damaged),
+        ("jpeg cut before frame", JPEG[:sof], jpeg_damaged),
+        ("jpeg cut in frame", JPEG[:sof + 6], jpeg_damaged),
+        ("jpeg cut before scan", JPEG[:sos], jpeg_damaged),
+        ("jpeg cut in scan header", JPEG[:sos + 6], jpeg_damaged),
+        ("jpeg cut in scan", JPEG[:(sos + len(JPEG)) // 2], "before its end marker"),
+        ("jpeg without end marker", JPEG[:-2], "before its end marker"),
+        ("jpeg without quantization", jpeg_without(JPEG, 0xDB), "no frame header or tables"),
+        ("jpeg without huffman", jpeg_without(JPEG, 0xC4), "no frame header or tables"),
+        ("jpeg zero width", jpeg_with_frame(JPEG, width=0), "frame header is invalid"),
+        ("jpeg zero height", jpeg_with_frame(JPEG, height=0), "frame header is invalid"),
+        ("jpeg lossless", jpeg_with_frame(JPEG, marker=0xC3), "not baseline or progressive"),
+        ("jpeg arithmetic", jpeg_with_frame(JPEG, marker=0xC9), "not baseline or progressive"),
+        ("jpeg 12-bit", jpeg_with_frame(JPEG, marker=0xC1, precision=12), "not 8-bit"),
+        ("jpeg too wide", jpeg_with_frame(JPEG, width=16385), too_large),
+        ("jpeg too tall", jpeg_with_frame(JPEG, height=65500), too_large),
+    )
 
 
 def asset_bytes(resolved_path):
@@ -2145,6 +2218,106 @@ class FileFormatTest(unittest.TestCase):
             write_asset(path, document, binary)
             asset = base_color_file(Usd.Stage.Open(str(path)))
             self.assertIsNone(Ar.GetResolver().OpenAsset(Ar.ResolvedPath(asset.resolvedPath)))
+
+    def test_damaged_and_oversized_images_fail_import(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            for extension in ("gltf", "glb"):
+                path = root / ("asset." + extension)
+                document, binary = textured_document(extension, None, PNG)
+                write_asset(path, document, binary)
+                stage = Usd.Stage.Open(str(path))
+                layer = stage.GetRootLayer()
+                before = layer_text(layer)
+                for case, data, message in damaged_images():
+                    suffix = ".png" if data.startswith(b"\x89PNG") else ".jpg"
+                    (root / ("image" + suffix)).write_bytes(data)
+                    encoded = base64.b64encode(data).decode()
+                    for source, image in (
+                        ("bufferView", None),
+                        ("data URI", {"uri": "data:image/png;base64," + encoded}),
+                        ("file", {"uri": "image" + suffix}),
+                    ):
+                        with self.subTest(extension=extension, case=case, source=source):
+                            write_asset(path, *textured_document(extension, image, data))
+                            with self.assertRaisesRegex(Tf.ErrorException, message):
+                                layer.Reload(True)
+                            self.assertEqual(layer_text(layer), before)
+
+    def test_unusual_but_valid_images_are_accepted(self):
+        split = png_chunk(b"IDAT", PNG[41:43]) + png_chunk(b"IDAT", PNG[43:-16])
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "asset.glb"
+            for case, data in (
+                ("png trailing bytes", PNG + b"trailing"),
+                ("png split IDAT", PNG[:33] + split + PNG[-12:]),
+                ("png at the limit", png_declaring(16384, 16384)),
+                ("png palette", png_declaring(1, 1, color=3)[:33] + png_chunk(b"PLTE", bytes(3))
+                 + png_declaring(1, 1, color=3)[33:]),
+                ("jpeg trailing bytes", JPEG + b"trailing"),
+                ("jpeg fill bytes", JPEG[:2] + b"\xff\xff" + JPEG[2:]),
+                ("jpeg progressive", jpeg_with_frame(JPEG, marker=0xC2)),
+                ("jpeg extended", jpeg_with_frame(JPEG, marker=0xC1)),
+                ("jpeg at the limit", jpeg_with_frame(JPEG, width=16384, height=16384)),
+            ):
+                with self.subTest(case=case):
+                    write_asset(path, *textured_document("glb", None, data))
+                    asset = base_color_file(Usd.Stage.Open(str(path)))
+                    self.assertTrue(asset.resolvedPath)
+                    self.assertEqual(asset_bytes(asset.resolvedPath), data)
+
+    def test_checks_do_not_decode_image_data(self):
+        # The known limit: valid chunks around invalid data pass, and a JPEG scan has no
+        # checksum. See docs/adr/0006-image-failures.md.
+        garbage = bytes(range(256))
+        sos = jpeg_marker(JPEG, 0xDA)
+        scan = sos + 2 + struct.unpack_from(">H", JPEG, sos + 2)[0]
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "asset.glb"
+            for case, data in (
+                ("png data", PNG[:33] + png_chunk(b"IDAT", garbage) + png_chunk(b"IEND", b"")),
+                ("jpeg scan", JPEG[:scan] + bytes(16) + JPEG[-2:]),
+            ):
+                with self.subTest(case=case):
+                    write_asset(path, *textured_document("glb", None, data))
+                    self.assertTrue(base_color_file(Usd.Stage.Open(str(path))).resolvedPath)
+
+    def test_image_damaged_after_import_is_not_served(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "asset.glb"
+            for case, data, message in (("png", PNG, "PNG image is damaged"),
+                                        ("jpeg", JPEG, "JPEG image is damaged")):
+                with self.subTest(case=case):
+                    write_asset(path, *textured_document("glb", None, data))
+                    asset = base_color_file(Usd.Stage.Open(str(path)))
+                    self.assertEqual(asset_bytes(asset.resolvedPath), data)
+                    resolved = asset.resolvedPath
+
+                    # The image keeps its length and offset, so only its content differs.
+                    write_asset(path, *textured_document("glb", None, data[:8] + bytes(len(data) - 8)))
+                    self.assertFalse(Ar.GetResolver().Resolve(resolved))
+                    result = subprocess.run(
+                        [sys.executable, "-c",
+                         "import sys\nfrom pxr import Ar\n"
+                         "print(Ar.GetResolver().OpenAsset(Ar.ResolvedPath(sys.argv[1])))",
+                         resolved],
+                        capture_output=True, text=True, check=False,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIn("None", result.stdout)
+                    self.assertIn(message, result.stderr)
+
+    def test_external_image_file_size_limit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            # A sparse file on the tested filesystems, and never read past its size check.
+            with open(root / "large.png", "wb") as large:
+                large.write(PNG)
+                large.truncate((2 << 30) + 1)
+            path = root / "asset.gltf"
+            write_asset(path, *textured_document("gltf", {"uri": "large.png"}, b""))
+            with self.assertRaisesRegex(Tf.ErrorException, "external image is larger than 2 GiB"):
+                Usd.Stage.Open(str(path))
 
     def test_texture_failures_preserve_layer(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "ktx2.h"
 
+#include "imageStructure.h"
+
 #include <basisu_transcoder.h>
 
 #include <algorithm>
@@ -17,7 +19,7 @@ namespace
 
 // A small file can declare a very large image, and decoding allocates 4 bytes per
 // pixel. The transcoder's limit, which init() enforces, keeps this near 1 GiB.
-static_assert(basist::BASISU_MAX_SUPPORTED_TEXTURE_DIMENSION <= 16384);
+static_assert(basist::BASISU_MAX_SUPPORTED_TEXTURE_DIMENSION <= kMaxImageDimension);
 
 bool
 openKtx2(basist::ktx2_transcoder& transcoder, std::span<const std::byte> bytes, std::string& error)
@@ -71,18 +73,6 @@ makeCrcTable()
 }
 
 std::uint32_t
-crc32(std::span<const std::byte> bytes)
-{
-    static constexpr auto table = makeCrcTable();
-    std::uint32_t value = 0xFFFFFFFFu;
-    for (const auto byte : bytes)
-    {
-        value = table[(value ^ std::to_integer<std::uint32_t>(byte)) & 0xFF] ^ (value >> 8);
-    }
-    return value ^ 0xFFFFFFFFu;
-}
-
-std::uint32_t
 adler32(std::span<const std::byte> bytes)
 {
     // The largest run that cannot overflow 32 bits before the modulo.
@@ -124,10 +114,22 @@ finishChunk(std::vector<std::byte>& out, std::size_t start, const char (&type)[5
         out[start + i] = std::byte((length >> (24 - 8 * i)) & 0xFF);
         out[start + 4 + i] = std::byte(type[i]);
     }
-    appendBigEndian(out, crc32(std::span(out).subspan(start + 4, length + 4)));
+    appendBigEndian(out, Crc32(std::span(out).subspan(start + 4, length + 4)));
 }
 
 } // namespace
+
+std::uint32_t
+Crc32(std::span<const std::byte> bytes)
+{
+    static constexpr auto table = makeCrcTable();
+    std::uint32_t value = 0xFFFFFFFFu;
+    for (const auto byte : bytes)
+    {
+        value = table[(value ^ std::to_integer<std::uint32_t>(byte)) & 0xFF] ^ (value >> 8);
+    }
+    return value ^ 0xFFFFFFFFu;
+}
 
 bool
 CheckKtx2(std::span<const std::byte> bytes, std::string& error)

@@ -45,8 +45,10 @@ publication, and unused resources in other scenes are not read.
 An external buffer must be at least as long as its declared `byteLength`. Only
 that many bytes are read and cached for the duration of conversion. An external
 image must have a PNG or JPEG signature and the matching file extension, because
-the image loader chooses a decoder from the extension. Its bytes are not read
-during import; see [ADR 0001](../adr/0001-image-assets.md).
+the image loader chooses a decoder from the extension, and must be no larger than
+2 GiB. Every image used by the selected scene has its structure and dimensions
+checked without decoding, which rejects natural damage before the layer is
+published; see [ADR 0006](../adr/0006-image-failures.md) for what this cannot find.
 
 Resolution requires a local source and filesystem; it does not use USD's asset
 resolver to find the resource. This deliberately excludes remote assets,

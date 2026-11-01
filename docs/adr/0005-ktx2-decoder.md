@@ -49,8 +49,8 @@ disagrees with its slot is not diagnosed.
 
 Import reads the header, level index and metadata. It does not transcode, so a damaged
 body is found when the image is read: the resolver warns and returns no asset, after the
-layer has been published. The [current plan](../roadmap/current.md) owns the decision on
-image failures in general.
+layer has been published. [ADR 0006](0006-image-failures.md) covers image failures in
+general.
 
 ## Evidence and limits
 

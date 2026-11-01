@@ -21,8 +21,12 @@ enum class ImageFormat
     Ktx2
 };
 
-// Checks the signature only; a damaged image body is found when it is decoded.
+// Checks the signature only.
 [[nodiscard]] bool DetectImageFormat(std::span<const std::byte> bytes, ImageFormat& format);
+
+// Checks an image's structure without decoding its pixels, according to its format.
+[[nodiscard]] bool CheckImage(std::span<const std::byte> bytes, ImageFormat format,
+                              std::string& error);
 
 // The format consumers read: KTX2 is converted to PNG.
 [[nodiscard]] ImageFormat ServedFormat(ImageFormat format);
@@ -50,9 +54,9 @@ struct ImageLocation
     ImageFormat format;
 };
 
-// Finds and checks an image without transcoding it. External images follow the
-// local file policy. Those read directly must have the file extension of their
-// format, and KTX2 files are served through the package.
+// Finds and checks an image without decoding it. External images follow the local
+// file policy. Those read directly must have the file extension of their format,
+// and KTX2 files are served through the package.
 [[nodiscard]] bool LocateImage(const fastgltf::Asset& asset, std::size_t imageIndex,
                                const std::string& sourcePath,
                                const gltfCore::BufferLoader& loadBuffer, ImageLocation& location,

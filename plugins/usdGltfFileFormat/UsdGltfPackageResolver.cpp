@@ -99,8 +99,7 @@ class UsdGltfPackageResolver final : public ArPackageResolver
         PackagedImage image;
         std::string error;
         if (!findImage(findPackage(resolvedPackagePath), packagedPath, image) ||
-            (image.format == gltfTexture::ImageFormat::Ktx2 &&
-             !gltfTexture::CheckKtx2(image.bytes, error)))
+            !gltfTexture::CheckImage(image.bytes, image.format, error))
         {
             return {};
         }
@@ -117,20 +116,24 @@ class UsdGltfPackageResolver final : public ArPackageResolver
         {
             return nullptr;
         }
+        auto png = std::make_shared<std::vector<std::byte>>();
+        std::string error;
+        // The source can have changed since import, and the image loader must not see
+        // a damaged image. See docs/adr/0006-image-failures.md.
+        if (!gltfTexture::CheckImage(image.bytes, image.format, error) ||
+            (image.format == gltfTexture::ImageFormat::Ktx2 &&
+             !gltfTexture::DecodeKtx2ToPng(image.bytes, *png, error)))
+        {
+            TF_WARN("Cannot read '%s' in '%s': %s", resolvedPackagedPath.c_str(),
+                    resolvedPackagePath.c_str(), error.c_str());
+            return nullptr;
+        }
         if (image.format != gltfTexture::ImageFormat::Ktx2)
         {
             return ArInMemoryAsset::FromBuffer(
                 std::shared_ptr<const char>(package,
                                             reinterpret_cast<const char*>(image.bytes.data())),
                 image.bytes.size());
-        }
-        auto png = std::make_shared<std::vector<std::byte>>();
-        std::string error;
-        if (!gltfTexture::DecodeKtx2ToPng(image.bytes, *png, error))
-        {
-            TF_WARN("Cannot read '%s' in '%s': %s", resolvedPackagedPath.c_str(),
-                    resolvedPackagePath.c_str(), error.c_str());
-            return nullptr;
         }
         const auto* data = reinterpret_cast<const char*>(png->data());
         const auto size = png->size();

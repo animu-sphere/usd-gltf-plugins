@@ -67,11 +67,9 @@ states which images are accepted.
 
 ## Limits
 
-- Only the signature is checked at import. Decoding every image during open would
-  be slow, so a damaged image body is reported by the renderer's image loader when
-  it is read, and the layer has already been published.
-- There is no limit on image dimensions or size of our own, except for
-  [KTX2 dimensions](0005-ktx2-decoder.md#which-images-are-accepted).
+- Damaged and oversized images are covered by
+  [ADR 0006](0006-image-failures.md), which replaces the signature check this record
+  first used.
 - A layer exported from an imported stage still points into the source for embedded
   images, and needs the plugin and source. Explicit packaging is planned in the
   [backlog](../roadmap/backlog.md).
