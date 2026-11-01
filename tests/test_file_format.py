@@ -7,6 +7,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 import urllib.parse
 import zlib
@@ -2868,6 +2869,33 @@ class FileFormatTest(unittest.TestCase):
                 path.write_bytes(b"{")
                 with self.assertRaisesRegex(Tf.ErrorException, "cannot parse"):
                     Usd.Stage.Open(str(path))
+
+    def test_concurrent_opens_and_failures(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            good = root / "good.gltf"
+            write_asset(good, scene_document())
+            bad = root / "bad.gltf"
+            write_asset(bad, {"asset": {"version": "2.0"}, "scene": 2, "scenes": [{}]})
+            outcomes = []
+
+            def open_repeatedly():
+                for _ in range(10):
+                    stage = Usd.Stage.Open(str(good))
+                    outcomes.append(stage.GetDefaultPrim().GetPath())
+                    try:
+                        Usd.Stage.Open(str(bad))
+                        outcomes.append("opened")
+                    except Tf.ErrorException:
+                        outcomes.append("failed")
+
+            threads = [threading.Thread(target=open_repeatedly) for _ in range(8)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+            self.assertEqual(outcomes.count(Sdf.Path("/Asset")), 80)
+            self.assertEqual(outcomes.count("failed"), 80)
 
     def test_failed_reload_does_not_publish_partial_stage(self):
         with tempfile.TemporaryDirectory() as directory:

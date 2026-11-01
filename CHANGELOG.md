@@ -28,6 +28,12 @@ here.
   and creates a draft GitHub release. Plugin packages now include `LICENSE`.
 - clang-format configuration, applied to the project's C++ sources.
 
+### Fixed
+
+- Intermittent crash on macOS while opening glTF files. Conversions now run one at a time on one
+  thread for the process, instead of a new thread for each read.
+- The plugin no longer exports the symbols of its vendored libraries on Linux and macOS.
+
 ### Changed
 
 - Author geometry with `UsdGeom` instead of direct `Sdf` specs. Meshes now have an
