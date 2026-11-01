@@ -23,6 +23,7 @@ using BufferLoader = std::function<bool(const fastgltf::Buffer&,
                                    fastgltf::ComponentType componentType,
                                    std::size_t elementSize, bool vertex,
                                    AccessorData& result, std::string& error,
-                                   const BufferLoader& loadBuffer = {});
+                                   const BufferLoader& loadBuffer = {},
+                                   bool normalized = false);
 
 } // namespace gltfCore

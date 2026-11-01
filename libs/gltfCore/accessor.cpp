@@ -7,7 +7,7 @@ namespace gltfCore {
 bool GetAccessorData(const fastgltf::Asset& asset, std::size_t index,
                      fastgltf::AccessorType type, fastgltf::ComponentType componentType,
                      std::size_t elementSize, bool vertex, AccessorData& result,
-                     std::string& error, const BufferLoader& loadBuffer)
+                     std::string& error, const BufferLoader& loadBuffer, bool normalized)
 {
     if (index >= asset.accessors.size()) {
         error = "accessor index is out of range";
@@ -15,7 +15,7 @@ bool GetAccessorData(const fastgltf::Asset& asset, std::size_t index,
     }
     const auto& accessor = asset.accessors[index];
     if (accessor.type != type || accessor.componentType != componentType ||
-        accessor.normalized || accessor.count == 0) {
+        accessor.normalized != normalized || accessor.count == 0) {
         error = "accessor has an invalid type, component type, normalization, or count";
         return false;
     }
@@ -63,6 +63,7 @@ bool GetAccessorData(const fastgltf::Asset& asset, std::size_t index,
     const std::size_t stride = view.byteStride.value_or(elementSize);
     if (elementSize == 0 || (!vertex && view.byteStride) || stride < elementSize ||
         (vertex && view.byteStride && (stride > 252 || stride % 4 != 0)) ||
+        (vertex && accessor.count > 1 && stride % 4 != 0) ||
         accessor.byteOffset > view.byteLength ||
         elementSize > view.byteLength - accessor.byteOffset ||
         accessor.count - 1 > (view.byteLength - accessor.byteOffset - elementSize) / stride) {

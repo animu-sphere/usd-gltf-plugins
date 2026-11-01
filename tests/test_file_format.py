@@ -78,6 +78,37 @@ def mesh_document(extension, index_type=5123):
     return document, binary if extension == "glb" else None
 
 
+def uv_document(extension, external=False):
+    document, binary = mesh_document("glb")
+    binary += b"\0" * (-len(binary) % 4)
+    uv_offset = len(binary)
+    for uv, byte_uv, short_uv in (
+        ((0.25, -0.5), (0, 255), (0, 65535)),
+        ((1.5, 0), (128, 64), (32768, 16384)),
+        ((0, 1.25), (255, 0), (65535, 0)),
+    ):
+        binary += struct.pack("<2f2B2x2H", *uv, *byte_uv, *short_uv)
+    document["buffers"][0]["byteLength"] = len(binary)
+    document["bufferViews"].append({
+        "buffer": 0, "byteOffset": uv_offset, "byteLength": 48, "byteStride": 16,
+    })
+    for offset, component_type, normalized in ((0, 5126, False), (8, 5121, True), (12, 5123, True)):
+        document["accessors"].append({
+            "bufferView": 2, "byteOffset": offset, "componentType": component_type,
+            "normalized": normalized, "count": 3, "type": "VEC2",
+        })
+    document["meshes"][0]["primitives"][0]["attributes"].update({
+        "TEXCOORD_0": 3, "TEXCOORD_1": 4, "TEXCOORD_2": 5,
+    })
+    document["meshes"][0]["primitives"][1]["attributes"]["TEXCOORD_0"] = 3
+    if external:
+        document["buffers"][0]["uri"] = "mesh.bin"
+    elif extension == "gltf":
+        document["buffers"][0]["uri"] = "data:application/octet-stream;base64," + (
+            base64.b64encode(binary).decode())
+    return document, binary
+
+
 class FileFormatTest(unittest.TestCase):
     def test_registration_and_capabilities(self):
         for extension in ("gltf", "glb"):
@@ -135,6 +166,7 @@ class FileFormatTest(unittest.TestCase):
                             self.assertEqual(mesh.GetNormalsInterpolation(), UsdGeom.Tokens.vertex)
                             self.assertEqual(mesh.GetSubdivisionSchemeAttr().Get(), UsdGeom.Tokens.none)
                             self.assertEqual(mesh.GetOrientationAttr().Get(), UsdGeom.Tokens.rightHanded)
+                            self.assertFalse(UsdGeom.PrimvarsAPI(mesh).GetPrimvar("st"))
                             other = UsdGeom.Mesh.Get(stage, prefix + "/Primitive_1")
                             self.assertEqual(list(other.GetFaceVertexIndicesAttr().Get()), [0, 1, 2])
                             self.assertEqual(list(other.GetNormalsAttr().Get()), [Gf.Vec3f(0, 0, 1)])
@@ -145,6 +177,116 @@ class FileFormatTest(unittest.TestCase):
                         first = stage.GetPrimAtPath("/Asset/geo/Node_0/Mesh_0/Primitive_0")
                         self.assertEqual(UsdGeom.XformCache().GetLocalToWorldTransform(first).Transform(
                             Gf.Vec3d(0, 0, 0)), Gf.Vec3d(2, 0, 0))
+
+    def test_texture_coordinates(self):
+        expected = (
+            ((0.25, 1.5), (1.5, 1), (0, -0.25)),
+            ((0, 0), (128 / 255, 1 - 64 / 255), (1, 1)),
+            ((0, 0), (32768 / 65535, 1 - 16384 / 65535), (1, 1)),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            for extension in ("gltf", "glb"):
+                for external in (False, True):
+                    with self.subTest(extension=extension, external=external):
+                        path = root / f"uv_{external}.{extension}"
+                        document, binary = uv_document(extension, external)
+                        if external:
+                            (root / "mesh.bin").write_bytes(binary)
+                        write_asset(path, document, binary if extension == "glb" and not external else None)
+                        stage = Usd.Stage.Open(str(path))
+                        for node in (0, 1):
+                            mesh = UsdGeom.Mesh.Get(stage, f"/Asset/geo/Node_{node}/Mesh_0/Primitive_0")
+                            api = UsdGeom.PrimvarsAPI(mesh)
+                            self.assertEqual(list(mesh.GetFaceVertexIndicesAttr().Get()), [2, 0, 1])
+                            for name, coordinates in zip(("st", "st1", "st2"), expected):
+                                primvar = api.GetPrimvar(name)
+                                self.assertTrue(primvar)
+                                self.assertEqual(primvar.GetTypeName(), Sdf.ValueTypeNames.TexCoord2fArray)
+                                self.assertEqual(primvar.GetInterpolation(), UsdGeom.Tokens.vertex)
+                                self.assertFalse(primvar.IsIndexed())
+                                values = primvar.Get()
+                                self.assertEqual(len(values), len(coordinates))
+                                for actual, wanted in zip(values, coordinates):
+                                    self.assertTrue(Gf.IsClose(actual, Gf.Vec2f(*wanted), 1e-6), str(actual))
+                            other = UsdGeom.Mesh.Get(stage, f"/Asset/geo/Node_{node}/Mesh_0/Primitive_1")
+                            self.assertEqual(list(other.GetFaceVertexIndicesAttr().Get()), [0, 1, 2])
+                            self.assertEqual(list(UsdGeom.PrimvarsAPI(other).GetPrimvar("st").Get()),
+                                             [Gf.Vec2f(*uv) for uv in expected[0]])
+
+    def test_texture_coordinate_failures_preserve_layer(self):
+        def mutate(document, name):
+            attributes = document["meshes"][0]["primitives"][0]["attributes"]
+            if name == "count":
+                document["accessors"][3]["count"] = 2
+            elif name == "type":
+                document["accessors"][3]["type"] = "VEC3"
+            elif name == "normalized integer":
+                document["accessors"][4]["normalized"] = False
+            elif name == "component":
+                document["accessors"][4]["componentType"] = 5122
+            elif name == "missing set":
+                del attributes["TEXCOORD_1"]
+            elif name == "accessor":
+                attributes["TEXCOORD_0"] = 99
+            elif name == "bounds":
+                document["bufferViews"][2]["byteLength"] = 8
+            elif name == "packed byte alignment":
+                document["bufferViews"].append({
+                    "buffer": 0, "byteOffset": document["bufferViews"][2]["byteOffset"] + 8,
+                    "byteLength": 6,
+                })
+                document["accessors"][4]["bufferView"] = 3
+                document["accessors"][4]["byteOffset"] = 0
+            elif name == "sparse":
+                document["accessors"][3]["sparse"] = {
+                    "count": 1, "indices": {"bufferView": 1, "componentType": 5121},
+                    "values": {"bufferView": 2},
+                }
+
+        cases = {
+            "count": "texture coordinate and position counts differ",
+            "type": "invalid type",
+            "normalized integer": "invalid type",
+            "component": "unsupported component type",
+            "missing set": "consecutive",
+            "accessor": "accessor index",
+            "bounds": "bufferView",
+            "packed byte alignment": "invalid stride",
+            "sparse": "sparse",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            for extension in ("gltf", "glb"):
+                path = pathlib.Path(directory) / ("uv." + extension)
+                document, binary = uv_document(extension, external=True)
+                (path.parent / "mesh.bin").write_bytes(binary)
+                write_asset(path, document)
+                stage = Usd.Stage.Open(str(path))
+                layer = stage.GetRootLayer()
+                before = layer.ExportToString()
+                for name, message in cases.items():
+                    with self.subTest(extension=extension, name=name):
+                        invalid, _ = uv_document(extension, external=True)
+                        mutate(invalid, name)
+                        write_asset(path, invalid)
+                        with self.assertRaisesRegex(Tf.ErrorException, message):
+                            layer.Reload(True)
+                        self.assertEqual(layer.ExportToString(), before)
+                invalid = bytearray(binary)
+                uv_offset = document["bufferViews"][2]["byteOffset"]
+                invalid[uv_offset:uv_offset + 4] = struct.pack("<f", float("nan"))
+                (path.parent / "mesh.bin").write_bytes(invalid)
+                write_asset(path, document)
+                with self.assertRaisesRegex(Tf.ErrorException, "non-finite"):
+                    layer.Reload(True)
+                self.assertEqual(layer.ExportToString(), before)
+                updated = bytearray(binary)
+                updated[uv_offset:uv_offset + 4] = struct.pack("<f", 0.75)
+                (path.parent / "mesh.bin").write_bytes(updated)
+                self.assertTrue(layer.Reload(True))
+                mesh = stage.GetPrimAtPath("/Asset/geo/Node_0/Mesh_0/Primitive_0")
+                self.assertEqual(UsdGeom.PrimvarsAPI(mesh).GetPrimvar("st").Get()[0],
+                                 Gf.Vec2f(0.75, 1.5))
 
     def test_mesh_failures_and_reload_preservation(self):
         def mutate(document, name):
@@ -181,7 +323,7 @@ class FileFormatTest(unittest.TestCase):
                 primitive["material"] = 0
                 document["materials"] = [{}]
             elif name == "attribute":
-                primitive["attributes"]["TEXCOORD_0"] = 0
+                primitive["attributes"]["COLOR_0"] = 0
             elif name == "mode":
                 primitive["mode"] = 1
 

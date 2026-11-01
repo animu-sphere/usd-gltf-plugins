@@ -52,12 +52,13 @@ also passed on all three platforms. These results predate the scene-selection
 test and do not verify importing or establish a general compatibility matrix.
 The [scene selection decision](../architecture/SCENE_SELECTION.md) is recorded
 and is connected to the importer. End-to-end local Windows tests cover both
-formats, hierarchy, transforms, selection, triangle meshes with embedded and
-restricted local external buffers, and failed/successful reload.
+formats, hierarchy, transforms, selection, triangle meshes and UV sets with
+embedded and restricted local external buffers, and failed/successful reload.
 The [layer authoring decision](../architecture/LAYER_AUTHORING.md) was revised
 to temporary `SdfLayer` authoring after reload exposed an unsafe change-block
 interaction. Mesh support is limited to triangle primitives with
-positions and optional normals; the remaining phase 1 work is not implemented.
+positions, optional normals and UV coordinate sets; the remaining phase 1 work
+is not implemented.
 External buffer URI restrictions and their security limitations are described
 in the [import pipeline](../architecture/IMPORT_PIPELINE.md).
 These newer tests have not yet been verified in the other CI cells.

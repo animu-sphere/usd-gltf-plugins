@@ -31,20 +31,36 @@ stability. Do not prescribe `/Asset/rig` or `/Asset/anim` as mandatory:
 their placement must be decided when UsdSkel and animation are designed.
 
 The implemented mesh subset accepts indexed or non-indexed triangle
-primitives with float POSITION and optional float NORMAL accessors in embedded
-or local external buffers. Accessors may be interleaved but not sparse.
-Indexed data uses glTF unsigned byte, unsigned short or unsigned int indices. USD subdivision is
-disabled and winding remains right-handed; absent normals are generated per
-face for flat shading. Unsupported attributes, materials, other primitive
-modes, morphs and compression fail with a diagnostic. External buffer URI
-restrictions are described in the [import pipeline](../architecture/IMPORT_PIPELINE.md).
-UV conversion, material binding and a general mesh sharing policy remain open.
+primitives with float POSITION, optional float NORMAL and optional TEXCOORD_n
+accessors in embedded or local external buffers. Accessors may be interleaved
+but not sparse. Indexed data uses glTF unsigned byte, unsigned short or
+unsigned int indices. USD subdivision is disabled and winding remains
+right-handed; absent normals are generated per face for flat shading.
+Unsupported attributes, materials, other primitive modes, morphs and
+compression fail with a diagnostic. External buffer URI restrictions are
+described in the [import pipeline](../architecture/IMPORT_PIPELINE.md).
+Material binding and a general mesh sharing policy remain open.
+
+## Texture coordinates
+
+Each TEXCOORD_n must use VEC2 floats, normalized unsigned bytes or normalized
+unsigned shorts, with the same count as POSITION. Sets must begin at zero and
+be consecutive. TEXCOORD_0 is authored as the vertex-interpolated
+`texCoord2f[]` primvar `st`; subsequent sets use `st1`, `st2`, and so on.
+Values are not clamped, so tiling outside the unit square is retained.
+
+glTF's image origin is upper-left, while USD uses lower-left. Convert
+`(u, v)` to `(u, 1 - v)` once when authoring the primvar, as described in
+the [glTF specification](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html)
+and the [UsdPreviewSurface specification](https://openusd.org/release/spec_usdpreviewsurface.html).
+Material and texture readers must consume these converted coordinates without
+another flip. Image loading, texture transforms and renderer output remain
+unverified; these tests establish the authored coordinate values only.
 
 ## Semantic differences requiring validation
 
 - glTF is Y-up and uses meters. Explicitly establish and test USD `upAxis`,
   `metersPerUnit`, and any necessary conversions.
-- Establish and test UV orientation and conversion.
 - Select the declared default scene. If no default is declared, select the
   first scene and emit a diagnostic; if no scenes exist or the default index
   is invalid, report an error and fail. Never merge scenes. The selection

@@ -1,7 +1,7 @@
 # Import pipeline
 
 Status: **early implementation**. The importer opens selected nodes, transforms
-and a limited triangle-mesh subset with embedded or local external buffers;
+and a limited triangle-mesh subset including UVs with embedded or local external buffers;
 other asset content is not implemented.
 
 ```text
