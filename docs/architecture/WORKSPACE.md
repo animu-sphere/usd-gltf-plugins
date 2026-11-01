@@ -1,7 +1,7 @@
 # Workspace architecture
 
-Status: **planned**. These are intended responsibilities and dependency
-directions, not existing packages or installed artifacts.
+Status: **partially started**. A file-format registration scaffold exists;
+the remaining components and dependency directions are planned.
 
 ## Proposed layout
 
