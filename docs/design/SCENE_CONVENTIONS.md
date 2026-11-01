@@ -1,8 +1,8 @@
 # Scene conventions
 
 Status: **partially implemented** for selected scenes, nodes, transforms and
-a triangle-mesh subset with embedded or local external buffers. Skin, camera
-and animation are not supported.
+a triangle-mesh subset including UVs and vertex colors with embedded or local
+external buffers. Skin, camera and animation are not supported.
 
 ## Structure and names
 
@@ -31,11 +31,11 @@ stability. Do not prescribe `/Asset/rig` or `/Asset/anim` as mandatory:
 their placement must be decided when UsdSkel and animation are designed.
 
 The implemented mesh subset accepts indexed or non-indexed triangle
-primitives with float POSITION, optional float NORMAL and optional TEXCOORD_n
-accessors in embedded or local external buffers. Accessors may be interleaved
-but not sparse. Indexed data uses glTF unsigned byte, unsigned short or
-unsigned int indices. USD subdivision is disabled and winding remains
-right-handed; absent normals are generated per face for flat shading.
+primitives with float POSITION, optional float NORMAL, optional TEXCOORD_n
+and optional COLOR_0 accessors in embedded or local external buffers.
+Accessors may be interleaved but not sparse. Indexed data uses glTF unsigned
+byte, unsigned short or unsigned int indices. USD subdivision is disabled and
+winding remains right-handed; absent normals are generated per face for flat shading.
 Unsupported attributes, materials, other primitive modes, morphs and
 compression fail with a diagnostic. External buffer URI restrictions are
 described in the [import pipeline](../architecture/IMPORT_PIPELINE.md).
@@ -56,6 +56,23 @@ and the [UsdPreviewSurface specification](https://openusd.org/release/spec_usdpr
 Material and texture readers must consume these converted coordinates without
 another flip. Image loading, texture transforms and renderer output remain
 unverified; these tests establish the authored coordinate values only.
+
+## Vertex colors
+
+COLOR_0 accepts VEC3 or VEC4 floats, normalized unsigned bytes or normalized
+unsigned shorts, with the same count as POSITION. Components must be finite
+and in the glTF range [0, 1]. RGB is linear and is authored without a color
+space conversion as the vertex-interpolated `color3f[]` primvar
+`displayColor`. A VEC4's alpha is preserved as the vertex-interpolated
+`float[]` primvar `gltf:colorAlpha`; VEC3 implies alpha 1 and has no alpha
+primvar. Other color sets are not supported.
+
+The importer does not author `displayOpacity` from COLOR_0: without an
+explicit material, glTF uses an opaque default material and ignores alpha.
+Future material graphs must multiply base color by RGB and, when needed,
+alpha by `gltf:colorAlpha` (or 1 when absent), respecting the glTF material's
+alpha mode. These data mappings are tested, but material graphs and renderer
+behavior are not yet verified.
 
 ## Semantic differences requiring validation
 

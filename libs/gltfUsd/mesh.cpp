@@ -38,6 +38,15 @@ std::uint32_t readUnsigned(const std::byte* data, std::size_t size)
     return value;
 }
 
+float readRealComponent(const std::byte* data, std::size_t size,
+                        fastgltf::ComponentType type)
+{
+    const auto bits = readUnsigned(data, size);
+    return type == fastgltf::ComponentType::Float
+        ? std::bit_cast<float>(bits)
+        : float(bits) / float(size == 1 ? 255 : 65535);
+}
+
 bool readVectors(const fastgltf::Asset& asset, std::size_t index, VtVec3fArray& values,
                  std::string& error, const gltfCore::BufferLoader& loadBuffer)
 {
@@ -95,15 +104,72 @@ bool readTexcoords(const fastgltf::Asset& asset, std::size_t index, VtVec2fArray
     values.resize(data.count);
     for (std::size_t i = 0; i < data.count; ++i) {
         for (std::size_t component = 0; component < 2; ++component) {
-            const auto bits = readUnsigned(data.bytes.data() + i * data.stride + component * size, size);
-            const float value = type == fastgltf::ComponentType::Float
-                ? std::bit_cast<float>(bits)
-                : float(bits) / float(size == 1 ? 255 : 65535);
+            const float value = readRealComponent(
+                data.bytes.data() + i * data.stride + component * size, size, type);
             if (!std::isfinite(value)) {
                 error = "texture coordinate contains a non-finite value";
                 return false;
             }
             values[i][component] = component == 0 ? value : 1.0f - value;
+        }
+    }
+    return true;
+}
+
+bool readColors(const fastgltf::Asset& asset, std::size_t index, VtVec3fArray& colors,
+                VtFloatArray& alpha, std::string& error, const gltfCore::BufferLoader& loadBuffer)
+{
+    if (index >= asset.accessors.size()) {
+        error = "vertex color accessor index is out of range";
+        return false;
+    }
+    const auto& accessor = asset.accessors[index];
+    std::size_t components;
+    if (accessor.type == fastgltf::AccessorType::Vec3) {
+        components = 3;
+    } else if (accessor.type == fastgltf::AccessorType::Vec4) {
+        components = 4;
+    } else {
+        error = "vertex color accessor has an invalid type";
+        return false;
+    }
+    const auto type = accessor.componentType;
+    std::size_t size;
+    switch (type) {
+    case fastgltf::ComponentType::Float: size = 4; break;
+    case fastgltf::ComponentType::UnsignedByte: size = 1; break;
+    case fastgltf::ComponentType::UnsignedShort: size = 2; break;
+    default:
+        error = "vertex color accessor has an unsupported component type";
+        return false;
+    }
+    gltfCore::AccessorData data;
+    if (!gltfCore::GetAccessorData(asset, index, accessor.type, type, size * components,
+                                   true, data, error, loadBuffer,
+                                   type != fastgltf::ComponentType::Float)) {
+        return false;
+    }
+    if (data.count > std::size_t(std::numeric_limits<int>::max())) {
+        error = "vertex color count exceeds USD's index range";
+        return false;
+    }
+    colors.resize(data.count);
+    if (components == 4) {
+        alpha.resize(data.count);
+    }
+    for (std::size_t i = 0; i < data.count; ++i) {
+        for (std::size_t component = 0; component < components; ++component) {
+            const float value = readRealComponent(
+                data.bytes.data() + i * data.stride + component * size, size, type);
+            if (!std::isfinite(value) || value < 0 || value > 1) {
+                error = "vertex color contains a non-finite or out-of-range value";
+                return false;
+            }
+            if (component == 3) {
+                alpha[i] = value;
+            } else {
+                colors[i][component] = value;
+            }
         }
     }
     return true;
@@ -167,12 +233,15 @@ bool authorPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& pr
     }
     const fastgltf::Attribute* position = nullptr;
     const fastgltf::Attribute* normal = nullptr;
+    const fastgltf::Attribute* color = nullptr;
     std::vector<std::pair<std::size_t, const fastgltf::Attribute*>> texcoords;
     for (const auto& attribute : primitive.attributes) {
         if (attribute.name == "POSITION" && !position) {
             position = &attribute;
         } else if (attribute.name == "NORMAL" && !normal) {
             normal = &attribute;
+        } else if (attribute.name == "COLOR_0" && !color) {
+            color = &attribute;
         } else if (attribute.name.starts_with("TEXCOORD_")) {
             const auto suffix = std::string_view(attribute.name).substr(9);
             std::size_t set = 0;
@@ -210,6 +279,15 @@ bool authorPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& pr
         if (error.empty()) {
             error = "normal and position counts differ";
         }
+        return false;
+    }
+    VtVec3fArray colors;
+    VtFloatArray alpha;
+    if (color && !readColors(asset, color->accessorIndex, colors, alpha, error, loadBuffer)) {
+        return false;
+    }
+    if (color && colors.size() != points.size()) {
+        error = "vertex color and position counts differ";
         return false;
     }
     std::vector<VtVec2fArray> uvSets(texcoords.size());
@@ -267,6 +345,24 @@ bool authorPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& pr
         return false;
     }
     attr->SetInfo(TfToken("interpolation"), VtValue(TfToken(normal ? "vertex" : "uniform")));
+    if (color) {
+        const auto displayColor = SdfAttributeSpec::New(
+            mesh, "primvars:displayColor", SdfValueTypeNames->Color3fArray);
+        if (!displayColor || !displayColor->SetDefaultValue(VtValue(colors))) {
+            error = "could not author USD vertex colors";
+            return false;
+        }
+        displayColor->SetInfo(TfToken("interpolation"), VtValue(TfToken("vertex")));
+        if (!alpha.empty()) {
+            const auto colorAlpha = SdfAttributeSpec::New(
+                mesh, "primvars:gltf:colorAlpha", SdfValueTypeNames->FloatArray);
+            if (!colorAlpha || !colorAlpha->SetDefaultValue(VtValue(alpha))) {
+                error = "could not author USD vertex color alpha";
+                return false;
+            }
+            colorAlpha->SetInfo(TfToken("interpolation"), VtValue(TfToken("vertex")));
+        }
+    }
     for (std::size_t i = 0; i < uvSets.size(); ++i) {
         const auto name = i == 0 ? std::string("primvars:st")
                                  : "primvars:st" + std::to_string(i);
