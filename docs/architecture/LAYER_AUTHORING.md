@@ -38,7 +38,7 @@ deferred. Direct `Sdf` authoring avoids relying on downstream composition
 during `Read`, at the cost of explicitly maintaining schema-compatible specs,
 attribute types, defaults and metadata.
 
-The end-to-end plugin tests now exercise both formats, failed reload without
-publication, and successful reload on an existing stage. They cover only the
-current node/transform subset and do not prove recovery from every USD error.
+The end-to-end plugin tests exercise both formats, failed reload without
+publication, and successful reload on an existing stage, including the
+embedded triangle-mesh subset. They do not prove recovery from every USD error.
 External asset handling and results on other platforms remain unverified.

@@ -1,3 +1,4 @@
+import base64
 import json
 import pathlib
 import struct
@@ -9,11 +10,16 @@ import unittest
 from pxr import Gf, Sdf, Tf, Usd, UsdGeom
 
 
-def write_asset(path, document):
+def write_asset(path, document, binary=None):
     data = json.dumps(document, separators=(",", ":")).encode()
     if path.suffix == ".glb":
         data += b" " * (-len(data) % 4)
-        data = struct.pack("<4sIIII", b"glTF", 2, 20 + len(data), len(data), 0x4E4F534A) + data
+        bin_chunk = b""
+        if binary is not None:
+            binary += b"\0" * (-len(binary) % 4)
+            bin_chunk = struct.pack("<II", len(binary), 0x004E4942) + binary
+        data = (struct.pack("<4sIIII", b"glTF", 2, 20 + len(data) + len(bin_chunk),
+                            len(data), 0x4E4F534A) + data + bin_chunk)
     path.write_bytes(data)
 
 
@@ -34,6 +40,41 @@ def scene_document():
             {"name": "Other scene"},
         ],
     }
+
+
+def mesh_document(extension, index_type=5123):
+    vertex_data = b"".join(struct.pack("<6f", *vertex) for vertex in (
+        (0, 0, 0, 0, 0, 1),
+        (1, 0, 0, 0, 0, 1),
+        (0, 1, 0, 0, 0, 1),
+    ))
+    index_data = struct.pack({5121: "<3B", 5123: "<3H", 5125: "<3I"}[index_type], 2, 0, 1)
+    binary = vertex_data + index_data
+    buffer = {"byteLength": len(binary)}
+    if extension == "gltf":
+        buffer["uri"] = "data:application/octet-stream;base64," + base64.b64encode(binary).decode()
+    document = {
+        "asset": {"version": "2.0"},
+        "scene": 0,
+        "scenes": [{"nodes": [0, 1]}],
+        "nodes": [{"mesh": 0, "translation": [2, 0, 0]}, {"mesh": 0}],
+        "meshes": [{"name": "Example mesh", "primitives": [
+            {"attributes": {"POSITION": 0, "NORMAL": 1}, "indices": 2},
+            {"attributes": {"POSITION": 0}},
+        ]}],
+        "buffers": [buffer],
+        "bufferViews": [
+            {"buffer": 0, "byteOffset": 0, "byteLength": len(vertex_data), "byteStride": 24},
+            {"buffer": 0, "byteOffset": len(vertex_data), "byteLength": len(index_data)},
+        ],
+        "accessors": [
+            {"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3",
+             "min": [0, 0, 0], "max": [1, 1, 0]},
+            {"bufferView": 0, "byteOffset": 12, "componentType": 5126, "count": 3, "type": "VEC3"},
+            {"bufferView": 1, "componentType": index_type, "count": 3, "type": "SCALAR"},
+        ],
+    }
+    return document, binary if extension == "glb" else None
 
 
 class FileFormatTest(unittest.TestCase):
@@ -70,6 +111,176 @@ class FileFormatTest(unittest.TestCase):
                     world = UsdGeom.XformCache().GetLocalToWorldTransform(child)
                     point = world.Transform(Gf.Vec3d(0, 0, 0))
                     self.assertTrue(Gf.IsClose(point, Gf.Vec3d(1, 0, 3), 1e-5), str(point))
+
+    def test_triangle_meshes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for extension in ("gltf", "glb"):
+                for index_type in (5121, 5123, 5125):
+                    with self.subTest(extension=extension, index_type=index_type):
+                        path = pathlib.Path(directory) / f"mesh_{index_type}.{extension}"
+                        document, binary = mesh_document(extension, index_type)
+                        write_asset(path, document, binary)
+                        stage = Usd.Stage.Open(str(path))
+                        for node in (0, 1):
+                            prefix = f"/Asset/geo/Node_{node}/Mesh_0"
+                            self.assertEqual(stage.GetPrimAtPath(prefix).GetDisplayName(), "Example mesh")
+                            mesh = UsdGeom.Mesh.Get(stage, prefix + "/Primitive_0")
+                            self.assertTrue(mesh)
+                            self.assertEqual(list(mesh.GetPointsAttr().Get()),
+                                             [Gf.Vec3f(0, 0, 0), Gf.Vec3f(1, 0, 0), Gf.Vec3f(0, 1, 0)])
+                            self.assertEqual(list(mesh.GetFaceVertexCountsAttr().Get()), [3])
+                            self.assertEqual(list(mesh.GetFaceVertexIndicesAttr().Get()), [2, 0, 1])
+                            self.assertEqual(list(mesh.GetNormalsAttr().Get()), [Gf.Vec3f(0, 0, 1)] * 3)
+                            self.assertEqual(mesh.GetNormalsInterpolation(), UsdGeom.Tokens.vertex)
+                            self.assertEqual(mesh.GetSubdivisionSchemeAttr().Get(), UsdGeom.Tokens.none)
+                            self.assertEqual(mesh.GetOrientationAttr().Get(), UsdGeom.Tokens.rightHanded)
+                            other = UsdGeom.Mesh.Get(stage, prefix + "/Primitive_1")
+                            self.assertEqual(list(other.GetFaceVertexIndicesAttr().Get()), [0, 1, 2])
+                            self.assertEqual(list(other.GetNormalsAttr().Get()), [Gf.Vec3f(0, 0, 1)])
+                            self.assertEqual(other.GetNormalsInterpolation(), UsdGeom.Tokens.uniform)
+                        point = UsdGeom.XformCache().GetLocalToWorldTransform(mesh.GetPrim()).Transform(
+                            Gf.Vec3d(0, 0, 0))
+                        self.assertEqual(point, Gf.Vec3d(0, 0, 0))
+                        first = stage.GetPrimAtPath("/Asset/geo/Node_0/Mesh_0/Primitive_0")
+                        self.assertEqual(UsdGeom.XformCache().GetLocalToWorldTransform(first).Transform(
+                            Gf.Vec3d(0, 0, 0)), Gf.Vec3d(2, 0, 0))
+
+    def test_mesh_failures_and_reload_preservation(self):
+        def mutate(document, name):
+            primitive = document["meshes"][0]["primitives"][0]
+            if name == "accessor":
+                primitive["attributes"]["POSITION"] = 99
+            elif name == "view bounds":
+                document["bufferViews"][0]["byteLength"] = 20
+            elif name == "buffer bounds":
+                document["bufferViews"][0]["byteLength"] = 999
+            elif name == "buffer index":
+                document["bufferViews"][0]["buffer"] = 99
+            elif name == "bufferView index":
+                document["accessors"][0]["bufferView"] = 99
+            elif name == "component type":
+                document["accessors"][0]["componentType"] = 5123
+            elif name == "alignment":
+                document["accessors"][0]["byteOffset"] = 1
+            elif name == "normalized":
+                document["accessors"][0]["normalized"] = True
+            elif name == "sparse":
+                document["accessors"][0]["sparse"] = {
+                    "count": 1,
+                    "indices": {"bufferView": 1, "componentType": 5121},
+                    "values": {"bufferView": 0},
+                }
+            elif name == "index count":
+                document["accessors"][2]["count"] = 2
+            elif name == "normal count":
+                document["accessors"][1]["count"] = 2
+            elif name == "stride":
+                document["bufferViews"][0]["byteStride"] = 8
+            elif name == "material":
+                primitive["material"] = 0
+                document["materials"] = [{}]
+            elif name == "attribute":
+                primitive["attributes"]["TEXCOORD_0"] = 0
+            elif name == "mode":
+                primitive["mode"] = 1
+            elif name == "external":
+                document["buffers"][0]["uri"] = "external.bin"
+
+        cases = {
+            "accessor": "accessor index",
+            "view bounds": "bufferView",
+            "buffer bounds": "bufferView",
+            "buffer index": "buffer index",
+            "bufferView index": "bufferView index",
+            "component type": "invalid type",
+            "alignment": "alignment",
+            "normalized": "cannot parse",
+            "sparse": "sparse",
+            "index count": "triangle index count",
+            "normal count": "normal and position counts",
+            "stride": "bufferView",
+            "material": "not supported",
+            "attribute": "unsupported or repeated vertex attribute",
+            "mode": "not supported",
+            "external": "external or unsupported buffer",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            for extension in ("gltf", "glb"):
+                path = pathlib.Path(directory) / ("mesh." + extension)
+                document, binary = mesh_document(extension)
+                write_asset(path, document, binary)
+                stage = Usd.Stage.Open(str(path))
+                layer = stage.GetRootLayer()
+                before = layer.ExportToString()
+                for name, message in cases.items():
+                    with self.subTest(extension=extension, name=name):
+                        invalid, invalid_binary = mesh_document(extension)
+                        mutate(invalid, name)
+                        write_asset(path, invalid, invalid_binary)
+                        with self.assertRaisesRegex(Tf.ErrorException, message):
+                            layer.Reload(True)
+                        self.assertEqual(layer.ExportToString(), before)
+                        self.assertTrue(stage.GetPrimAtPath("/Asset/geo/Node_0/Mesh_0/Primitive_0"))
+                invalid, invalid_binary = mesh_document(extension)
+                if extension == "glb":
+                    invalid_binary = invalid_binary[:72] + struct.pack("<3H", 3, 0, 1)
+                else:
+                    data = base64.b64decode(invalid["buffers"][0]["uri"].split(",", 1)[1])
+                    invalid["buffers"][0]["uri"] = "data:application/octet-stream;base64," + base64.b64encode(
+                        data[:72] + struct.pack("<3H", 3, 0, 1)).decode()
+                write_asset(path, invalid, invalid_binary)
+                with self.assertRaisesRegex(Tf.ErrorException, "index is out of range"):
+                    layer.Reload(True)
+                self.assertEqual(layer.ExportToString(), before)
+                write_asset(path, document, binary)
+                self.assertTrue(layer.Reload(True))
+
+    def test_flat_normals_and_negative_scale(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for extension in ("gltf", "glb"):
+                with self.subTest(extension=extension):
+                    path = pathlib.Path(directory) / ("mesh." + extension)
+                    document, binary = mesh_document(extension)
+                    del document["meshes"][0]["primitives"][0]["attributes"]["NORMAL"]
+                    document["nodes"][0]["scale"] = [-1, 1, 1]
+                    if extension == "gltf":
+                        data = base64.b64decode(document["buffers"][0]["uri"].split(",", 1)[1])
+                    else:
+                        data = binary
+                    data = data[:72] + struct.pack("<3H", 0, 2, 1)
+                    if extension == "gltf":
+                        document["buffers"][0]["uri"] = "data:application/octet-stream;base64," + (
+                            base64.b64encode(data).decode())
+                    else:
+                        binary = data
+                    write_asset(path, document, binary)
+                    stage = Usd.Stage.Open(str(path))
+                    mesh = UsdGeom.Mesh.Get(stage, "/Asset/geo/Node_0/Mesh_0/Primitive_0")
+                    self.assertEqual(list(mesh.GetFaceVertexIndicesAttr().Get()), [0, 2, 1])
+                    self.assertEqual(list(mesh.GetNormalsAttr().Get()), [Gf.Vec3f(0, 0, -1)])
+                    self.assertEqual(mesh.GetNormalsInterpolation(), UsdGeom.Tokens.uniform)
+                    transform = UsdGeom.XformCache().GetLocalToWorldTransform(mesh.GetPrim())
+                    self.assertLess(transform.GetDeterminant(), 0)
+
+    def test_nonfinite_position_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for extension in ("gltf", "glb"):
+                with self.subTest(extension=extension):
+                    path = pathlib.Path(directory) / ("mesh." + extension)
+                    document, binary = mesh_document(extension)
+                    if extension == "gltf":
+                        data = base64.b64decode(document["buffers"][0]["uri"].split(",", 1)[1])
+                    else:
+                        data = binary
+                    data = struct.pack("<f", float("nan")) + data[4:]
+                    if extension == "gltf":
+                        document["buffers"][0]["uri"] = "data:application/octet-stream;base64," + (
+                            base64.b64encode(data).decode())
+                    else:
+                        binary = data
+                    write_asset(path, document, binary)
+                    with self.assertRaisesRegex(Tf.ErrorException, "non-finite"):
+                        Usd.Stage.Open(str(path))
 
     def test_first_scene_fallback_warns(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -125,9 +336,9 @@ class FileFormatTest(unittest.TestCase):
                        "nodes": [{"children": [0]}]}, "cyclic node"),
             "duplicate node": ({"asset": {"version": "2.0"}, "scene": 0, "scenes": [{"nodes": [0, 0]}],
                                 "nodes": [{}]}, "repeated"),
-            "unsupported mesh": ({"asset": {"version": "2.0"}, "scene": 0, "scenes": [{"nodes": [0]}],
+            "invalid mesh accessor": ({"asset": {"version": "2.0"}, "scene": 0, "scenes": [{"nodes": [0]}],
                                   "nodes": [{"mesh": 0}], "meshes": [{"primitives": [
-                                      {"attributes": {"POSITION": 0}}]}]}, "not supported"),
+                                      {"attributes": {"POSITION": 0}}]}]}, "accessor index"),
             "bad quaternion": ({"asset": {"version": "2.0"}, "scene": 0, "scenes": [{"nodes": [0]}],
                                 "nodes": [{"rotation": [0, 0, 0, 0]}]}, "invalid transform"),
             "perspective matrix": ({"asset": {"version": "2.0"}, "scene": 0, "scenes": [{"nodes": [0]}],

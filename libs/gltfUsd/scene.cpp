@@ -1,5 +1,6 @@
 #include "scene.h"
 
+#include "mesh.h"
 #include "sceneSelection.h"
 
 #include "pxr/base/gf/matrix4d.h"
@@ -119,9 +120,9 @@ pxr::SdfLayerRefPtr ConvertScene(const fastgltf::Asset& asset)
         }
         visited[index] = true;
         const auto& node = asset.nodes[index];
-        if (node.meshIndex || node.skinIndex || node.cameraIndex || node.lightIndex ||
+        if (node.skinIndex || node.cameraIndex || node.lightIndex ||
             !node.weights.empty()) {
-            TF_RUNTIME_ERROR("glTF node %zu uses mesh, skin, camera, light, or morph data that is not supported yet",
+            TF_RUNTIME_ERROR("glTF node %zu uses skin, camera, light, or morph data that is not supported yet",
                              index);
             return {};
         }
@@ -147,6 +148,9 @@ pxr::SdfLayerRefPtr ConvertScene(const fastgltf::Asset& asset)
         if (!transform || !order || !transform->SetDefaultValue(VtValue(matrix)) ||
             !order->SetDefaultValue(VtValue(opOrder))) {
             TF_RUNTIME_ERROR("Could not author glTF node %zu transform", index);
+            return {};
+        }
+        if (node.meshIndex && !AuthorMesh(asset, *node.meshIndex, xform)) {
             return {};
         }
         for (auto it = node.children.rbegin(); it != node.children.rend(); ++it) {
