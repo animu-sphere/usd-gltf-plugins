@@ -33,7 +33,6 @@ decisions in implementation or support claims:
 
 - Target OpenUSD versions and distributions, C++20/fastgltf ABI and compiler
   compatibility; pinning and enabled fastgltf extensions.
-- Direct `SdfLayer` authoring versus a temporary `UsdStage`.
 - MaterialX and UsdPreviewSurface node graphs, render contexts and actual
   support in target renderers.
 - Texture storage, cache lifetime and portable persistent asset paths.
@@ -52,4 +51,6 @@ The [main-branch run for the merge](https://github.com/animu-sphere/usd-gltf-plu
 also passed on all three platforms. These results predate the scene-selection
 test and do not verify importing or establish a general compatibility matrix.
 The [scene selection decision](../architecture/SCENE_SELECTION.md) is recorded
-and tested separately; phase 1 import remains unimplemented.
+and tested separately. The [layer authoring decision](../architecture/LAYER_AUTHORING.md)
+selects temporary `UsdStage` authoring based on a focused local experiment;
+phase 1 import remains unimplemented.

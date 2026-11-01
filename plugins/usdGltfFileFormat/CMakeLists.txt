@@ -110,4 +110,9 @@ if(BUILD_TESTING)
             "PXR_PLUGINPATH_NAME=${USD_GLTF_OUTPUT_ROOT}/plugin/resources/usdGltfFileFormat"
             "${Python3_EXECUTABLE}"
             "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/test_file_format.py")
+    add_test(NAME layer_authoring
+        COMMAND "${CMAKE_COMMAND}" -E env
+            "PXR_PLUGINPATH_NAME=${USD_GLTF_OUTPUT_ROOT}/plugin/resources/usdGltfFileFormat"
+            "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/test_layer_authoring.py")
 endif()

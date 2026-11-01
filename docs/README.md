@@ -6,7 +6,7 @@ experiments or an architecture decision record (ADR).
 
 | Category | Purpose | Start here |
 | --- | --- | --- |
-| Architecture | Component responsibilities and import flow | [Workspace](architecture/WORKSPACE.md) · [Import pipeline](architecture/IMPORT_PIPELINE.md) |
+| Architecture | Component responsibilities and import flow | [Workspace](architecture/WORKSPACE.md) · [Import pipeline](architecture/IMPORT_PIPELINE.md) · [Layer authoring](architecture/LAYER_AUTHORING.md) |
 | Design | Scope and intended conversion contracts | [Implementation policy](design/IMPLEMENTATION_POLICY.md) · [Scene conventions](design/SCENE_CONVENTIONS.md) · [Materials](design/MATERIALS.md) · [Textures](design/TEXTURES.md) |
 | Reference | What is actually implemented and supported | [Capability matrix](reference/CAPABILITY_MATRIX.md) |
 | Roadmap | Phases, acceptance criteria, and unresolved decisions | [Roadmap](roadmap/README.md) |
