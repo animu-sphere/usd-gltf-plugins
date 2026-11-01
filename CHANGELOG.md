@@ -14,6 +14,8 @@ here.
   with OPAQUE, MASK and BLEND alpha and vertex colors.
 - Base color textures from PNG and JPEG images in bufferViews, data URIs and local
   files. A package resolver serves embedded images from the source file.
+- Metallic-roughness, occlusion and emissive textures, with color and non-color
+  images read distinctly.
 - Apache-2.0 license, installed with the plugin, and community health files.
 - Install smoke test and documentation consistency test.
 - clang-format configuration, applied to the project's C++ sources.

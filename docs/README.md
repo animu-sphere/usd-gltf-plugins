@@ -30,6 +30,7 @@ available when the decision was made; they are not progress reports:
 - [Factor-only materials](architecture/MATERIAL_FACTORS.md)
 - [0001: Image asset paths and lifetime](adr/0001-image-assets.md)
 - [0002: Base color texture networks](adr/0002-base-color-texture-networks.md)
+- [0003: Metallic-roughness, occlusion and emissive texture networks](adr/0003-pbr-texture-networks.md)
 
 New decisions go in `docs/adr/NNNN-title.md`.
 

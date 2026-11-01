@@ -17,6 +17,7 @@ follow [ADR 0001](0001-image-assets.md).
 | Factor | `scale` input, all four components | `baseColorFactor` and `alphaFactor` multiplies, when not 1 |
 | Vertex color | None; see below | `baseColorVertex` and `alphaVertex` multiplies, before the factors |
 
+[ADR 0003](0003-pbr-texture-networks.md) later renamed the readers per UV set.
 Readers use the primvar for the texture's `texCoord`: `st` or `st<n>`. A primitive
 without that set fails rather than sampling a fallback coordinate. Primvar values are
 [already flipped](../design/SCENE_CONVENTIONS.md#texture-coordinates), so no node
