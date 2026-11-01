@@ -29,8 +29,11 @@ their placement must be decided when UsdSkel and animation are designed.
 - glTF is Y-up and uses meters. Explicitly establish and test USD `upAxis`,
   `metersPerUnit`, and any necessary conversions.
 - Establish and test UV orientation and conversion.
-- Select one glTF scene explicitly; decide how selection works and how to
-  handle a missing default scene. Do not silently merge scenes.
+- Select the declared default scene. If no default is declared, select the
+  first scene and emit a diagnostic; if no scenes exist or the default index
+  is invalid, report an error and fail. Never merge scenes. The selection
+  helper is implemented and tested, but the file-format importer does not yet
+  invoke it; see the [decision record](../architecture/SCENE_SELECTION.md).
 - Test negative scales, transform parity, triangle winding and normals.
 - Define mesh sharing and placement of animated nodes as part of later work.
 - Define behavior for unsupported extensions, particularly required ones,

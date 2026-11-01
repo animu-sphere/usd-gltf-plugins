@@ -27,9 +27,12 @@ usd-gltf-plugins/
 ```
 
 The root contains CMake and OpenStrata workspace configuration, a CI matrix
-and a generated GitHub Actions workflow. CI has not yet been verified.
-CMake presets and the remaining project and dependency configuration are
-still to be established.
+and a generated GitHub Actions workflow. The Windows, Linux and macOS
+pull-request cells passed the workspace build and both scaffold tests in
+[run 41289600882](https://github.com/animu-sphere/usd-gltf-plugins/actions/runs/41289600882).
+This does not verify the later importer or renderer support. CMake presets
+and the remaining project and dependency configuration are still to be
+established.
 
 | Component | Responsibility | Boundary |
 | --- | --- | --- |

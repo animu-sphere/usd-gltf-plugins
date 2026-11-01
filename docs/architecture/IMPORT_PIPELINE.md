@@ -31,6 +31,6 @@ define the diagnostic policy for unsupported optional extensions. Malformed
 or unsafe data must produce explicit diagnostics and failure rather than a
 success result containing an unintentionally incomplete stage.
 
-Multiple glTF scenes and missing default scenes require an explicit selection
-policy; do not silently merge them. See [SCENE_CONVENTIONS](../design/SCENE_CONVENTIONS.md)
-and the [open decisions](../roadmap/README.md#decisions-to-verify).
+Scene selection is defined in [SCENE_CONVENTIONS](../design/SCENE_CONVENTIONS.md);
+the helper is not yet connected to the file-format importer. See also the
+[open decisions](../roadmap/README.md#decisions-to-verify).

@@ -46,11 +46,19 @@ function(usd_gltf_add_fastgltf)
 endfunction()
 usd_gltf_add_fastgltf()
 
+add_library(usd_gltf_core STATIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../libs/gltfCore/sceneSelection.cpp")
+target_compile_features(usd_gltf_core PUBLIC cxx_std_20)
+target_include_directories(usd_gltf_core PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../libs/gltfCore")
+target_link_libraries(usd_gltf_core PUBLIC fastgltf::fastgltf)
+set_target_properties(usd_gltf_core PROPERTIES POSITION_INDEPENDENT_CODE ON CXX_EXTENSIONS OFF)
+
 add_library(UsdGltfFileFormat SHARED UsdGltfFileFormat.cpp)
 target_compile_features(UsdGltfFileFormat PRIVATE cxx_std_20)
 set_target_properties(UsdGltfFileFormat PROPERTIES CXX_EXTENSIONS OFF)
 target_include_directories(UsdGltfFileFormat PRIVATE ${PXR_INCLUDE_DIRS})
-target_link_libraries(UsdGltfFileFormat PRIVATE fastgltf::fastgltf)
+target_link_libraries(UsdGltfFileFormat PRIVATE usd_gltf_core)
 if(TARGET usd_ms)
     target_link_libraries(UsdGltfFileFormat PRIVATE usd_ms)
 elseif(TARGET sdf AND TARGET tf)
@@ -94,6 +102,9 @@ if(BUILD_TESTING)
     add_executable(fastgltf_smoke "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/fastgltf_smoke.cpp")
     target_link_libraries(fastgltf_smoke PRIVATE fastgltf::fastgltf)
     add_test(NAME fastgltf_smoke COMMAND fastgltf_smoke)
+    add_executable(scene_selection_test "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/scene_selection.cpp")
+    target_link_libraries(scene_selection_test PRIVATE usd_gltf_core)
+    add_test(NAME scene_selection COMMAND scene_selection_test)
     add_test(NAME file_format_registration
         COMMAND "${CMAKE_COMMAND}" -E env
             "PXR_PLUGINPATH_NAME=${USD_GLTF_OUTPUT_ROOT}/plugin/resources/usdGltfFileFormat"
