@@ -37,8 +37,9 @@ The [third-party notices](third_party/NOTICES.txt) are also installed under
 `share/licenses/usd-gltf-plugins` and included in the standalone bundle.
 
 The scaffold has been tested locally with the OpenStrata cy2026 Windows
-x86-64 Python 3.13 USD runtime (OpenUSD 26.08) and MSVC. Other configurations
-and CI have not yet been verified.
+x86-64 Python 3.13 USD runtime (OpenUSD 26.08) and MSVC. The pinned Windows,
+Linux and macOS CI configurations have also passed the workspace build and
+the two scaffold tests; this does not establish a general support matrix.
 
 ### OpenStrata workspace
 
@@ -61,8 +62,11 @@ the USD import workflow yet.
 
 The [CI matrix](openstrata.ci.yaml) pins OpenUSD 26.08 runtime artifacts for
 Windows, Linux and macOS and generates the source workflow with
-`ost ci generate github`. These cells run the workspace build and CTest; their
-presence is not evidence that they have passed on GitHub Actions.
+`ost ci generate github`. The pull-request cells built the workspace and
+passed both CTest tests in
+[run 41289600882](https://github.com/animu-sphere/usd-gltf-plugins/actions/runs/41289600882).
+The [main-branch run for the merge](https://github.com/animu-sphere/usd-gltf-plugins/actions/runs/41289759544)
+also passed on all three platforms. Those runs predate the scene-selection test.
 
 Start with the [documentation index](docs/README.md), the
 [implementation policy](docs/design/IMPLEMENTATION_POLICY.md), and the

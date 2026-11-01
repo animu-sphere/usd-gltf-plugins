@@ -1,7 +1,8 @@
 # Roadmap
 
-Status: initial plan; phase completion and supported configurations have not
-been verified. Phases describe intended sequencing, not release dates.
+Status: phase 0's scaffold criterion is verified; later phases and a supported
+configuration matrix are not. Phases describe intended sequencing, not release
+dates.
 
 | Phase | Work | Completion criterion |
 | --- | --- | --- |
@@ -36,14 +37,19 @@ decisions in implementation or support claims:
 - MaterialX and UsdPreviewSurface node graphs, render contexts and actual
   support in target renderers.
 - Texture storage, cache lifetime and portable persistent asset paths.
-- Scene selection, mesh sharing, animated-node placement, units, up axis and
-  UV orientation.
+- Mesh sharing, animated-node placement, units, up axis and UV orientation.
 - Current OpenStrata configuration/CI schemas, dependency acquisition,
   supported platform matrix and test infrastructure.
 
 See the [capability matrix](../reference/CAPABILITY_MATRIX.md) for actual
 implementation status.
 
-Phase 0 has a locally verified Windows workspace build, registration test and
-fastgltf parsing smoke test. The generated CI has not run; the phase is not
-complete.
+Phase 0's scaffold criterion is met: the workspace build, registration test
+and fastgltf parsing smoke test passed locally on Windows and in the Windows,
+Linux and macOS pull-request cells of
+[run 41289600882](https://github.com/animu-sphere/usd-gltf-plugins/actions/runs/41289600882).
+The [main-branch run for the merge](https://github.com/animu-sphere/usd-gltf-plugins/actions/runs/41289759544)
+also passed on all three platforms. These results predate the scene-selection
+test and do not verify importing or establish a general compatibility matrix.
+The [scene selection decision](../architecture/SCENE_SELECTION.md) is recorded
+and tested separately; phase 1 import remains unimplemented.
