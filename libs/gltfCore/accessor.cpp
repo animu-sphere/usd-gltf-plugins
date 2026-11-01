@@ -7,7 +7,7 @@ namespace gltfCore {
 bool GetAccessorData(const fastgltf::Asset& asset, std::size_t index,
                      fastgltf::AccessorType type, fastgltf::ComponentType componentType,
                      std::size_t elementSize, bool vertex, AccessorData& result,
-                     std::string& error)
+                     std::string& error, const BufferLoader& loadBuffer)
 {
     if (index >= asset.accessors.size()) {
         error = "accessor index is out of range";
@@ -40,6 +40,10 @@ bool GetAccessorData(const fastgltf::Asset& asset, std::size_t index,
         bytes = {vector->bytes.data(), vector->bytes.size()};
     } else if (const auto* byteView = std::get_if<fastgltf::sources::ByteView>(&buffer.data)) {
         bytes = byteView->bytes;
+    } else if (std::holds_alternative<fastgltf::sources::URI>(buffer.data) && loadBuffer) {
+        if (!loadBuffer(buffer, bytes, error)) {
+            return false;
+        }
     } else {
         error = "external or unsupported buffer data is not supported";
         return false;

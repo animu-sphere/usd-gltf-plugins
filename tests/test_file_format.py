@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import urllib.parse
 
 from pxr import Gf, Sdf, Tf, Usd, UsdGeom
 
@@ -183,8 +184,6 @@ class FileFormatTest(unittest.TestCase):
                 primitive["attributes"]["TEXCOORD_0"] = 0
             elif name == "mode":
                 primitive["mode"] = 1
-            elif name == "external":
-                document["buffers"][0]["uri"] = "external.bin"
 
         cases = {
             "accessor": "accessor index",
@@ -202,7 +201,6 @@ class FileFormatTest(unittest.TestCase):
             "material": "not supported",
             "attribute": "unsupported or repeated vertex attribute",
             "mode": "not supported",
-            "external": "external or unsupported buffer",
         }
         with tempfile.TemporaryDirectory() as directory:
             for extension in ("gltf", "glb"):
@@ -234,6 +232,133 @@ class FileFormatTest(unittest.TestCase):
                 self.assertEqual(layer.ExportToString(), before)
                 write_asset(path, document, binary)
                 self.assertTrue(layer.Reload(True))
+
+    def test_external_buffers_and_reload(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            (root / "nested").mkdir()
+            buffer_path = root / "nested" / "mesh data.bin"
+            for extension in ("gltf", "glb"):
+                with self.subTest(extension=extension):
+                    path = root / ("external." + extension)
+                    document, binary = mesh_document("glb")
+                    document["buffers"][0]["uri"] = "nested/mesh%20data.bin"
+                    buffer_path.write_bytes(binary)
+                    write_asset(path, document)
+                    stage = Usd.Stage.Open(str(path))
+                    layer = stage.GetRootLayer()
+                    mesh = UsdGeom.Mesh.Get(stage, "/Asset/geo/Node_0/Mesh_0/Primitive_0")
+                    self.assertEqual(list(mesh.GetPointsAttr().Get()),
+                                     [Gf.Vec3f(0, 0, 0), Gf.Vec3f(1, 0, 0), Gf.Vec3f(0, 1, 0)])
+                    self.assertEqual(list(mesh.GetFaceVertexIndicesAttr().Get()), [2, 0, 1])
+                    self.assertEqual(list(mesh.GetNormalsAttr().Get()), [Gf.Vec3f(0, 0, 1)] * 3)
+
+                    before = layer.ExportToString()
+                    buffer_path.write_bytes(binary[:-1])
+                    with self.assertRaisesRegex(Tf.ErrorException, "shorter than its declared byteLength"):
+                        layer.Reload(True)
+                    self.assertEqual(layer.ExportToString(), before)
+                    buffer_path.write_bytes(struct.pack("<f", 4) + binary[4:])
+                    self.assertTrue(layer.Reload(True))
+                    self.assertEqual(mesh.GetPointsAttr().Get()[0], Gf.Vec3f(4, 0, 0))
+
+    def test_external_buffer_uri_rejections(self):
+        uris = (
+            "../escape.bin", "%2e%2e/escape.bin", "nested/%2e%2e/escape.bin",
+            "/absolute.bin", "%2fabsolute.bin", "//host/file.bin", "C:/file.bin",
+            "https://example.invalid/file.bin", "file:///file.bin", "x%5cy.bin",
+            "x%3ay.bin", "x%00.bin", "x%0a.bin", "x%zz.bin", "%ff.bin",
+            "%c0%af.bin", "%ed%a0%80.bin", "%f4%90%80%80.bin", "%c3.bin",
+            "mesh.bin?query", "mesh.bin#fragment", "mesh.bin?", "mesh.bin#",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            for extension in ("gltf", "glb"):
+                path = root / ("invalid." + extension)
+                document, binary = mesh_document("glb")
+                document["buffers"][0]["uri"] = "mesh.bin"
+                (root / "mesh.bin").write_bytes(binary)
+                write_asset(path, document)
+                stage = Usd.Stage.Open(str(path))
+                layer = stage.GetRootLayer()
+                before = layer.ExportToString()
+                for uri in uris:
+                    with self.subTest(extension=extension, uri=uri):
+                        document["buffers"][0]["uri"] = uri
+                        write_asset(path, document)
+                        with self.assertRaisesRegex(Tf.ErrorException, "unsafe or unsupported|cannot parse"):
+                            layer.Reload(True)
+                        self.assertEqual(layer.ExportToString(), before)
+                document["buffers"][0]["uri"] = "missing.bin"
+                write_asset(path, document)
+                with self.assertRaisesRegex(Tf.ErrorException, "cannot resolve external buffer"):
+                    layer.Reload(True)
+                self.assertEqual(layer.ExportToString(), before)
+
+    def test_external_buffers_with_unicode_and_mixed_glb_data(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory) / "モデル"
+            root.mkdir()
+            for extension in ("gltf", "glb"):
+                with self.subTest(extension=extension):
+                    path = root / ("mixed." + extension)
+                    document, binary = mesh_document("glb")
+                    document["buffers"][0]["byteLength"] = 72
+                    if extension == "gltf":
+                        document["buffers"][0]["uri"] = "data:application/octet-stream;base64," + (
+                            base64.b64encode(binary[:72]).decode())
+                    uri = urllib.parse.quote("indices_日本.bin")
+                    document["buffers"].append({"byteLength": len(binary) - 72, "uri": uri})
+                    document["bufferViews"][1]["buffer"] = 1
+                    document["bufferViews"][1]["byteOffset"] = 0
+                    (root / "indices_日本.bin").write_bytes(binary[72:])
+                    write_asset(path, document, binary[:72] if extension == "glb" else None)
+                    stage = Usd.Stage.Open(str(path))
+                    mesh = UsdGeom.Mesh.Get(stage, "/Asset/geo/Node_0/Mesh_0/Primitive_0")
+                    self.assertEqual(list(mesh.GetFaceVertexIndicesAttr().Get()), [2, 0, 1])
+
+    def test_unselected_external_buffer_is_not_loaded(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for extension in ("gltf", "glb"):
+                with self.subTest(extension=extension):
+                    path = pathlib.Path(directory) / ("unselected." + extension)
+                    document = scene_document()
+                    mesh, _ = mesh_document("glb")
+                    document["nodes"][2]["mesh"] = 0
+                    for key in ("meshes", "buffers", "bufferViews", "accessors"):
+                        document[key] = mesh[key]
+                    document["buffers"][0]["uri"] = "missing.bin"
+                    write_asset(path, document)
+                    stage = Usd.Stage.Open(str(path))
+                    self.assertTrue(stage.GetPrimAtPath("/Asset/geo/Node_0"))
+                    self.assertFalse(stage.GetPrimAtPath("/Asset/geo/Node_2"))
+
+    def test_external_buffer_symlink_escape_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            asset_dir = root / "asset"
+            asset_dir.mkdir()
+            document, binary = mesh_document("glb")
+            outside = root / "outside"
+            outside.mkdir()
+            (outside / "buffer.bin").write_bytes(binary)
+            link = asset_dir / "link"
+            try:
+                link.symlink_to(outside, target_is_directory=True)
+            except OSError as error:
+                if sys.platform != "win32":
+                    self.skipTest(f"directory symlinks unavailable: {error}")
+                result = subprocess.run(
+                    ["cmd", "/c", "mklink", "/J", str(link), str(outside)],
+                    capture_output=True, text=True, check=False,
+                )
+                if result.returncode:
+                    self.skipTest(f"directory links unavailable: {result.stderr}")
+            document["buffers"][0]["uri"] = "link/buffer.bin"
+            path = asset_dir / "asset.gltf"
+            write_asset(path, document)
+            with self.assertRaisesRegex(Tf.ErrorException, "escapes the source directory"):
+                Usd.Stage.Open(str(path))
 
     def test_flat_normals_and_negative_scale(self):
         with tempfile.TemporaryDirectory() as directory:

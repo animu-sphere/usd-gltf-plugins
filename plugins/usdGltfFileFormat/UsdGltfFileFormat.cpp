@@ -1,5 +1,6 @@
 #include "parse.h"
 #include "scene.h"
+#include "externalBuffer.h"
 
 #include "pxr/pxr.h"
 #include "pxr/base/tf/diagnostic.h"
@@ -55,7 +56,12 @@ public:
                              fastgltf::getErrorMessage(asset.error()).data());
             return false;
         }
-        auto converted = gltfUsd::ConvertScene(asset.get());
+        ExternalBufferLoader loader(path);
+        auto converted = gltfUsd::ConvertScene(
+            asset.get(), [&loader](const fastgltf::Buffer& buffer,
+                                   std::span<const std::byte>& data, std::string& error) {
+                return loader.Load(buffer, data, error);
+            });
         if (!converted) {
             return false;
         }

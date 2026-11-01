@@ -3,6 +3,7 @@
 #include <fastgltf/types.hpp>
 
 #include <cstddef>
+#include <functional>
 #include <span>
 #include <string>
 
@@ -14,10 +15,14 @@ struct AccessorData {
     std::size_t stride;
 };
 
+using BufferLoader = std::function<bool(const fastgltf::Buffer&,
+                                        std::span<const std::byte>&, std::string&)>;
+
 [[nodiscard]] bool GetAccessorData(const fastgltf::Asset& asset, std::size_t index,
                                    fastgltf::AccessorType type,
                                    fastgltf::ComponentType componentType,
                                    std::size_t elementSize, bool vertex,
-                                   AccessorData& result, std::string& error);
+                                   AccessorData& result, std::string& error,
+                                   const BufferLoader& loadBuffer = {});
 
 } // namespace gltfCore

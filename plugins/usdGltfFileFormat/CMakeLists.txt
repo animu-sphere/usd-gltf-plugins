@@ -65,11 +65,11 @@ target_include_directories(usd_gltf_usd PUBLIC
 target_link_libraries(usd_gltf_usd PUBLIC usd_gltf_core)
 set_target_properties(usd_gltf_usd PROPERTIES POSITION_INDEPENDENT_CODE ON CXX_EXTENSIONS OFF)
 
-add_library(UsdGltfFileFormat SHARED UsdGltfFileFormat.cpp)
+add_library(UsdGltfFileFormat SHARED UsdGltfFileFormat.cpp externalBuffer.cpp)
 target_compile_features(UsdGltfFileFormat PRIVATE cxx_std_20)
 set_target_properties(UsdGltfFileFormat PROPERTIES CXX_EXTENSIONS OFF)
 target_include_directories(UsdGltfFileFormat PRIVATE ${PXR_INCLUDE_DIRS})
-target_link_libraries(UsdGltfFileFormat PRIVATE usd_gltf_usd)
+target_link_libraries(UsdGltfFileFormat PRIVATE usd_gltf_usd simdjson::simdjson)
 if(TARGET usd_ms)
     target_link_libraries(usd_gltf_usd PUBLIC usd_ms)
 elseif(TARGET usdGeom AND TARGET usd AND TARGET sdf AND TARGET ar AND TARGET tf)

@@ -33,11 +33,11 @@ std::uint32_t readUnsigned(const std::byte* data, std::size_t size)
 }
 
 bool readVectors(const fastgltf::Asset& asset, std::size_t index, VtVec3fArray& values,
-                 std::string& error)
+                 std::string& error, const gltfCore::BufferLoader& loadBuffer)
 {
     gltfCore::AccessorData data;
     if (!gltfCore::GetAccessorData(asset, index, fastgltf::AccessorType::Vec3,
-                                   fastgltf::ComponentType::Float, 12, true, data, error)) {
+                                   fastgltf::ComponentType::Float, 12, true, data, error, loadBuffer)) {
         return false;
     }
     if (data.count > std::size_t(std::numeric_limits<int>::max())) {
@@ -60,7 +60,7 @@ bool readVectors(const fastgltf::Asset& asset, std::size_t index, VtVec3fArray& 
 }
 
 bool readIndices(const fastgltf::Asset& asset, std::size_t index, std::size_t pointCount,
-                 VtIntArray& values, std::string& error)
+                 VtIntArray& values, std::string& error, const gltfCore::BufferLoader& loadBuffer)
 {
     if (index >= asset.accessors.size()) {
         error = "index accessor is out of range";
@@ -78,7 +78,7 @@ bool readIndices(const fastgltf::Asset& asset, std::size_t index, std::size_t po
     }
     gltfCore::AccessorData data;
     if (!gltfCore::GetAccessorData(asset, index, fastgltf::AccessorType::Scalar,
-                                   componentType, size, false, data, error)) {
+                                   componentType, size, false, data, error, loadBuffer)) {
         return false;
     }
     if (data.count > std::size_t(std::numeric_limits<int>::max()) || data.count % 3 != 0) {
@@ -107,7 +107,8 @@ bool setAttribute(const SdfPrimSpecHandle& prim, const char* name,
 }
 
 bool authorPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& primitive,
-                     const SdfPrimSpecHandle& parent, std::size_t index, std::string& error)
+                     const SdfPrimSpecHandle& parent, std::size_t index, std::string& error,
+                     const gltfCore::BufferLoader& loadBuffer)
 {
     if (primitive.type != fastgltf::PrimitiveType::Triangles || primitive.materialIndex ||
         !primitive.targets.empty() || primitive.dracoCompression || !primitive.mappings.empty()) {
@@ -131,11 +132,11 @@ bool authorPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& pr
         return false;
     }
     VtVec3fArray points;
-    if (!readVectors(asset, position->accessorIndex, points, error)) {
+    if (!readVectors(asset, position->accessorIndex, points, error, loadBuffer)) {
         return false;
     }
     VtVec3fArray normals;
-    if (normal && (!readVectors(asset, normal->accessorIndex, normals, error) ||
+    if (normal && (!readVectors(asset, normal->accessorIndex, normals, error, loadBuffer) ||
                    normals.size() != points.size())) {
         if (error.empty()) {
             error = "normal and position counts differ";
@@ -144,7 +145,7 @@ bool authorPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& pr
     }
     VtIntArray indices;
     if (primitive.indicesAccessor) {
-        if (!readIndices(asset, *primitive.indicesAccessor, points.size(), indices, error)) {
+        if (!readIndices(asset, *primitive.indicesAccessor, points.size(), indices, error, loadBuffer)) {
             return false;
         }
     } else {
@@ -193,7 +194,7 @@ bool authorPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& pr
 } // namespace
 
 bool AuthorMesh(const fastgltf::Asset& asset, std::size_t meshIndex,
-                const pxr::SdfPrimSpecHandle& parent)
+                const pxr::SdfPrimSpecHandle& parent, const gltfCore::BufferLoader& loadBuffer)
 {
     if (meshIndex >= asset.meshes.size()) {
         TF_RUNTIME_ERROR("glTF mesh index %zu is out of range", meshIndex);
@@ -215,7 +216,7 @@ bool AuthorMesh(const fastgltf::Asset& asset, std::size_t meshIndex,
     }
     for (std::size_t i = 0; i < source.primitives.size(); ++i) {
         std::string error;
-        if (!authorPrimitive(asset, source.primitives[i], group, i, error)) {
+        if (!authorPrimitive(asset, source.primitives[i], group, i, error, loadBuffer)) {
             TF_RUNTIME_ERROR("glTF mesh %zu primitive %zu: %s", meshIndex, i, error.c_str());
             return false;
         }

@@ -62,7 +62,8 @@ bool nodeMatrix(const fastgltf::Node& node, GfMatrix4d& result)
 
 } // namespace
 
-pxr::SdfLayerRefPtr ConvertScene(const fastgltf::Asset& asset)
+pxr::SdfLayerRefPtr ConvertScene(const fastgltf::Asset& asset,
+                                 const gltfCore::BufferLoader& loadBuffer)
 {
     using namespace pxr;
     const auto selection = gltfCore::SelectScene(asset);
@@ -150,7 +151,7 @@ pxr::SdfLayerRefPtr ConvertScene(const fastgltf::Asset& asset)
             TF_RUNTIME_ERROR("Could not author glTF node %zu transform", index);
             return {};
         }
-        if (node.meshIndex && !AuthorMesh(asset, *node.meshIndex, xform)) {
+        if (node.meshIndex && !AuthorMesh(asset, *node.meshIndex, xform, loadBuffer)) {
             return {};
         }
         for (auto it = node.children.rbegin(); it != node.children.rend(); ++it) {
