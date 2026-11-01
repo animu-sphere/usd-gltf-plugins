@@ -2,6 +2,7 @@
 
 #include "accessor.h"
 
+#include "pxr/base/gf/vec2f.h"
 #include "pxr/base/gf/vec3f.h"
 #include "pxr/base/tf/diagnostic.h"
 #include "pxr/base/vt/array.h"
@@ -10,11 +11,16 @@
 #include "pxr/usd/sdf/schema.h"
 #include "pxr/usd/sdf/types.h"
 
+#include <algorithm>
 #include <bit>
+#include <charconv>
 #include <cmath>
 #include <cstdint>
 #include <limits>
 #include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
 
 namespace gltfUsd {
 namespace {
@@ -54,6 +60,50 @@ bool readVectors(const fastgltf::Asset& asset, std::size_t index, VtVec3fArray& 
                 return false;
             }
             values[i][component] = value;
+        }
+    }
+    return true;
+}
+
+bool readTexcoords(const fastgltf::Asset& asset, std::size_t index, VtVec2fArray& values,
+                   std::string& error, const gltfCore::BufferLoader& loadBuffer)
+{
+    if (index >= asset.accessors.size()) {
+        error = "texture coordinate accessor index is out of range";
+        return false;
+    }
+    const auto type = asset.accessors[index].componentType;
+    std::size_t size;
+    switch (type) {
+    case fastgltf::ComponentType::Float: size = 4; break;
+    case fastgltf::ComponentType::UnsignedByte: size = 1; break;
+    case fastgltf::ComponentType::UnsignedShort: size = 2; break;
+    default:
+        error = "texture coordinate accessor has an unsupported component type";
+        return false;
+    }
+    gltfCore::AccessorData data;
+    if (!gltfCore::GetAccessorData(asset, index, fastgltf::AccessorType::Vec2,
+                                   type, size * 2, true, data, error, loadBuffer,
+                                   type != fastgltf::ComponentType::Float)) {
+        return false;
+    }
+    if (data.count > std::size_t(std::numeric_limits<int>::max())) {
+        error = "texture coordinate count exceeds USD's index range";
+        return false;
+    }
+    values.resize(data.count);
+    for (std::size_t i = 0; i < data.count; ++i) {
+        for (std::size_t component = 0; component < 2; ++component) {
+            const auto bits = readUnsigned(data.bytes.data() + i * data.stride + component * size, size);
+            const float value = type == fastgltf::ComponentType::Float
+                ? std::bit_cast<float>(bits)
+                : float(bits) / float(size == 1 ? 255 : 65535);
+            if (!std::isfinite(value)) {
+                error = "texture coordinate contains a non-finite value";
+                return false;
+            }
+            values[i][component] = component == 0 ? value : 1.0f - value;
         }
     }
     return true;
@@ -117,11 +167,22 @@ bool authorPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& pr
     }
     const fastgltf::Attribute* position = nullptr;
     const fastgltf::Attribute* normal = nullptr;
+    std::vector<std::pair<std::size_t, const fastgltf::Attribute*>> texcoords;
     for (const auto& attribute : primitive.attributes) {
         if (attribute.name == "POSITION" && !position) {
             position = &attribute;
         } else if (attribute.name == "NORMAL" && !normal) {
             normal = &attribute;
+        } else if (attribute.name.starts_with("TEXCOORD_")) {
+            const auto suffix = std::string_view(attribute.name).substr(9);
+            std::size_t set = 0;
+            const auto parsed = std::from_chars(suffix.data(), suffix.data() + suffix.size(), set);
+            if (suffix.empty() || (suffix.size() > 1 && suffix[0] == '0') ||
+                parsed.ec != std::errc{} || parsed.ptr != suffix.data() + suffix.size()) {
+                error = "invalid texture coordinate attribute: " + attribute.name;
+                return false;
+            }
+            texcoords.emplace_back(set, &attribute);
         } else {
             error = "unsupported or repeated vertex attribute: " + attribute.name;
             return false;
@@ -130,6 +191,14 @@ bool authorPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& pr
     if (!position) {
         error = "primitive has no POSITION attribute";
         return false;
+    }
+    std::sort(texcoords.begin(), texcoords.end(),
+              [](const auto& a, const auto& b) { return a.first < b.first; });
+    for (std::size_t i = 0; i < texcoords.size(); ++i) {
+        if (texcoords[i].first != i) {
+            error = "texture coordinate sets must start at zero and be consecutive";
+            return false;
+        }
     }
     VtVec3fArray points;
     if (!readVectors(asset, position->accessorIndex, points, error, loadBuffer)) {
@@ -142,6 +211,16 @@ bool authorPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& pr
             error = "normal and position counts differ";
         }
         return false;
+    }
+    std::vector<VtVec2fArray> uvSets(texcoords.size());
+    for (std::size_t i = 0; i < texcoords.size(); ++i) {
+        if (!readTexcoords(asset, texcoords[i].second->accessorIndex, uvSets[i], error, loadBuffer)) {
+            return false;
+        }
+        if (uvSets[i].size() != points.size()) {
+            error = "texture coordinate and position counts differ";
+            return false;
+        }
     }
     VtIntArray indices;
     if (primitive.indicesAccessor) {
@@ -188,6 +267,16 @@ bool authorPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& pr
         return false;
     }
     attr->SetInfo(TfToken("interpolation"), VtValue(TfToken(normal ? "vertex" : "uniform")));
+    for (std::size_t i = 0; i < uvSets.size(); ++i) {
+        const auto name = i == 0 ? std::string("primvars:st")
+                                 : "primvars:st" + std::to_string(i);
+        const auto uv = SdfAttributeSpec::New(mesh, name, SdfValueTypeNames->TexCoord2fArray);
+        if (!uv || !uv->SetDefaultValue(VtValue(uvSets[i]))) {
+            error = "could not author USD texture coordinates";
+            return false;
+        }
+        uv->SetInfo(TfToken("interpolation"), VtValue(TfToken("vertex")));
+    }
     return true;
 }
 
