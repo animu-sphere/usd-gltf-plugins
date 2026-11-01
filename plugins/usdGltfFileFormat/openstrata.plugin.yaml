@@ -1,0 +1,16 @@
+manifest:
+  schema: openstrata.plugin/v1alpha1
+plugin:
+  name: usdGltfFileFormat
+  version: 0.1.0
+  kind: usd-fileformat
+runtime:
+  openusd: "==26.08"
+  cxx_abi: inherit
+provides:
+  - usd-fileformat:gltf
+  - usd-fileformat:glb
+requires:
+  capabilities: [usd-stage-read]
+usd:
+  plug_info: plugin/resources/usdGltfFileFormat/plugInfo.json

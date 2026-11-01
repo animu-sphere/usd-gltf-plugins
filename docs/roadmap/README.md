@@ -43,3 +43,7 @@ decisions in implementation or support claims:
 
 See the [capability matrix](../reference/CAPABILITY_MATRIX.md) for actual
 implementation status.
+
+Phase 0 has a locally verified Windows workspace build and registration test.
+The generated CI has not run, and fastgltf integration remains outstanding;
+the phase is not complete.
