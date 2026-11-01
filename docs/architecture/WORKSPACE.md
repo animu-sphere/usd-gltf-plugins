@@ -38,7 +38,7 @@ established.
 | --- | --- | --- |
 | `gltfCore` | Parse using fastgltf; safely access glTF data, URIs and buffers | Does not create USD prims; avoid copying all fastgltf data into another model unnecessarily |
 | `gltfTexture` | Resolve images, decode/convert KTX2, handle color-space information and caching | Does not build USD material networks |
-| `gltfUsd` | Translate scene, mesh, transforms, materials and bindings | Does not register the plugin |
+| `gltfUsd` | Translate scene, mesh, transforms, materials and bindings; currently implements node-only conversion | Does not register the plugin |
 | `usdGltfFileFormat` | Register `SdfFileFormat`, invoke import and propagate diagnostics | Does not own the conversion implementation |
 | `gltfConvert` | If needed, call the same conversion library from a CLI | Does not implement a separate conversion pipeline |
 

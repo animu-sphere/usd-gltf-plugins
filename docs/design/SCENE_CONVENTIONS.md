@@ -1,6 +1,7 @@
 # Scene conventions
 
-Status: **adopted target**, not implemented.
+Status: **partially implemented** for selected scenes with nodes and transforms
+but no mesh, skin, camera or animation. The structure below is the target.
 
 ## Structure and names
 
@@ -32,8 +33,8 @@ their placement must be decided when UsdSkel and animation are designed.
 - Select the declared default scene. If no default is declared, select the
   first scene and emit a diagnostic; if no scenes exist or the default index
   is invalid, report an error and fail. Never merge scenes. The selection
-  helper is implemented and tested, but the file-format importer does not yet
-  invoke it; see the [decision record](../architecture/SCENE_SELECTION.md).
+  helper is connected to the file-format importer; see the
+  [decision record](../architecture/SCENE_SELECTION.md).
 - Test negative scales, transform parity, triangle winding and normals.
 - Define mesh sharing and placement of animated nodes as part of later work.
 - Define behavior for unsupported extensions, particularly required ones,
