@@ -1,7 +1,8 @@
 # Scene conventions
 
 Status: **partially implemented** for selected scenes, nodes, transforms and
-an embedded triangle-mesh subset. Skin, camera and animation are not supported.
+a triangle-mesh subset with embedded or local external buffers. Skin, camera
+and animation are not supported.
 
 ## Structure and names
 
@@ -31,11 +32,12 @@ their placement must be decided when UsdSkel and animation are designed.
 
 The implemented mesh subset accepts indexed or non-indexed triangle
 primitives with float POSITION and optional float NORMAL accessors in embedded
-buffers. Accessors may be interleaved but not sparse. Indexed data uses glTF
-unsigned byte, unsigned short or unsigned int indices. USD subdivision is
+or local external buffers. Accessors may be interleaved but not sparse.
+Indexed data uses glTF unsigned byte, unsigned short or unsigned int indices. USD subdivision is
 disabled and winding remains right-handed; absent normals are generated per
 face for flat shading. Unsupported attributes, materials, other primitive
-modes, morphs, compression and external buffers fail with a diagnostic.
+modes, morphs and compression fail with a diagnostic. External buffer URI
+restrictions are described in the [import pipeline](../architecture/IMPORT_PIPELINE.md).
 UV conversion, material binding and a general mesh sharing policy remain open.
 
 ## Semantic differences requiring validation

@@ -1,7 +1,8 @@
 # Import pipeline
 
 Status: **early implementation**. The importer opens selected nodes, transforms
-and a limited embedded triangle-mesh subset; other asset content is not implemented.
+and a limited triangle-mesh subset with embedded or local external buffers;
+other asset content is not implemented.
 
 ```text
 .gltf / .glb
@@ -24,18 +25,39 @@ integration tests. Image assets may require deliberate persistent storage;
 their lifecycle and portability are separate unresolved requirements in
 [TEXTURES](../design/TEXTURES.md).
 
-Resolve relative external buffers and image URIs against the source asset;
-also handle GLB embedded data. Define a safe URI policy. Reject unsupported
+Resolve external buffer URIs as described below; image URI handling remains
+open. Reject unsupported
 required extensions rather than silently presenting an incorrect scene;
 define the diagnostic policy for unsupported optional extensions. Malformed
 or unsafe data must produce explicit diagnostics and failure rather than a
 success result containing an unintentionally incomplete stage.
 
 Scene selection is defined in [SCENE_CONVENTIONS](../design/SCENE_CONVENTIONS.md).
-The importer currently supports embedded triangle meshes as described in
+The importer currently supports triangle meshes as described in
 [scene conventions](../design/SCENE_CONVENTIONS.md). It rejects unsupported
 mesh content, skins, cameras, lights, morph data and animations rather than
 silently dropping them. Unsupported optional extensions are reported as
-warnings; required extensions are rejected by fastgltf. External buffers and
-images are not yet loaded or resolved. See also the
+warnings; required extensions are rejected by fastgltf. Images are not yet
+loaded or resolved. See also the
 [open decisions](../roadmap/README.md#decisions-to-verify).
+
+## External buffer policy
+
+For buffers used by the selected scene, `.gltf` and `.glb` imports accept
+relative, UTF-8 filesystem paths beneath the source file's directory. URI
+percent escapes are decoded once and must be valid; decoded parent-directory
+components, absolute paths, backslashes, colons, control characters, schemes,
+authorities, queries and fragments are rejected. The source directory and
+target are canonicalized, and links whose target escapes the source directory
+are rejected. The target must be a regular file at least as long as its
+declared `byteLength`. Only that many bytes are read and cached for the
+duration of conversion; failed reads prevent layer publication. Unused
+buffers in other scenes are not loaded.
+
+External buffer resolution currently requires a local source and filesystem;
+it does not use USD's asset resolver to open the buffer. This deliberately
+excludes remote assets, resolver-managed resources and shared buffers in
+parent directories. Canonicalization and file opening are separate operations:
+the check is not a security sandbox against concurrent changes to the
+filesystem. Assets must not be imported from directories writable by an
+untrusted concurrent actor. Image URI policy remains a separate decision.
