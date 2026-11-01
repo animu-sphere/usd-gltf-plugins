@@ -1506,6 +1506,218 @@ class FileFormatTest(unittest.TestCase):
                             composed, "/Root/mtl/Material_0/preview/baseColorTexture")
                         self.assertEqual(asset_bytes(texture.GetInput("file").Get().resolvedPath), PNG)
 
+    def test_metallic_roughness_occlusion_and_emissive_networks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            for extension in ("gltf", "glb"):
+                with self.subTest(extension=extension):
+                    path = root / ("pbr." + extension)
+                    document, binary = textured_document(extension, None, PNG)
+                    document["samplers"] = [{"wrapS": 33648, "wrapT": 33071}]
+                    document["textures"].append({"source": 0, "sampler": 0})
+                    material = document["materials"][0]
+                    material["pbrMetallicRoughness"].update(
+                        metallicFactor=0.5, roughnessFactor=0.25,
+                        metallicRoughnessTexture={"index": 1, "texCoord": 1})
+                    material["occlusionTexture"] = {"index": 0, "texCoord": 2, "strength": 0.25}
+                    material["emissiveTexture"] = {"index": 0, "texCoord": 1}
+                    material["emissiveFactor"] = [0.5, 0.25, 1]
+                    write_asset(path, document, binary)
+                    stage = Usd.Stage.Open(str(path))
+                    usd_material = UsdShade.Material.Get(stage, "/Asset/mtl/Material_0")
+                    expected = f"./{path.name}[images/0.png]"
+
+                    def source_of(shader, name):
+                        source, output, _ = shader.GetInput(name).GetConnectedSource()
+                        return UsdShade.Shader(source.GetPrim()), output
+
+                    preview, _, _ = usd_material.ComputeSurfaceSource()
+                    metallic, metallic_output = source_of(preview, "metallic")
+                    roughness, roughness_output = source_of(preview, "roughness")
+                    self.assertEqual(metallic.GetPath(), roughness.GetPath())
+                    self.assertEqual(metallic.GetPath().name, "metallicRoughnessTexture")
+                    self.assertEqual((roughness_output, metallic_output), ("g", "b"))
+                    self.assertEqual(metallic.GetInput("sourceColorSpace").Get(), "raw")
+                    self.assertEqual(metallic.GetInput("scale").Get(), Gf.Vec4f(1, 0.25, 0.5, 1))
+                    self.assertFalse(metallic.GetInput("bias"))
+                    self.assertEqual(metallic.GetInput("wrapS").Get(), "mirror")
+                    self.assertEqual(metallic.GetInput("wrapT").Get(), "clamp")
+                    self.assertEqual(source_of(metallic, "st")[0].GetInput("varname").Get(), "st1")
+
+                    occlusion, occlusion_output = source_of(preview, "occlusion")
+                    self.assertEqual(occlusion.GetPath().name, "occlusionTexture")
+                    self.assertEqual(occlusion_output, "r")
+                    self.assertEqual(occlusion.GetInput("sourceColorSpace").Get(), "raw")
+                    self.assertEqual(occlusion.GetInput("scale").Get(), Gf.Vec4f(0.25))
+                    self.assertEqual(occlusion.GetInput("bias").Get(), Gf.Vec4f(0.75))
+                    self.assertEqual(occlusion.GetInput("wrapS").Get(), "repeat")
+                    self.assertEqual(source_of(occlusion, "st")[0].GetInput("varname").Get(), "st2")
+
+                    emissive, emissive_output = source_of(preview, "emissiveColor")
+                    self.assertEqual(emissive.GetPath().name, "emissiveTexture")
+                    self.assertEqual(emissive_output, "rgb")
+                    self.assertEqual(emissive.GetInput("sourceColorSpace").Get(), "sRGB")
+                    self.assertEqual(emissive.GetInput("scale").Get(), Gf.Vec4f(0.5, 0.25, 1, 1))
+                    # Sampling one UV set twice reads it through one node.
+                    self.assertEqual(source_of(emissive, "st")[0].GetPath(), source_of(metallic, "st")[0].GetPath())
+
+                    base, _ = source_of(preview, "diffuseColor")
+                    self.assertEqual(base.GetInput("sourceColorSpace").Get(), "sRGB")
+                    self.assertEqual(source_of(base, "st")[0].GetInput("varname").Get(), "st")
+
+                    mtlx, _, _ = usd_material.ComputeSurfaceSource("mtlx")
+                    metallic_factor, _ = source_of(mtlx, "metallic")
+                    self.assertEqual(metallic_factor.GetPath().name, "metallicFactor")
+                    self.assertEqual(metallic_factor.GetIdAttr().Get(), "ND_multiply_float")
+                    self.assertAlmostEqual(metallic_factor.GetInput("in2").Get(), 0.5)
+                    metallic_channel, _ = source_of(metallic_factor, "in1")
+                    self.assertEqual(metallic_channel.GetIdAttr().Get(), "ND_extract_vector4")
+                    self.assertEqual(metallic_channel.GetInput("index").Get(), 2)
+                    roughness_factor, _ = source_of(mtlx, "roughness")
+                    self.assertAlmostEqual(roughness_factor.GetInput("in2").Get(), 0.25)
+                    roughness_channel, _ = source_of(roughness_factor, "in1")
+                    self.assertEqual(roughness_channel.GetInput("index").Get(), 1)
+                    image, _ = source_of(roughness_channel, "in")
+                    self.assertEqual(image.GetPath().name, "metallicRoughnessImage")
+                    self.assertEqual(image.GetIdAttr().Get(), "ND_image_vector4")
+                    self.assertEqual(image.GetPath(), source_of(metallic_channel, "in")[0].GetPath())
+                    self.assertFalse(image.GetInput("file").GetAttr().HasColorSpace())
+                    self.assertEqual(image.GetInput("uaddressmode").Get(), "mirror")
+                    self.assertEqual(image.GetInput("vaddressmode").Get(), "clamp")
+                    self.assertEqual(source_of(image, "texcoord")[0].GetInput("geomprop").Get(), "st1")
+
+                    mix, _ = source_of(mtlx, "occlusion")
+                    self.assertEqual(mix.GetIdAttr().Get(), "ND_mix_float")
+                    self.assertAlmostEqual(mix.GetInput("bg").Get(), 1)
+                    self.assertAlmostEqual(mix.GetInput("mix").Get(), 0.25)
+                    occlusion_channel, _ = source_of(mix, "fg")
+                    self.assertEqual(occlusion_channel.GetInput("index").Get(), 0)
+                    occlusion_image, _ = source_of(occlusion_channel, "in")
+                    self.assertEqual(occlusion_image.GetIdAttr().Get(), "ND_image_vector4")
+                    self.assertFalse(occlusion_image.GetInput("file").GetAttr().HasColorSpace())
+                    self.assertEqual(source_of(occlusion_image, "texcoord")[0].GetInput("geomprop").Get(), "st2")
+
+                    emissive_factor, _ = source_of(mtlx, "emissive")
+                    self.assertEqual(emissive_factor.GetIdAttr().Get(), "ND_multiply_color3")
+                    self.assertEqual(emissive_factor.GetInput("in2").Get(), Gf.Vec3f(0.5, 0.25, 1))
+                    emissive_rgb, _ = source_of(emissive_factor, "in1")
+                    self.assertEqual(emissive_rgb.GetIdAttr().Get(), "ND_convert_color4_color3")
+                    emissive_image, _ = source_of(emissive_rgb, "in")
+                    self.assertEqual(emissive_image.GetIdAttr().Get(), "ND_image_color4")
+                    self.assertEqual(emissive_image.GetInput("file").GetAttr().GetColorSpace(), "srgb_texture")
+
+                    for shader in (metallic, occlusion, emissive, image, occlusion_image, emissive_image):
+                        asset = shader.GetInput("file").Get()
+                        self.assertEqual(asset.path, expected)
+                        self.assertEqual(asset_bytes(asset.resolvedPath), PNG)
+
+                    stage.GetRootLayer().Reload(True)
+                    self.assertEqual(asset_bytes(metallic.GetInput("file").Get().resolvedPath), PNG)
+
+    def test_pbr_textures_without_terms_they_do_not_need(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            path = root / "pbr.gltf"
+            document, binary = textured_document("gltf", None, PNG)
+            material = document["materials"][0]
+            material["pbrMetallicRoughness"] = {"metallicRoughnessTexture": {"index": 0}}
+            material["occlusionTexture"] = {"index": 0}
+            # The default emissive factor is black, and a texture does not change that.
+            material["emissiveTexture"] = {"index": 0}
+            document["materials"].append({})
+            document["meshes"][0]["primitives"][1]["material"] = 1
+            write_asset(path, document, binary)
+            stage = Usd.Stage.Open(str(path))
+            usd_material = UsdShade.Material.Get(stage, "/Asset/mtl/Material_0")
+
+            preview, _, _ = usd_material.ComputeSurfaceSource()
+            self.assertFalse(preview.GetInput("diffuseColor").HasConnectedSource())
+            occlusion = UsdShade.Shader(preview.GetInput("occlusion").GetConnectedSource()[0].GetPrim())
+            self.assertEqual(occlusion.GetInput("scale").Get(), Gf.Vec4f(1))
+            self.assertFalse(occlusion.GetInput("bias"))
+            emissive = UsdShade.Shader(preview.GetInput("emissiveColor").GetConnectedSource()[0].GetPrim())
+            self.assertEqual(emissive.GetInput("scale").Get(), Gf.Vec4f(0, 0, 0, 1))
+
+            mtlx, _, _ = usd_material.ComputeSurfaceSource("mtlx")
+            self.assertEqual(mtlx.GetInput("metallic").GetConnectedSource()[0].GetPath().name, "metallicChannel")
+            self.assertEqual(mtlx.GetInput("roughness").GetConnectedSource()[0].GetPath().name, "roughnessChannel")
+            self.assertEqual(mtlx.GetInput("occlusion").GetConnectedSource()[0].GetPath().name, "occlusionChannel")
+            self.assertEqual(mtlx.GetInput("emissive").GetConnectedSource()[0].GetPath().name, "emissiveFactor")
+
+            # A material without these textures authors no occlusion input.
+            plain = UsdShade.Material.Get(stage, "/Asset/mtl/Material_1")
+            self.assertFalse(plain.ComputeSurfaceSource()[0].GetInput("occlusion"))
+            self.assertFalse(plain.ComputeSurfaceSource("mtlx")[0].GetInput("occlusion"))
+
+    def test_pbr_textures_view_fixture(self):
+        path = pathlib.Path(__file__).parent / "fixtures" / "pbr_textures.gltf"
+        stage = Usd.Stage.Open(str(path))
+        expected = ("metallicRoughness",) * 2 + ("occlusion",) * 2 + ("emissive",) * 2
+        for primitive, slot in enumerate(expected):
+            mesh = stage.GetPrimAtPath(f"/Asset/geo/Node_0/Mesh_0/Primitive_{primitive}")
+            material, _ = UsdShade.MaterialBindingAPI(mesh).ComputeBoundMaterial()
+            texture = UsdShade.Shader.Get(
+                stage, material.GetPath().AppendPath(Sdf.Path(f"preview/{slot}Texture")))
+            image = UsdShade.Shader.Get(
+                stage, material.GetPath().AppendPath(Sdf.Path(f"mtlx/{slot}Image")))
+            for shader in (texture, image):
+                asset = shader.GetInput("file").Get()
+                self.assertTrue(asset.resolvedPath, asset.path)
+                self.assertTrue(asset_bytes(asset.resolvedPath))
+
+    def test_pbr_texture_failures_preserve_layer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            for extension in ("gltf", "glb"):
+                path = root / ("asset." + extension)
+
+                def pbr_document():
+                    document, binary = uv_document(extension)
+                    document["images"] = [{"uri": "data:image/png;base64," + base64.b64encode(PNG).decode()},
+                                          {"uri": "data:image/png;base64,AAAAAAAAAAAA"}]
+                    document["textures"] = [{"source": 0}, {"source": 1}]
+                    document["materials"] = [{
+                        "pbrMetallicRoughness": {"metallicRoughnessTexture": {"index": 0}},
+                        "occlusionTexture": {"index": 0},
+                        "emissiveTexture": {"index": 0},
+                    }]
+                    document["meshes"][0]["primitives"][0]["material"] = 0
+                    return document, binary
+
+                document, binary = pbr_document()
+                write_asset(path, document, binary)
+                stage = Usd.Stage.Open(str(path))
+                layer = stage.GetRootLayer()
+                before = layer_text(layer)
+
+                def slots(material):
+                    return (("metallic", material["pbrMetallicRoughness"]["metallicRoughnessTexture"]),
+                            ("occlusion", material["occlusionTexture"]),
+                            ("emissive", material["emissiveTexture"]))
+
+                for index in range(3):
+                    name = slots(pbr_document()[0]["materials"][0])[index][0]
+                    for case, change, message in (
+                        ("uv set", {"texCoord": 3}, "texture coordinate set the primitive does not have"),
+                        ("corrupt image", {"index": 1}, "embedded image is not PNG or JPEG"),
+                    ):
+                        with self.subTest(extension=extension, slot=name, case=case):
+                            invalid, invalid_binary = pbr_document()
+                            slots(invalid["materials"][0])[index][1].update(change)
+                            write_asset(path, invalid, invalid_binary)
+                            with self.assertRaisesRegex(Tf.ErrorException, message):
+                                layer.Reload(True)
+                            self.assertEqual(layer_text(layer), before)
+
+                for strength in (-0.1, 1.1):
+                    with self.subTest(extension=extension, strength=strength):
+                        invalid, invalid_binary = pbr_document()
+                        invalid["materials"][0]["occlusionTexture"]["strength"] = strength
+                        write_asset(path, invalid, invalid_binary)
+                        with self.assertRaisesRegex(Tf.ErrorException, "occlusion strength"):
+                            layer.Reload(True)
+                        self.assertEqual(layer_text(layer), before)
+
     def test_package_resolver_rejects_invalid_entries(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
@@ -1656,10 +1868,10 @@ class FileFormatTest(unittest.TestCase):
                             message = "material .* factor is non-finite or out of range"
                         elif case == "alpha cutoff":
                             message = "material alpha cutoff is non-finite or negative"
-                        elif case == "base texture":
-                            message = "texture coordinate set the primitive does not have"
+                        elif case == "normal texture":
+                            message = "material normal textures are not supported"
                         else:
-                            message = "material textures other than base color are not supported"
+                            message = "texture coordinate set the primitive does not have"
                         with self.assertRaisesRegex(Tf.ErrorException, message):
                             layer.Reload(True)
                         self.assertEqual(layer_text(layer), before)

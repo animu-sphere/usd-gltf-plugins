@@ -18,6 +18,7 @@
 #include "pxr/usd/usdShade/shader.h"
 
 #include <cmath>
+#include <optional>
 #include <string>
 #include <type_traits>
 
@@ -61,6 +62,7 @@ struct PbrFactors
     float alphaCutoff;
     float metallic;
     float roughness;
+    float occlusionStrength;
     fastgltf::AlphaMode alphaMode;
 };
 
@@ -74,6 +76,7 @@ pbrFactors(const fastgltf::Material& source)
             float(source.alphaCutoff),
             float(pbr.metallicFactor),
             float(pbr.roughnessFactor),
+            source.occlusionTexture ? float(source.occlusionTexture->strength) : 1.0f,
             source.alphaMode};
 }
 
@@ -140,7 +143,7 @@ connectPreviewVertexColor(const UsdShadeNodeGraph& graph, UsdShadeShader& surfac
     return alpha && surface.GetInput(TfToken("opacity")).ConnectToSource(alpha);
 }
 
-// The base color image, with the primvar holding its coordinates.
+// An image, with the primvar holding its coordinates.
 struct TextureInput
 {
     std::string file;
@@ -148,6 +151,21 @@ struct TextureInput
     fastgltf::Wrap wrapS;
     fastgltf::Wrap wrapT;
 };
+
+struct MaterialTextures
+{
+    std::optional<TextureInput> baseColor;
+    std::optional<TextureInput> metallicRoughness;
+    std::optional<TextureInput> occlusion;
+    std::optional<TextureInput> emissive;
+};
+
+// Textures sharing a UV set share a reader: defining it again changes nothing.
+std::string
+texCoordReaderName(const TextureInput& texture)
+{
+    return texture.primvar + "Reader";
+}
 
 const char*
 previewWrap(fastgltf::Wrap wrap)
@@ -177,41 +195,98 @@ mtlxWrap(fastgltf::Wrap wrap)
     }
 }
 
-// UsdUVTexture's scale multiplies exactly as glTF's factor does.
-bool
-connectPreviewTexture(const UsdShadeNodeGraph& graph, UsdShadeShader& surface,
-                      const PbrFactors& factors, const TextureInput& texture)
+// UsdUVTexture computes texture * scale + bias, which expresses glTF's factors
+// and occlusion strength exactly.
+UsdShadeShader
+authorPreviewTexture(const UsdShadeNodeGraph& graph, const char* name, const TextureInput& texture,
+                     const char* colorSpace, const GfVec4f& scale, const GfVec4f& bias = GfVec4f(0))
 {
-    const auto st = authorPrimvarReader(graph, "texCoordReader", "UsdPrimvarReader_float2",
-                                        "varname", texture.primvar.c_str(), "fallback",
-                                        SdfValueTypeNames->Float2, GfVec2f(0), "result");
+    const auto st = authorPrimvarReader(
+        graph, texCoordReaderName(texture).c_str(), "UsdPrimvarReader_float2", "varname",
+        texture.primvar.c_str(), "fallback", SdfValueTypeNames->Float2, GfVec2f(0), "result");
     auto image = UsdShadeShader::Define(graph.GetPrim().GetStage(),
-                                        graph.GetPath().AppendChild(TfToken("baseColorTexture")));
+                                        graph.GetPath().AppendChild(TfToken(name)));
     const auto stInput =
         image ? image.CreateInput(TfToken("st"), SdfValueTypeNames->Float2) : UsdShadeInput();
     if (!st || !stInput || !image.CreateIdAttr().Set(TfToken("UsdUVTexture")) ||
         !stInput.ConnectToSource(st) ||
         !setInput(image, "file", SdfValueTypeNames->Asset, SdfAssetPath(texture.file)) ||
-        !setInput(image, "sourceColorSpace", SdfValueTypeNames->Token, TfToken("sRGB")) ||
+        !setInput(image, "sourceColorSpace", SdfValueTypeNames->Token, TfToken(colorSpace)) ||
         !setInput(image, "wrapS", SdfValueTypeNames->Token, TfToken(previewWrap(texture.wrapS))) ||
         !setInput(image, "wrapT", SdfValueTypeNames->Token, TfToken(previewWrap(texture.wrapT))) ||
-        !setInput(image, "scale", SdfValueTypeNames->Float4,
-                  GfVec4f(factors.baseColor[0], factors.baseColor[1], factors.baseColor[2],
-                          factors.alpha)))
+        !setInput(image, "scale", SdfValueTypeNames->Float4, scale) ||
+        (bias != GfVec4f(0) && !setInput(image, "bias", SdfValueTypeNames->Float4, bias)))
     {
-        return false;
+        return UsdShadeShader();
     }
-    const auto rgb = image.CreateOutput(TfToken("rgb"), SdfValueTypeNames->Float3);
-    if (!rgb || !surface.GetInput(TfToken("diffuseColor")).ConnectToSource(rgb))
-    {
-        return false;
-    }
-    if (!previewUsesOpacity(factors))
-    {
-        return true;
-    }
-    const auto a = image.CreateOutput(TfToken("a"), SdfValueTypeNames->Float);
-    return a && surface.GetInput(TfToken("opacity")).ConnectToSource(a);
+    return image;
+}
+
+bool
+connectPreviewOutput(UsdShadeShader& image, const char* output, const SdfValueTypeName& type,
+                     UsdShadeShader& surface, const char* input)
+{
+    const auto source = image.CreateOutput(TfToken(output), type);
+    return source && surface.GetInput(TfToken(input)).ConnectToSource(source);
+}
+
+bool
+connectPreviewBaseColor(const UsdShadeNodeGraph& graph, UsdShadeShader& surface,
+                        const PbrFactors& factors, const TextureInput& texture)
+{
+    auto image = authorPreviewTexture(
+        graph, "baseColorTexture", texture, "sRGB",
+        GfVec4f(factors.baseColor[0], factors.baseColor[1], factors.baseColor[2], factors.alpha));
+    return image &&
+           connectPreviewOutput(image, "rgb", SdfValueTypeNames->Float3, surface, "diffuseColor") &&
+           (!previewUsesOpacity(factors) ||
+            connectPreviewOutput(image, "a", SdfValueTypeNames->Float, surface, "opacity"));
+}
+
+bool
+connectPreviewMetallicRoughness(const UsdShadeNodeGraph& graph, UsdShadeShader& surface,
+                                const PbrFactors& factors, const TextureInput& texture)
+{
+    auto image = authorPreviewTexture(graph, "metallicRoughnessTexture", texture, "raw",
+                                      GfVec4f(1, factors.roughness, factors.metallic, 1));
+    return image &&
+           connectPreviewOutput(image, "g", SdfValueTypeNames->Float, surface, "roughness") &&
+           connectPreviewOutput(image, "b", SdfValueTypeNames->Float, surface, "metallic");
+}
+
+bool
+connectPreviewOcclusion(const UsdShadeNodeGraph& graph, UsdShadeShader& surface,
+                        const PbrFactors& factors, const TextureInput& texture)
+{
+    const float strength = factors.occlusionStrength;
+    auto image = authorPreviewTexture(graph, "occlusionTexture", texture, "raw", GfVec4f(strength),
+                                      GfVec4f(1 - strength));
+    return image && setInput(surface, "occlusion", SdfValueTypeNames->Float, 1.0f) &&
+           connectPreviewOutput(image, "r", SdfValueTypeNames->Float, surface, "occlusion");
+}
+
+bool
+connectPreviewEmissive(const UsdShadeNodeGraph& graph, UsdShadeShader& surface,
+                       const PbrFactors& factors, const TextureInput& texture)
+{
+    auto image = authorPreviewTexture(
+        graph, "emissiveTexture", texture, "sRGB",
+        GfVec4f(factors.emissive[0], factors.emissive[1], factors.emissive[2], 1));
+    return image &&
+           connectPreviewOutput(image, "rgb", SdfValueTypeNames->Float3, surface, "emissiveColor");
+}
+
+bool
+connectPreviewTextures(const UsdShadeNodeGraph& graph, UsdShadeShader& surface,
+                       const PbrFactors& factors, const MaterialTextures& textures)
+{
+    return (!textures.metallicRoughness ||
+            connectPreviewMetallicRoughness(graph, surface, factors,
+                                            *textures.metallicRoughness)) &&
+           (!textures.occlusion ||
+            connectPreviewOcclusion(graph, surface, factors, *textures.occlusion)) &&
+           (!textures.emissive ||
+            connectPreviewEmissive(graph, surface, factors, *textures.emissive));
 }
 
 UsdShadeShader
@@ -249,20 +324,23 @@ authorMtlxMultiply(const UsdShadeNodeGraph& graph, const char* name, const char*
     return multiply.CreateOutput(TfToken("out"), type);
 }
 
+// Non-color data is a vector image, which no color space transform applies to.
 UsdShadeOutput
-authorMtlxImage(const UsdShadeNodeGraph& graph, const TextureInput& texture)
+authorMtlxImage(const UsdShadeNodeGraph& graph, const char* name, const TextureInput& texture,
+                bool color)
 {
-    const auto st = authorPrimvarReader(graph, "texCoordReader", "ND_geompropvalue_vector2",
-                                        "geomprop", texture.primvar.c_str(), "default",
-                                        SdfValueTypeNames->Float2, GfVec2f(0), "out");
-    auto image = defineMtlxNode(graph, "baseColorImage", "ND_image_color4");
+    const auto st = authorPrimvarReader(
+        graph, texCoordReaderName(texture).c_str(), "ND_geompropvalue_vector2", "geomprop",
+        texture.primvar.c_str(), "default", SdfValueTypeNames->Float2, GfVec2f(0), "out");
+    const auto type = color ? SdfValueTypeNames->Color4f : SdfValueTypeNames->Float4;
+    auto image = defineMtlxNode(graph, name, color ? "ND_image_color4" : "ND_image_vector4");
     const auto stInput =
         image ? image.CreateInput(TfToken("texcoord"), SdfValueTypeNames->Float2) : UsdShadeInput();
     const auto file =
         image ? image.CreateInput(TfToken("file"), SdfValueTypeNames->Asset) : UsdShadeInput();
     if (!st || !stInput || !file || !stInput.ConnectToSource(st) ||
         !file.Set(SdfAssetPath(texture.file)) ||
-        !setInput(image, "default", SdfValueTypeNames->Color4f, GfVec4f(0, 0, 0, 1)) ||
+        !setInput(image, "default", type, GfVec4f(0, 0, 0, 1)) ||
         !setInput(image, "uaddressmode", SdfValueTypeNames->String,
                   std::string(mtlxWrap(texture.wrapS))) ||
         !setInput(image, "vaddressmode", SdfValueTypeNames->String,
@@ -270,8 +348,11 @@ authorMtlxImage(const UsdShadeNodeGraph& graph, const TextureInput& texture)
     {
         return UsdShadeOutput();
     }
-    file.GetAttr().SetColorSpace(TfToken("srgb_texture"));
-    return image.CreateOutput(TfToken("out"), SdfValueTypeNames->Color4f);
+    if (color)
+    {
+        file.GetAttr().SetColorSpace(TfToken("srgb_texture"));
+    }
+    return image.CreateOutput(TfToken("out"), type);
 }
 
 UsdShadeOutput
@@ -279,10 +360,25 @@ authorMtlxImageChannel(const UsdShadeNodeGraph& graph, const char* name, const c
                        const UsdShadeOutput& image, const SdfValueTypeName& type)
 {
     auto node = defineMtlxNode(graph, name, id);
-    const auto in =
-        node ? node.CreateInput(TfToken("in"), SdfValueTypeNames->Color4f) : UsdShadeInput();
+    const auto in = node ? node.CreateInput(TfToken("in"), image.GetTypeName()) : UsdShadeInput();
     return in && in.ConnectToSource(image) ? node.CreateOutput(TfToken("out"), type)
                                            : UsdShadeOutput();
+}
+
+UsdShadeOutput
+authorMtlxImageComponent(const UsdShadeNodeGraph& graph, const char* name,
+                         const UsdShadeOutput& image, int index)
+{
+    const bool color = image.GetTypeName() == SdfValueTypeNames->Color4f;
+    const auto output =
+        authorMtlxImageChannel(graph, name, color ? "ND_extract_color4" : "ND_extract_vector4",
+                               image, SdfValueTypeNames->Float);
+    if (!output)
+    {
+        return UsdShadeOutput();
+    }
+    UsdShadeShader extract(output.GetPrim());
+    return setInput(extract, "index", SdfValueTypeNames->Int, index) ? output : UsdShadeOutput();
 }
 
 // Connects texture * vertex value * factor, leaving out the terms that are absent.
@@ -325,7 +421,7 @@ connectMtlxInputs(const UsdShadeNodeGraph& graph, UsdShadeShader& surface,
     UsdShadeOutput imageAlpha;
     if (texture)
     {
-        const auto image = authorMtlxImage(graph, *texture);
+        const auto image = authorMtlxImage(graph, "baseColorImage", *texture, true);
         if (!image)
         {
             return false;
@@ -338,10 +434,8 @@ connectMtlxInputs(const UsdShadeNodeGraph& graph, UsdShadeShader& surface,
         }
         if (usesAlpha)
         {
-            imageAlpha = authorMtlxImageChannel(graph, "baseColorA", "ND_extract_color4", image,
-                                                SdfValueTypeNames->Float);
-            UsdShadeShader extract(imageAlpha.GetPrim());
-            if (!imageAlpha || !setInput(extract, "index", SdfValueTypeNames->Int, 3))
+            imageAlpha = authorMtlxImageComponent(graph, "baseColorA", image, 3);
+            if (!imageAlpha)
             {
                 return false;
             }
@@ -378,8 +472,81 @@ connectMtlxInputs(const UsdShadeNodeGraph& graph, UsdShadeShader& surface,
 }
 
 bool
+connectMtlxMetallicRoughness(const UsdShadeNodeGraph& graph, UsdShadeShader& surface,
+                             const PbrFactors& factors, const TextureInput& texture)
+{
+    const auto image = authorMtlxImage(graph, "metallicRoughnessImage", texture, false);
+    if (!image)
+    {
+        return false;
+    }
+    const auto roughness = authorMtlxImageComponent(graph, "roughnessChannel", image, 1);
+    const auto metallic = authorMtlxImageComponent(graph, "metallicChannel", image, 2);
+    return roughness && metallic &&
+           connectMtlxInput(graph, surface, "roughness", roughness, UsdShadeOutput(), nullptr,
+                            "roughnessFactor", "ND_multiply_float", SdfValueTypeNames->Float,
+                            factors.roughness) &&
+           connectMtlxInput(graph, surface, "metallic", metallic, UsdShadeOutput(), nullptr,
+                            "metallicFactor", "ND_multiply_float", SdfValueTypeNames->Float,
+                            factors.metallic);
+}
+
+// glTF's 1 + strength * (occlusion - 1) is a mix from 1 to the image.
+bool
+connectMtlxOcclusion(const UsdShadeNodeGraph& graph, UsdShadeShader& surface,
+                     const PbrFactors& factors, const TextureInput& texture)
+{
+    const auto image = authorMtlxImage(graph, "occlusionImage", texture, false);
+    auto source =
+        image ? authorMtlxImageComponent(graph, "occlusionChannel", image, 0) : UsdShadeOutput();
+    if (!source || !setInput(surface, "occlusion", SdfValueTypeNames->Float, 1.0f))
+    {
+        return false;
+    }
+    if (factors.occlusionStrength != 1.0f)
+    {
+        auto mix = defineMtlxNode(graph, "occlusionStrength", "ND_mix_float");
+        const auto fg =
+            mix ? mix.CreateInput(TfToken("fg"), SdfValueTypeNames->Float) : UsdShadeInput();
+        if (!fg || !fg.ConnectToSource(source) ||
+            !setInput(mix, "bg", SdfValueTypeNames->Float, 1.0f) ||
+            !setInput(mix, "mix", SdfValueTypeNames->Float, factors.occlusionStrength))
+        {
+            return false;
+        }
+        source = mix.CreateOutput(TfToken("out"), SdfValueTypeNames->Float);
+    }
+    return source && surface.GetInput(TfToken("occlusion")).ConnectToSource(source);
+}
+
+bool
+connectMtlxEmissive(const UsdShadeNodeGraph& graph, UsdShadeShader& surface,
+                    const PbrFactors& factors, const TextureInput& texture)
+{
+    const auto image = authorMtlxImage(graph, "emissiveImage", texture, true);
+    const auto rgb = image
+                         ? authorMtlxImageChannel(graph, "emissiveRgb", "ND_convert_color4_color3",
+                                                  image, SdfValueTypeNames->Color3f)
+                         : UsdShadeOutput();
+    return rgb && connectMtlxInput(graph, surface, "emissive", rgb, UsdShadeOutput(), nullptr,
+                                   "emissiveFactor", "ND_multiply_color3",
+                                   SdfValueTypeNames->Color3f, factors.emissive);
+}
+
+bool
+connectMtlxTextures(const UsdShadeNodeGraph& graph, UsdShadeShader& surface,
+                    const PbrFactors& factors, const MaterialTextures& textures)
+{
+    return (!textures.metallicRoughness ||
+            connectMtlxMetallicRoughness(graph, surface, factors, *textures.metallicRoughness)) &&
+           (!textures.occlusion ||
+            connectMtlxOcclusion(graph, surface, factors, *textures.occlusion)) &&
+           (!textures.emissive || connectMtlxEmissive(graph, surface, factors, *textures.emissive));
+}
+
+bool
 authorPreview(const UsdShadeMaterial& material, const PbrFactors& factors, bool vertexColor,
-              const TextureInput* texture)
+              const MaterialTextures& textures)
 {
     const auto stage = material.GetPrim().GetStage();
     const auto graph =
@@ -399,13 +566,15 @@ authorPreview(const UsdShadeMaterial& material, const PbrFactors& factors, bool 
            (!opacity || factors.alphaMode != fastgltf::AlphaMode::Mask ||
             setInput(surface, "opacityThreshold", SdfValueTypeNames->Float, factors.alphaCutoff)) &&
            connectSurface(material, TfToken(), graph, surface, TfToken("surface")) &&
-           (texture ? connectPreviewTexture(graph, surface, factors, *texture)
-                    : (!vertexColor || connectPreviewVertexColor(graph, surface, factors)));
+           (textures.baseColor
+                ? connectPreviewBaseColor(graph, surface, factors, *textures.baseColor)
+                : (!vertexColor || connectPreviewVertexColor(graph, surface, factors))) &&
+           connectPreviewTextures(graph, surface, factors, textures);
 }
 
 bool
 authorMtlx(const UsdShadeMaterial& material, const PbrFactors& factors, bool vertexColor,
-           const TextureInput* texture)
+           const MaterialTextures& textures)
 {
     const auto stage = material.GetPrim().GetStage();
     const auto graph =
@@ -433,13 +602,15 @@ authorMtlx(const UsdShadeMaterial& material, const PbrFactors& factors, bool ver
            (!mask ||
             setInput(surface, "alpha_cutoff", SdfValueTypeNames->Float, factors.alphaCutoff)) &&
            connectSurface(material, TfToken("mtlx"), graph, surface, TfToken("out")) &&
-           connectMtlxInputs(graph, surface, factors, vertexColor, texture);
+           connectMtlxInputs(graph, surface, factors, vertexColor,
+                             textures.baseColor ? &*textures.baseColor : nullptr) &&
+           connectMtlxTextures(graph, surface, factors, textures);
 }
 
 UsdShadeMaterial
 authorMaterial(const fastgltf::Material& source, const std::string& name,
                const UsdStageRefPtr& stage, const SdfPath& scope, bool vertexColor = false,
-               const TextureInput* texture = nullptr)
+               const MaterialTextures& textures = {})
 {
     const auto material = UsdShadeMaterial::Define(stage, scope.AppendChild(TfToken(name)));
     if (!material || (!source.name.empty() && !material.GetPrim().SetDisplayName(source.name)))
@@ -447,8 +618,8 @@ authorMaterial(const fastgltf::Material& source, const std::string& name,
         return UsdShadeMaterial();
     }
     const auto factors = pbrFactors(source);
-    if (!authorPreview(material, factors, vertexColor, texture) ||
-        !authorMtlx(material, factors, vertexColor, texture))
+    if (!authorPreview(material, factors, vertexColor, textures) ||
+        !authorMtlx(material, factors, vertexColor, textures))
     {
         return UsdShadeMaterial();
     }
@@ -554,15 +725,22 @@ MaterialAuthor::Bind(std::size_t index, std::size_t uvSetCount, const pxr::VtVec
     }
     const auto& source = _asset.materials[index];
     const auto& pbr = source.pbrData;
-    if (pbr.metallicRoughnessTexture || source.normalTexture || source.occlusionTexture ||
-        source.emissiveTexture)
+    if (source.normalTexture)
     {
-        error = "material textures other than base color are not supported";
+        error = "material normal textures are not supported";
         return false;
     }
-    if (pbr.baseColorTexture && pbr.baseColorTexture->texCoordIndex >= uvSetCount)
+    const auto hasUvSet = [uvSetCount](const auto& info)
+    { return !info || info->texCoordIndex < uvSetCount; };
+    if (!hasUvSet(pbr.baseColorTexture) || !hasUvSet(pbr.metallicRoughnessTexture) ||
+        !hasUvSet(source.occlusionTexture) || !hasUvSet(source.emissiveTexture))
     {
         error = "material texture uses a texture coordinate set the primitive does not have";
+        return false;
+    }
+    if (source.occlusionTexture && !inUnitRange(source.occlusionTexture->strength))
+    {
+        error = "material occlusion strength is non-finite or out of range";
         return false;
     }
     for (std::size_t i = 0; i < 4; ++i)
@@ -594,9 +772,16 @@ MaterialAuthor::Bind(std::size_t index, std::size_t uvSetCount, const pxr::VtVec
     auto& material = colors ? _vertexColorMaterials[index] : _materials[index];
     if (!material)
     {
-        TextureInput texture;
-        if (pbr.baseColorTexture && !resolveTexture(_asset, *pbr.baseColorTexture, _sourcePath,
-                                                    _loadBuffer, texture, error))
+        const auto resolve = [&](const auto& info, std::optional<TextureInput>& texture)
+        {
+            return !info || resolveTexture(_asset, *info, _sourcePath, _loadBuffer,
+                                           texture.emplace(), error);
+        };
+        MaterialTextures textures;
+        if (!resolve(pbr.baseColorTexture, textures.baseColor) ||
+            !resolve(pbr.metallicRoughnessTexture, textures.metallicRoughness) ||
+            !resolve(source.occlusionTexture, textures.occlusion) ||
+            !resolve(source.emissiveTexture, textures.emissive))
         {
             return false;
         }
@@ -608,7 +793,7 @@ MaterialAuthor::Bind(std::size_t index, std::size_t uvSetCount, const pxr::VtVec
         }
         material = authorMaterial(
             source, "Material_" + std::to_string(index) + (colors ? "_VertexColor" : ""), _stage,
-            _scope, colors != nullptr, pbr.baseColorTexture ? &texture : nullptr);
+            _scope, colors != nullptr, textures);
         if (!material)
         {
             error = "could not author USD material";

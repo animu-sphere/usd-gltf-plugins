@@ -9,7 +9,6 @@ implementation order.
 
 | Task | Done when |
 | --- | --- |
-| Metallic-roughness, occlusion and emissive textures | G = roughness, B = metallic, and occlusion R connect in both networks. Tests cover UV sets and color versus non-color data, with a Storm check. |
 | Normal textures and tangents | An [ADR](../adr/0002-base-color-texture-networks.md#evidence-and-limits) decides tangent handling. Normal maps connect in both networks, and assets with TANGENT no longer fail. |
 | KTX2 through `KHR_texture_basisu` | An ADR selects the decoder after a build check on each target OS. ETC1S and UASTC, as handled by that library, reach consumers as standard images under the [image asset contract](../adr/0001-image-assets.md). Its license is in the third-party notices. |
 | Image failure handling | Damaged image bodies and oversized images have a decided behavior and tests. See the [limits](../adr/0001-image-assets.md#limits) of the current signature check. |

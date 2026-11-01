@@ -9,7 +9,8 @@ schema, shader, or imaging plugin is required.
 
 The initial factor-only mapping and its current limitations are recorded in
 the [material factor decision](../architecture/MATERIAL_FACTORS.md), and textures
-in the [base color texture decision](../adr/0002-base-color-texture-networks.md).
+in the [base color](../adr/0002-base-color-texture-networks.md) and
+[other PBR texture](../adr/0003-pbr-texture-networks.md) decisions.
 
 Share image data and conversion parameters where possible, but use separate
 nodes where the two paths require incompatible node interfaces. The
@@ -27,7 +28,7 @@ glTF data model.
 | Metallic and roughness factors | Metallic and roughness |
 | Metallic-roughness texture | G = roughness, B = metallic |
 | Normal texture | Tangent-space normal map and its scale |
-| Occlusion texture | R channel and strength; approximate or explicitly report unsupported behavior according to shader capability |
+| Occlusion texture | R channel and strength, connected to each shader's occlusion input without compensating for [how renderers apply it](../adr/0003-pbr-texture-networks.md#occlusion-differs-between-the-paths) |
 | Emissive factor and texture | Emissive color / emission |
 | Alpha mode and cutoff | MaterialX `alpha`, `alpha_mode` and `alpha_cutoff`; Preview `opacity` and, for MASK, `opacityThreshold`. OPAQUE ignores alpha. A MASK cutoff of 0 is opaque in Preview, whose threshold of 0 means no masking |
 | `doubleSided` | Keep UsdGeom sidedness and material behavior consistent |
@@ -44,7 +45,9 @@ multiplies it exactly, and Preview omits COLOR_0 with a warning. See
 [ADR 0002](../adr/0002-base-color-texture-networks.md).
 
 Distinguish color data (base color and emissive) from non-color data
-(metallic, roughness, normal and occlusion). Texture readers consume the
+(metallic, roughness, normal and occlusion): Preview reads the latter as `raw`, and
+MaterialX through [vector images](../adr/0003-pbr-texture-networks.md#non-color-images-in-materialx).
+Texture readers consume the
 primvar's [converted coordinates](SCENE_CONVENTIONS.md#texture-coordinates)
 without another flip. Apply `KHR_texture_transform` to UVs. Document
 observed differences from glTF shading and renderer-specific limitations.
