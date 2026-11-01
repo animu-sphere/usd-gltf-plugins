@@ -41,6 +41,29 @@ compression fail with a diagnostic. External buffer URI restrictions are
 described in the [import pipeline](../architecture/IMPORT_PIPELINE.md).
 Material binding and a general mesh sharing policy remain open.
 
+## Coordinate system and units
+
+glTF uses a right-handed coordinate system, Y-up and meters. A directly
+opened glTF or GLB layer explicitly authors `upAxis = "Y"` and
+`metersPerUnit = 1`, including after reload. The importer preserves mesh
+coordinates and node transforms without an additional axis or unit
+conversion. The mesh orientation is right-handed.
+
+OpenUSD's up axis and linear units are stage-wide metadata. Referencing a
+glTF asset into another stage does not change the host's metadata or
+automatically correct the asset's coordinates. The assembler must apply a
+corrective transform when the host uses different conventions. For example,
+a +90-degree X rotation and a uniform scale of 100 map this asset into a
+Z-up stage measured in centimeters. See OpenUSD's
+[up-axis](https://openusd.org/release/api/group___usd_geom_up_axis__group.html)
+and [linear-units](https://openusd.org/release/api/group___usd_geom_linear_units__group.html)
+documentation.
+
+Local Windows tests cover both formats, authored metadata, mesh coordinates,
+hierarchical TRS/matrix transforms, reload, and referencing into a Z-up
+centimeter stage with and without that corrective transform. These tests do
+not verify renderer behavior or all transform combinations.
+
 ## Texture coordinates
 
 Each TEXCOORD_n must use VEC2 floats, normalized unsigned bytes or normalized
@@ -76,8 +99,6 @@ behavior are not yet verified.
 
 ## Semantic differences requiring validation
 
-- glTF is Y-up and uses meters. Explicitly establish and test USD `upAxis`,
-  `metersPerUnit`, and any necessary conversions.
 - Select the declared default scene. If no default is declared, select the
   first scene and emit a diagnostic; if no scenes exist or the default index
   is invalid, report an error and fail. Never merge scenes. The selection
