@@ -29,20 +29,20 @@ CI success is not evidence of display compatibility.
 | `.gltf` / `.glb` registration and import | Verified (USD data, CI) | Read only; writing and editing are declared unsupported. Eager conversion on read. | `tests/test_file_format.py::test_registration_and_capabilities` |
 | Scene selection | Verified (USD data, CI) | Declared default scene, or scene 0 with a warning. No scenes or an invalid default fail. Scenes are never merged. | `tests/scene_selection.cpp`, `tests/test_file_format.py::test_first_scene_fallback_warns`, `tests/test_file_format.py::test_failures_report_diagnostics` |
 | Node hierarchy and transforms | Verified (USD data, CI) | TRS and matrix nodes. Invalid quaternions and perspective matrices fail. Multiply referenced meshes are duplicated, not shared. | `tests/test_file_format.py::test_scene_hierarchy_and_transforms`, `tests/test_file_format.py::test_node_order_and_optional_extension_warning` |
-| Triangle-based meshes | Verified (USD data, CI) | Indexed and non-indexed TRIANGLES, TRIANGLE_STRIP and TRIANGLE_FAN with float POSITION. Interleaved accessors are accepted. | `tests/test_file_format.py::test_triangle_meshes`, `tests/test_file_format.py::test_triangle_strips_and_fans`, `tests/test_file_format.py::test_triangle_strip_and_fan_index_types_and_nonindexed_counts` |
+| Triangle-based meshes | Verified (USD data, CI) | Indexed and non-indexed TRIANGLES, TRIANGLE_STRIP and TRIANGLE_FAN with float POSITION. Interleaved accessors are accepted. | `tests/test_file_format.py::test_triangle_meshes`, `tests/test_file_format.py::test_triangle_strips_and_fans`, `tests/test_file_format.py::test_triangle_strip_and_fan_index_types_and_nonindexed_counts`, `tests/test_file_format.py::test_mesh_schema_attributes` |
 | Normals | Verified (USD data, CI) | Supplied float NORMAL, or generated per face when absent. | `tests/test_file_format.py::test_flat_normals_and_negative_scale` |
 | Texture coordinate sets | Verified (USD data, CI) | Consecutive TEXCOORD_n. Authored values only: no texture has been sampled through them. | `tests/test_file_format.py::test_texture_coordinates`, `tests/test_file_format.py::test_texture_coordinate_failures_preserve_layer` |
-| Vertex colors | Verified (USD data, CI) | COLOR_0 primvar data; alpha is retained. The experimental default material consumes RGB and ignores alpha, while explicitly assigned materials with vertex colors are rejected. | `tests/test_file_format.py::test_vertex_colors`, `tests/test_file_format.py::test_vertex_color_failures_preserve_layer`, `tests/test_file_format.py::test_default_material_with_and_without_vertex_color` |
+| Vertex colors | Verified (USD data, CI) | COLOR_0 primvar data; alpha is retained. Default and factor-only materials consume RGB, and alpha only for MASK and BLEND. | `tests/test_file_format.py::test_vertex_colors`, `tests/test_file_format.py::test_vertex_color_failures_preserve_layer`, `tests/test_file_format.py::test_default_material_with_and_without_vertex_color`, `tests/test_file_format.py::test_explicit_material_vertex_colors` |
 | Embedded and local external buffers | Verified (USD data, CI) | Embedded and restricted local paths only; see the [external buffer policy](../architecture/IMPORT_PIPELINE.md#external-buffer-policy). The link-escape test skips where the host cannot create directory links. | `tests/test_file_format.py::test_external_buffers_and_reload`, `tests/test_file_format.py::test_external_buffer_uri_rejections`, `tests/test_file_format.py::test_external_buffers_with_unicode_and_mixed_glb_data`, `tests/test_file_format.py::test_unselected_external_buffer_is_not_loaded`, `tests/test_file_format.py::test_external_buffer_symlink_escape_is_rejected` |
 | Coordinate system and units | Verified (USD data, CI) | Y-up and meters authored on direct open and reload; referencing into a Z-up centimeter stage. Not every transform combination. | `tests/test_file_format.py::test_coordinate_system_and_reference_composition` |
 | Reflections, winding and normals | Verified (USD data, CI) | Indexed and non-indexed triangles with odd and even reflections in hierarchical transforms and a mirrored reference. | `tests/test_file_format.py::test_hierarchical_reflection_winding_and_normals`, `tests/test_file_format.py::test_reflection_view_fixture` |
 | Failure and reload behavior | Verified (USD data, CI) | Tested failures emit a diagnostic and do not publish a partial layer. Not proven for every USD error; [the transfer itself is not atomic](../architecture/LAYER_AUTHORING.md#decision). | `tests/test_file_format.py::test_failed_reload_does_not_publish_partial_stage`, `tests/test_file_format.py::test_mesh_failures_and_reload_preservation`, `tests/test_file_format.py::test_nonfinite_position_is_rejected` |
 | Extensions | Experimental | Any required extension fails. Optional extensions warn and are ignored, except that a selected node using `KHR_lights_punctual` is rejected. No extension is implemented. | `tests/test_file_format.py::test_failures_report_diagnostics`, `tests/test_file_format.py::test_node_order_and_optional_extension_warning`, `tests/test_file_format.py::test_optional_lights_outside_selected_scene_and_required_lights`, `tests/test_file_format.py::test_unsupported_features_fail_without_publishing` |
-| usdview/Storm display | Experimental | One [manual check](#manual-visual-checks) of a simple fixture on Windows. Not general renderer support. | `tests/fixtures/reflections.gltf` |
+| usdview/Storm display | Experimental | Two [manual checks](#manual-visual-checks) of simple fixtures on Windows. Not general renderer support. | `tests/fixtures/reflections.gltf`, `tests/fixtures/alpha_modes.gltf` |
 | OpenStrata workspace build and tests | Verified (Windows x86-64, Linux x86-64, macOS arm64; OpenUSD 26.08) | The environments listed under [tested environments](#tested-environments). | [CI run 41297241072](https://github.com/animu-sphere/usd-gltf-plugins/actions/runs/41297241072) |
 | Standalone OpenStrata bundle | Verified (Local Windows) | `ost plugin test --up-to 2` confirms discovery of the file format, not a successful import. | `plugins/usdGltfFileFormat/openstrata.plugin.yaml` |
 | Root CMake build, install and registration | Verified (Local Windows) | A separate process registers the installed plugin and opens a stage. | `tests/test_install_smoke.py::test_installed_plugin_registers_and_opens_a_stage` |
-| Materials and bindings | Experimental | Default materials, including vertex RGB, and explicit opaque, factor-only metallic-roughness materials without vertex colors: Preview and MaterialX networks and bindings, including `doubleSided`. Non-opaque alpha, textures and explicit materials with vertex colors fail. Network structure has been tested locally, not renderer display. See the [decision record](../architecture/MATERIAL_FACTORS.md). | `tests/test_file_format.py::test_default_material_with_and_without_vertex_color`, `tests/test_file_format.py::test_factor_materials_and_bindings`, `tests/test_file_format.py::test_material_failures_preserve_layer` |
+| Materials and bindings | Experimental | Default materials and explicit factor-only metallic-roughness materials, with OPAQUE, MASK or BLEND alpha and optional vertex colors: Preview and MaterialX networks and bindings, including `doubleSided`. Textures fail. Network structure has been tested locally; display has one [manual Storm check](#manual-visual-checks) of alpha and vertex colors. See the [decision record](../architecture/MATERIAL_FACTORS.md). | `tests/test_file_format.py::test_default_material_with_and_without_vertex_color`, `tests/test_file_format.py::test_factor_materials_and_bindings`, `tests/test_file_format.py::test_alpha_modes`, `tests/test_file_format.py::test_explicit_material_vertex_colors`, `tests/test_file_format.py::test_alpha_modes_view_fixture`, `tests/test_file_format.py::test_material_failures_preserve_layer` |
 | PNG and JPEG images | Unsupported | Images are not loaded or resolved. | |
 | KTX2 (`KHR_texture_basisu`) | Unsupported | No decoder or image cache exists. A required declaration fails. | |
 | Point and line primitives, other vertex attributes, sparse accessors | Unsupported | Rejected with a diagnostic. | `tests/test_file_format.py::test_mesh_failures_and_reload_preservation` |
@@ -86,3 +86,27 @@ ost plugin view --profile lookdev plugins\usdGltfFileFormat (Join-Path $PWD 'tes
 
 In usdview, use **Viewer > Cull Backfaces (GL)** to toggle culling. With the
 default front view, the rightmost triangle is the reversed control.
+
+The [alpha fixture](../../tests/fixtures/alpha_modes.gltf) was rendered with
+`usdrecord` and Storm on the same runtime, through MaterialX and, in a copy with
+`outputs:mtlx:surface` removed from each material, through UsdPreviewSurface.
+Vertex alpha falls from 1 at the left of each quad to 0 at the right, in front of
+a red backdrop. Both paths compiled and showed, from the left: two green quads
+cut at their centers (MASK, with vertex alpha alone and with a factor), a whole
+green quad (MASK with cutoff 0), a green quad fading into the backdrop (BLEND), a
+half-transparent quad fading likewise (BLEND with a factor), and a whole green
+quad (OPAQUE with a factor). The yellow factor leaves green unchanged, so this
+checks alpha and a multiply that keeps the vertex color, not general shading.
+Compare the two paths by eye; pixels were not measured.
+
+To repeat the MaterialX render after building the workspace:
+
+```powershell
+ost env cy2026 --profile lookdev --shell powershell | Out-String | Invoke-Expression
+$env:PXR_PLUGINPATH_NAME = "$PWD\build\cy2026-windows-x86_64-py313-usd\plugin\resources\usdGltfFileFormat;$env:PXR_PLUGINPATH_NAME"
+usdrecord --imageWidth 1400 tests\fixtures\alpha_modes.gltf alpha_modes.png
+```
+
+Multiple primitives sharing one POSITION accessor were also rendered. They
+displayed correctly, but Storm warns because each mesh authors the accessor's
+whole vertex array and its topology uses only part of it.

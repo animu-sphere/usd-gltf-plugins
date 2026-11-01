@@ -9,9 +9,11 @@
 #include "pxr/base/tf/diagnostic.h"
 #include "pxr/base/vt/array.h"
 #include "pxr/base/vt/value.h"
-#include "pxr/usd/sdf/attributeSpec.h"
-#include "pxr/usd/sdf/schema.h"
 #include "pxr/usd/sdf/types.h"
+#include "pxr/usd/usdGeom/mesh.h"
+#include "pxr/usd/usdGeom/primvarsAPI.h"
+#include "pxr/usd/usdGeom/tokens.h"
+#include "pxr/usd/usdGeom/xform.h"
 
 #include <algorithm>
 #include <bit>
@@ -296,16 +298,8 @@ readIndices(const fastgltf::Asset& asset, std::size_t index, std::size_t pointCo
 }
 
 bool
-setAttribute(const SdfPrimSpecHandle& prim, const char* name, const SdfValueTypeName& type,
-             const VtValue& value)
-{
-    const auto attribute = SdfAttributeSpec::New(prim, name, type);
-    return attribute && attribute->SetDefaultValue(value);
-}
-
-bool
 authorPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& primitive,
-                const SdfPrimSpecHandle& parent, std::size_t index, std::string& error,
+                const UsdPrim& parent, std::size_t index, std::string& error,
                 const gltfCore::BufferLoader& loadBuffer, MaterialAuthor& materials)
 {
     if ((primitive.type != fastgltf::PrimitiveType::Triangles &&
@@ -467,20 +461,21 @@ authorPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& primiti
                              : GfVec3f(float(x / length), float(y / length), float(z / length));
         }
     }
-    const auto mesh =
-        SdfPrimSpec::New(parent, "Primitive_" + std::to_string(index), SdfSpecifierDef, "Mesh");
+    auto mesh = UsdGeomMesh::Define(parent.GetStage(), parent.GetPath().AppendChild(TfToken(
+                                                           "Primitive_" + std::to_string(index))));
     const VtIntArray counts(indices.size() / 3, 3);
-    if (!mesh || !setAttribute(mesh, "points", SdfValueTypeNames->Point3fArray, VtValue(points)) ||
-        !setAttribute(mesh, "faceVertexCounts", SdfValueTypeNames->IntArray, VtValue(counts)) ||
-        !setAttribute(mesh, "faceVertexIndices", SdfValueTypeNames->IntArray, VtValue(indices)) ||
-        !setAttribute(mesh, "subdivisionScheme", SdfValueTypeNames->Token,
-                      VtValue(TfToken("none"))))
+    VtVec3fArray extent;
+    if (!mesh || !mesh.CreatePointsAttr().Set(points) ||
+        !mesh.CreateFaceVertexCountsAttr().Set(counts) ||
+        !mesh.CreateFaceVertexIndicesAttr().Set(indices) ||
+        !mesh.CreateSubdivisionSchemeAttr().Set(UsdGeomTokens->none) ||
+        !UsdGeomPointBased::ComputeExtent(points, &extent) || !mesh.CreateExtentAttr().Set(extent))
     {
         error = "could not author USD mesh";
         return false;
     }
     if (primitive.materialIndex &&
-        !materials.Bind(*primitive.materialIndex, color != nullptr, mesh, error))
+        !materials.Bind(*primitive.materialIndex, color ? &colors : nullptr, alpha, mesh, error))
     {
         return false;
     }
@@ -488,45 +483,41 @@ authorPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& primiti
     {
         return false;
     }
-    const auto attr = SdfAttributeSpec::New(mesh, "normals", SdfValueTypeNames->Normal3fArray);
-    if (!attr || !attr->SetDefaultValue(VtValue(normals)))
+    if (!mesh.CreateNormalsAttr().Set(normals) ||
+        !mesh.SetNormalsInterpolation(normal ? UsdGeomTokens->vertex : UsdGeomTokens->uniform))
     {
         error = "could not author USD normals";
         return false;
     }
-    attr->SetInfo(TfToken("interpolation"), VtValue(TfToken(normal ? "vertex" : "uniform")));
+    const UsdGeomPrimvarsAPI primvars(mesh);
     if (color)
     {
-        const auto displayColor =
-            SdfAttributeSpec::New(mesh, "primvars:displayColor", SdfValueTypeNames->Color3fArray);
-        if (!displayColor || !displayColor->SetDefaultValue(VtValue(colors)))
+        if (!mesh.CreateDisplayColorPrimvar(UsdGeomTokens->vertex).Set(colors))
         {
             error = "could not author USD vertex colors";
             return false;
         }
-        displayColor->SetInfo(TfToken("interpolation"), VtValue(TfToken("vertex")));
-        if (!alpha.empty())
+        if (!alpha.empty() &&
+            !primvars
+                 .CreatePrimvar(TfToken("gltf_colorAlpha"), SdfValueTypeNames->FloatArray,
+                                UsdGeomTokens->vertex)
+                 .Set(alpha))
         {
-            const auto colorAlpha = SdfAttributeSpec::New(mesh, "primvars:gltf:colorAlpha",
-                                                          SdfValueTypeNames->FloatArray);
-            if (!colorAlpha || !colorAlpha->SetDefaultValue(VtValue(alpha)))
-            {
-                error = "could not author USD vertex color alpha";
-                return false;
-            }
-            colorAlpha->SetInfo(TfToken("interpolation"), VtValue(TfToken("vertex")));
+            error = "could not author USD vertex color alpha";
+            return false;
         }
     }
     for (std::size_t i = 0; i < uvSets.size(); ++i)
     {
-        const auto name = i == 0 ? std::string("primvars:st") : "primvars:st" + std::to_string(i);
-        const auto uv = SdfAttributeSpec::New(mesh, name, SdfValueTypeNames->TexCoord2fArray);
-        if (!uv || !uv->SetDefaultValue(VtValue(uvSets[i])))
+        const auto name = i == 0 ? std::string("st") : "st" + std::to_string(i);
+        if (!primvars
+                 .CreatePrimvar(TfToken(name), SdfValueTypeNames->TexCoord2fArray,
+                                UsdGeomTokens->vertex)
+                 .Set(uvSets[i]))
         {
             error = "could not author USD texture coordinates";
             return false;
         }
-        uv->SetInfo(TfToken("interpolation"), VtValue(TfToken("vertex")));
     }
     return true;
 }
@@ -534,10 +525,10 @@ authorPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& primiti
 } // namespace
 
 bool
-AuthorMesh(const fastgltf::Asset& asset, std::size_t meshIndex,
-           const pxr::SdfPrimSpecHandle& parent, const gltfCore::BufferLoader& loadBuffer,
-           MaterialAuthor& materials)
+AuthorMesh(const fastgltf::Asset& asset, std::size_t meshIndex, const pxr::UsdPrim& parent,
+           const gltfCore::BufferLoader& loadBuffer, MaterialAuthor& materials)
 {
+    using namespace pxr;
     if (meshIndex >= asset.meshes.size())
     {
         TF_RUNTIME_ERROR("glTF mesh index %zu is out of range", meshIndex);
@@ -550,21 +541,20 @@ AuthorMesh(const fastgltf::Asset& asset, std::size_t meshIndex,
                          meshIndex);
         return false;
     }
-    const auto group =
-        SdfPrimSpec::New(parent, "Mesh_" + std::to_string(meshIndex), SdfSpecifierDef, "Xform");
-    if (!group)
+    const auto group = UsdGeomXform::Define(
+        parent.GetStage(),
+        parent.GetPath().AppendChild(TfToken("Mesh_" + std::to_string(meshIndex))));
+    if (!group ||
+        (!source.name.empty() && !group.GetPrim().SetDisplayName(std::string(source.name))))
     {
         TF_RUNTIME_ERROR("Could not author glTF mesh %zu", meshIndex);
         return false;
     }
-    if (!source.name.empty())
-    {
-        group->SetInfo(SdfFieldKeys->DisplayName, VtValue(source.name));
-    }
     for (std::size_t i = 0; i < source.primitives.size(); ++i)
     {
         std::string error;
-        if (!authorPrimitive(asset, source.primitives[i], group, i, error, loadBuffer, materials))
+        if (!authorPrimitive(asset, source.primitives[i], group.GetPrim(), i, error, loadBuffer,
+                             materials))
         {
             TF_RUNTIME_ERROR("glTF mesh %zu primitive %zu: %s", meshIndex, i, error.c_str());
             return false;

@@ -80,14 +80,21 @@ unsigned shorts, with the same count as POSITION. Components must be finite
 and in the glTF range [0, 1]. RGB is linear and is authored without a color
 space conversion as the vertex-interpolated `color3f[]` primvar
 `displayColor`. A VEC4's alpha is preserved as the vertex-interpolated
-`float[]` primvar `gltf:colorAlpha`; VEC3 implies alpha 1 and has no alpha
+`float[]` primvar `gltf_colorAlpha`; VEC3 implies alpha 1 and has no alpha
 primvar.
 
 The importer does not author `displayOpacity` from COLOR_0: without an
 explicit material, glTF uses an opaque default material and ignores alpha.
 Material graphs must multiply base color by RGB and, when needed, alpha by
-`gltf:colorAlpha` (or 1 when absent), respecting the glTF material's alpha
+`gltf_colorAlpha` (or 1 when absent), respecting the glTF material's alpha
 mode.
+
+UsdPreviewSurface graphs cannot multiply, so a primitive bound to a material
+whose factor is not 1 also has the products as vertex-interpolated primvars:
+`gltf_previewBaseColor` (`color3f[]`) and, for MASK and BLEND with vertex alpha,
+`gltf_previewAlpha` (`float[]`). Primvars read by material graphs use
+underscores rather than namespaces, because Storm's MaterialX shaders fail to
+compile with a colon in a `geomprop` name.
 
 ## Scene selection
 

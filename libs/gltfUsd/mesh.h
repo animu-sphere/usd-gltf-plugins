@@ -4,7 +4,7 @@
 #include "accessor.h"
 
 #include <fastgltf/types.hpp>
-#include "pxr/usd/sdf/primSpec.h"
+#include "pxr/usd/usd/prim.h"
 
 #include <cstddef>
 
@@ -14,7 +14,7 @@ namespace gltfUsd
 class MaterialAuthor;
 
 [[nodiscard]] bool AuthorMesh(const fastgltf::Asset& asset, std::size_t meshIndex,
-                              const pxr::SdfPrimSpecHandle& parent,
-                              const gltfCore::BufferLoader& loadBuffer, MaterialAuthor& materials);
+                              const pxr::UsdPrim& parent, const gltfCore::BufferLoader& loadBuffer,
+                              MaterialAuthor& materials);
 
 } // namespace gltfUsd

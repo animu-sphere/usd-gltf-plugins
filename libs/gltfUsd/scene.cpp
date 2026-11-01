@@ -11,11 +11,12 @@
 #include "pxr/base/tf/errorTransport.h"
 #include "pxr/base/vt/array.h"
 #include "pxr/base/vt/value.h"
-#include "pxr/usd/sdf/attributeSpec.h"
-#include "pxr/usd/sdf/primSpec.h"
-#include "pxr/usd/sdf/schema.h"
-#include "pxr/usd/sdf/types.h"
+#include "pxr/usd/usd/prim.h"
 #include "pxr/usd/usd/stage.h"
+#include "pxr/usd/usdGeom/metrics.h"
+#include "pxr/usd/usdGeom/scope.h"
+#include "pxr/usd/usdGeom/tokens.h"
+#include "pxr/usd/usdGeom/xform.h"
 
 #include <cmath>
 #include <exception>
@@ -87,36 +88,40 @@ authorScene(const fastgltf::Asset& asset, const gltfCore::BufferLoader& loadBuff
         TF_RUNTIME_ERROR("Could not create temporary glTF layer");
         return {};
     }
-    const auto root = SdfPrimSpec::New(layer, "Asset", SdfSpecifierDef, "Xform");
-    if (!root)
-    {
-        TF_RUNTIME_ERROR("Could not author glTF layer root");
-        return {};
-    }
-    const auto geo = SdfPrimSpec::New(root, "geo", SdfSpecifierDef, "Scope");
-    const auto mtl = SdfPrimSpec::New(root, "mtl", SdfSpecifierDef, "Scope");
-    if (!geo || !mtl)
-    {
-        TF_RUNTIME_ERROR("Could not author glTF layer scopes");
-        return {};
-    }
-    layer->SetDefaultPrim(TfToken("Asset"));
-    layer->GetPseudoRoot()->SetInfo(TfToken("upAxis"), VtValue(TfToken("Y")));
-    layer->GetPseudoRoot()->SetInfo(TfToken("metersPerUnit"), VtValue(1.0));
-
     const auto stage = UsdStage::Open(layer);
     if (!stage)
     {
         TF_RUNTIME_ERROR("Could not open temporary glTF authoring stage");
         return {};
     }
-    MaterialAuthor materials(asset, stage, mtl->GetPath());
+    const auto root = UsdGeomXform::Define(stage, SdfPath("/Asset"));
+    if (!root)
+    {
+        TF_RUNTIME_ERROR("Could not author glTF layer root");
+        return {};
+    }
+    const auto geo = UsdGeomScope::Define(stage, root.GetPath().AppendChild(TfToken("geo")));
+    const auto mtl = UsdGeomScope::Define(stage, root.GetPath().AppendChild(TfToken("mtl")));
+    if (!geo || !mtl)
+    {
+        TF_RUNTIME_ERROR("Could not author glTF layer scopes");
+        return {};
+    }
+    stage->SetDefaultPrim(root.GetPrim());
+    if (!UsdGeomSetStageUpAxis(stage, UsdGeomTokens->y) ||
+        !UsdGeomSetStageMetersPerUnit(stage, 1.0))
+    {
+        TF_RUNTIME_ERROR("Could not author glTF stage metrics");
+        return {};
+    }
+
+    MaterialAuthor materials(asset, stage, mtl.GetPath());
     std::vector<bool> visited(asset.nodes.size(), false);
-    std::vector<std::pair<std::size_t, SdfPrimSpecHandle>> pending;
+    std::vector<std::pair<std::size_t, UsdPrim>> pending;
     const auto& roots = asset.scenes[selectedIndex].nodeIndices;
     for (auto it = roots.rbegin(); it != roots.rend(); ++it)
     {
-        pending.emplace_back(*it, geo);
+        pending.emplace_back(*it, geo.GetPrim());
     }
     while (!pending.empty())
     {
@@ -143,35 +148,27 @@ authorScene(const fastgltf::Asset& asset, const gltfCore::BufferLoader& loadBuff
             TF_RUNTIME_ERROR("glTF node %zu has an invalid transform", index);
             return {};
         }
-        const auto xform =
-            SdfPrimSpec::New(parent, "Node_" + std::to_string(index), SdfSpecifierDef, "Xform");
-        if (!xform)
+        const auto xform = UsdGeomXform::Define(
+            stage, parent.GetPath().AppendChild(TfToken("Node_" + std::to_string(index))));
+        if (!xform ||
+            (!node.name.empty() && !xform.GetPrim().SetDisplayName(std::string(node.name))))
         {
             TF_RUNTIME_ERROR("Could not author glTF node %zu", index);
             return {};
         }
-        if (!node.name.empty())
-        {
-            xform->SetInfo(SdfFieldKeys->DisplayName, VtValue(node.name));
-        }
-        const auto transform =
-            SdfAttributeSpec::New(xform, "xformOp:transform", SdfValueTypeNames->Matrix4d);
-        const auto order = SdfAttributeSpec::New(
-            xform, "xformOpOrder", SdfValueTypeNames->TokenArray, SdfVariabilityUniform);
-        VtTokenArray opOrder(1, TfToken("xformOp:transform"));
-        if (!transform || !order || !transform->SetDefaultValue(VtValue(matrix)) ||
-            !order->SetDefaultValue(VtValue(opOrder)))
+        if (!xform.AddTransformOp().Set(matrix))
         {
             TF_RUNTIME_ERROR("Could not author glTF node %zu transform", index);
             return {};
         }
-        if (node.meshIndex && !AuthorMesh(asset, *node.meshIndex, xform, loadBuffer, materials))
+        if (node.meshIndex &&
+            !AuthorMesh(asset, *node.meshIndex, xform.GetPrim(), loadBuffer, materials))
         {
             return {};
         }
         for (auto it = node.children.rbegin(); it != node.children.rend(); ++it)
         {
-            pending.emplace_back(*it, xform);
+            pending.emplace_back(*it, xform.GetPrim());
         }
     }
     if (!mark.IsClean())

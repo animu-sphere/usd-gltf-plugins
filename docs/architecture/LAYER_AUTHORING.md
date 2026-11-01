@@ -7,8 +7,8 @@ Windows with OpenUSD 26.08 when the decision was made. The
 ## Decision
 
 Build the converted scene on an anonymous, temporary layer on a separate
-worker thread. Geometry is authored as `Sdf` specs; material networks and
-bindings use `UsdShade` on a stage opened over that layer. The worker must not
+worker thread. Geometry, material networks and bindings use schema APIs
+(`UsdGeom`, `UsdShade`) on a stage opened over that layer. The worker must not
 be inside the caller's `SdfChangeBlock`. Transport its `Tf` errors back to the
 calling thread before returning. The buffer-loader callback executes on that
 worker thread and must not rely on the caller's thread-local state. Only after
@@ -46,6 +46,14 @@ another thread, outside the reload thread's change block, following the
 approach used by usd-vrm-plugins. Its stage and temporary layer are not exposed
 until the worker finishes, and the calling thread retains responsibility for
 publication and diagnostics.
+
+Moving geometry from direct `Sdf` specs to `UsdGeom` then removed the last reason
+for two authoring styles. Exported from the reflection fixture, the result differs
+only by a new `extent` and by `subdivisionScheme` becoming `uniform`, as its schema
+requires; the direct specs had omitted the first and left the second varying.
+Opening a generated 5000-node scene took 1.21 s before and 1.27 s after on the
+same machine. The stage was already open during geometry authoring, so its change
+processing is not new.
 
 The end-to-end plugin tests exercise both formats, failed reload without
 publication, successful reload on an existing stage, and material reload
