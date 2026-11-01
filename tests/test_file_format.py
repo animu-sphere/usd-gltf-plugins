@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 import base64
+import faulthandler
 import json
 import pathlib
 import struct
@@ -11,6 +12,9 @@ import urllib.parse
 import zlib
 
 from pxr import Ar, Gf, Sdf, Sdr, Tf, Usd, UsdGeom, UsdShade
+
+# A crash in native code would otherwise not say which test caused it.
+faulthandler.enable()
 
 
 def layer_text(layer):
