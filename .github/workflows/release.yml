@@ -1,0 +1,263 @@
+# Hand-authored, because `ost ci generate` cannot express a release. It copies no pin: the
+# runners, runtime digests, host packages and Python version come from openstrata.ci.yaml
+# through `ost ci matrix`, so that re-pinning CI also re-pins this workflow.
+#
+# Pushing a tag vX.Y.Z or vX.Y.Z-suffix builds, tests and packages the bundle on every cell
+# of the main lane, proves that the package works without the source tree, and assembles a
+# DRAFT GitHub release. Publishing the draft is a human decision, after the release gate in
+# docs/roadmap/README.md.
+#
+# workflow_dispatch is a dry run: the same lanes, with everything uploaded as workflow
+# artifacts, and no release created.
+#
+# Fork-PR safety: this never runs on pull_request, and only the release job can write.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    name: preflight (tag, versions, changelog, pins)
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      ost_version: ${{ steps.pin.outputs.ost_version }}
+      version: ${{ steps.release.outputs.version }}
+      tag: ${{ steps.release.outputs.tag }}
+      is_release: ${{ steps.release.outputs.is_release }}
+      prerelease: ${{ steps.release.outputs.prerelease }}
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Check the tag against the versions and the changelog
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            python3 scripts/make_release_notes.py --tag "${GITHUB_REF_NAME}" --github-output >> "$GITHUB_OUTPUT"
+          else
+            python3 scripts/make_release_notes.py --github-output >> "$GITHUB_OUTPUT"
+          fi
+      - name: Read the pinned ost version
+        id: pin
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(sed -n '/^bootstrap:/,/^[^ ]/s/^ *version: *"\(.*\)"/\1/p' openstrata.ci.yaml)"
+          if [ -z "$version" ]; then echo "::error title=release pins::openstrata.ci.yaml pins no ost version" ; exit 1 ; fi
+          echo "ost_version=$version" >> "$GITHUB_OUTPUT"
+      - name: Bootstrap ost
+        uses: ./.github/actions/bootstrap-ost
+        with:
+          version: ${{ steps.pin.outputs.ost_version }}
+      - name: Validate the CI manifest
+        shell: bash
+        run: ost ci validate
+      - name: Resolve the cells of the main lane
+        id: matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+          ost ci matrix --json --lane main > cells.json
+          # A release with fewer platforms than CI would otherwise pass without saying so.
+          count="$(jq '.data.cells | length' cells.json)"
+          if [ "$count" -ne 3 ]; then echo "::error title=release pins::expected 3 cells, found $count" ; exit 1 ; fi
+          bad="$(jq -r '[.data.cells[] | select(.require_evidence != "all")] | length' cells.json)"
+          if [ "$bad" -ne 0 ]; then echo "::error title=release pins::a cell does not require all evidence" ; exit 1 ; fi
+          matrix="$(jq -c '{include: [.data.cells[] | {
+            name, runs_on, platform, profile, runtime_artifact, runtime_remote, minimum_trust, host_python,
+            host_packages_apt: ((.host_packages.apt // []) | join(" "))}]}' cells.json)"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: ${{ matrix.name }}
+    needs: preflight
+    runs-on: ${{ matrix.runs_on }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.preflight.outputs.matrix) }}
+    env:
+      OST_HOME: ${{ github.workspace }}/.ost-ci-home
+      BUNDLE: plugins/usdGltfFileFormat
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Install the host packages the runtime needs
+        if: ${{ matrix.host_packages_apt != '' }}
+        shell: bash
+        env:
+          HOST_PACKAGES_APT: ${{ matrix.host_packages_apt }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends $HOST_PACKAGES_APT
+      - name: Bootstrap ost
+        uses: ./.github/actions/bootstrap-ost
+        with:
+          version: ${{ needs.preflight.outputs.ost_version }}
+      # Restore and save are split so that the cache holds the verified runtime, and not the
+      # package this job imports later. A cached package from another commit would conflict.
+      - name: Restore the artifact registry cache (speed only, never correctness)
+        id: runtime-cache-restore
+        if: ${{ vars.OST_CI_DISABLE_CACHE != 'true' }}
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .ost-ci-home/artifacts
+          key: ost-registry-${{ needs.preflight.outputs.ost_version }}-${{ runner.os }}-${{ runner.arch }}-${{ matrix.name }}-${{ matrix.runtime_artifact }}
+      - name: Pull the pinned runtime SDK from its remote reference
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ost artifact show "${{ matrix.runtime_artifact }}" --json > /dev/null 2>&1 \
+             && ost artifact verify "${{ matrix.runtime_artifact }}" --require-sbom --require-provenance --json > /dev/null; then
+            echo "pinned runtime already present and verified (cache hit)"
+          else
+            rm -rf "${OST_HOME}/artifacts"
+            ost artifact pull "${{ matrix.runtime_remote }}" --expect-artifact "${{ matrix.runtime_artifact }}" --require-kind runtime --json
+          fi
+      - name: Verify and materialize the pinned runtime SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          ost artifact verify ${{ matrix.runtime_artifact }} --minimum-trust ${{ matrix.minimum_trust }} --require-sbom --require-provenance
+          ost runtime pull ${{ matrix.platform }} --profile ${{ matrix.profile }} --from-artifact ${{ matrix.runtime_artifact }} --force
+      - name: Remove resumable transfer state before caching
+        if: ${{ vars.OST_CI_DISABLE_CACHE != 'true' && steps.runtime-cache-restore.outputs.cache-hit != 'true' }}
+        shell: bash
+        run: rm -rf .ost-ci-home/artifacts/.partial-blobs
+      - name: Save the verified artifact registry cache
+        if: ${{ vars.OST_CI_DISABLE_CACHE != 'true' && steps.runtime-cache-restore.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .ost-ci-home/artifacts
+          key: ost-registry-${{ needs.preflight.outputs.ost_version }}-${{ runner.os }}-${{ runner.arch }}-${{ matrix.name }}-${{ matrix.runtime_artifact }}
+      - name: Set up the host Python the runtime is built against
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: ${{ matrix.host_python }}
+      - name: Validate the materialized runtime
+        shell: bash
+        run: ost runtime validate ${{ matrix.platform }} --profile ${{ matrix.profile }} --json
+      - name: Build and test the workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          ost plugin test --workspace --graph-only --json
+          ost build --target ${{ matrix.platform }} --profile ${{ matrix.profile }}
+          ost test --target ${{ matrix.platform }} --profile ${{ matrix.profile }}
+      # After the root build, which rewrites the bundle's outputs without the provenance that
+      # packaging requires.
+      - name: Build and test the bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          ost plugin build "$BUNDLE" --target ${{ matrix.platform }} --profile ${{ matrix.profile }}
+          ost plugin test "$BUNDLE" --target ${{ matrix.platform }} --profile ${{ matrix.profile }} --up-to 5 --json
+      - name: Package twice, to prove that the digest is reproducible
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .ost-ci
+          ost plugin package "$BUNDLE" --target ${{ matrix.platform }} --profile ${{ matrix.profile }} --json > .ost-ci/package.json
+          ost plugin package "$BUNDLE" --target ${{ matrix.platform }} --profile ${{ matrix.profile }} --json > .ost-ci/package-second.json
+          first="$(jq -er '.data.archive_digest' .ost-ci/package.json)"
+          second="$(jq -er '.data.archive_digest' .ost-ci/package-second.json)"
+          if [ "$first" != "$second" ]; then
+            echo "::error title=release packaging::two packagings of one build disagree ($first, $second)" ; exit 1
+          fi
+          echo "$first"
+      - name: Verify the package without the source tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          ost plugin test "$BUNDLE" --from-package --target ${{ matrix.platform }} --profile ${{ matrix.profile }} --up-to 5 --json
+          archive="$(jq -er '.data.archive' .ost-ci/package.json)"
+          python tests/check_package.py "$(dirname "$archive")" --platform ${{ matrix.platform }} --profile ${{ matrix.profile }}
+      - name: Stage the release files
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$(jq -er '.data.archive' .ost-ci/package.json)"
+          target="$(jq -er '.data.target' .ost-ci/package.json)"
+          if command -v cygpath > /dev/null; then archive="$(cygpath -u "$archive")"; fi
+          directory="$(dirname "$archive")"
+          stem="$(basename "$archive" .tar.zst)"
+          case "$stem" in
+            *-"$target") ;;
+            *) echo "::error title=release packaging::$stem does not name target $target" ; exit 1 ;;
+          esac
+          mkdir -p release-stage
+          cp "$archive" release-stage/
+          cp "$directory/manifest.json" "release-stage/$stem.manifest.json"
+          cp "$directory/sbom.spdx.json" "release-stage/$stem.sbom.spdx.json"
+          ls -l release-stage/
+      - name: Upload the release files
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-${{ matrix.name }}
+          path: release-stage/
+          if-no-files-found: error
+
+  release:
+    name: assemble the release (draft)
+    needs: [preflight, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.preflight.outputs.version }}
+      TAG: ${{ needs.preflight.outputs.tag }}
+      IS_RELEASE: ${{ needs.preflight.outputs.is_release }}
+      PRERELEASE: ${{ needs.preflight.outputs.prerelease }}
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Download the files of every target
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          pattern: release-*
+          path: dist-release
+          merge-multiple: true
+      - name: Add the source archive
+        shell: bash
+        run: git archive --format=tar.gz --prefix="usd-gltf-plugins-${TAG#v}/" -o "dist-release/usd-gltf-plugins-${TAG#v}-src.tar.gz" HEAD
+      - name: Write SHA256SUMS over every release file
+        shell: bash
+        working-directory: dist-release
+        run: |
+          set -euo pipefail
+          sha256sum * > "$RUNNER_TEMP/SHA256SUMS"
+          mv "$RUNNER_TEMP/SHA256SUMS" SHA256SUMS
+          cat SHA256SUMS
+      - name: Render the release notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$IS_RELEASE" = "true" ]; then tag=(--tag "$TAG"); else tag=(); fi
+          python3 scripts/make_release_notes.py "${tag[@]}" --checksums dist-release/SHA256SUMS --out release-notes.md
+          cat release-notes.md
+      - name: Create the draft GitHub release
+        if: ${{ needs.preflight.outputs.is_release == 'true' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ "$PRERELEASE" = "true" ]; then prerelease=(--prerelease); else prerelease=(); fi
+          gh release create "$TAG" --draft "${prerelease[@]}" --verify-tag \
+            --title "usd-gltf-plugins $TAG" --notes-file release-notes.md dist-release/*
+      - name: Upload the dry run
+        if: ${{ needs.preflight.outputs.is_release != 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-dry-run
+          path: |
+            dist-release/
+            release-notes.md

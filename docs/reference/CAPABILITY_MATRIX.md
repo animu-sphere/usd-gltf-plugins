@@ -38,16 +38,17 @@ CI success is not evidence of display compatibility.
 | Reflections, winding and normals | Verified (USD data, CI) | Indexed and non-indexed triangles with odd and even reflections in hierarchical transforms and a mirrored reference. | `tests/test_file_format.py::test_hierarchical_reflection_winding_and_normals`, `tests/test_file_format.py::test_reflection_view_fixture` |
 | Failure and reload behavior | Verified (USD data, CI) | Tested failures emit a diagnostic and do not publish a partial layer. Not proven for every USD error; [the transfer itself is not atomic](../architecture/LAYER_AUTHORING.md#decision). | `tests/test_file_format.py::test_failed_reload_does_not_publish_partial_stage`, `tests/test_file_format.py::test_mesh_failures_and_reload_preservation`, `tests/test_file_format.py::test_nonfinite_position_is_rejected` |
 | Extensions | Experimental | `KHR_texture_basisu` is implemented; see its row. Any other required extension fails. Other optional extensions warn and are ignored, except that a selected node using `KHR_lights_punctual` is rejected. | `tests/test_file_format.py::test_failures_report_diagnostics`, `tests/test_file_format.py::test_node_order_and_optional_extension_warning`, `tests/test_file_format.py::test_optional_lights_outside_selected_scene_and_required_lights`, `tests/test_file_format.py::test_unsupported_features_fail_without_publishing` |
-| usdview/Storm display | Experimental | Six [manual checks](#manual-visual-checks) of simple fixtures on Windows. Not general renderer support. | `tests/fixtures/reflections.gltf`, `tests/fixtures/alpha_modes.gltf`, `tests/fixtures/base_color_textures.gltf`, `tests/fixtures/pbr_textures.gltf`, `tests/fixtures/normal_textures.gltf`, `tests/fixtures/ktx2_textures.gltf` |
+| usdview/Storm display | Experimental | The [display check](#display-checks) of simple fixtures through both shader paths, run on one Windows machine. Not general renderer support. | `tests/check_display.py`, `tests/fixtures/reflections.gltf`, `tests/fixtures/alpha_modes.gltf`, `tests/fixtures/base_color_textures.gltf`, `tests/fixtures/pbr_textures.gltf`, `tests/fixtures/normal_textures.gltf`, `tests/fixtures/ktx2_textures.gltf` |
 | OpenStrata workspace build and tests | Verified (Windows x86-64, Linux x86-64, macOS arm64; OpenUSD 26.08) | The environments listed under [tested environments](#tested-environments). | [CI run 41297241072](https://github.com/animu-sphere/usd-gltf-plugins/actions/runs/41297241072) |
 | Standalone OpenStrata bundle | Verified (Local Windows) | `ost plugin test --up-to 2` confirms discovery of the file format, not a successful import. | `plugins/usdGltfFileFormat/openstrata.plugin.yaml` |
 | Root CMake build, install and registration | Verified (Local Windows) | A separate process registers the installed plugin and opens a stage. | `tests/test_install_smoke.py::test_installed_plugin_registers_and_opens_a_stage` |
-| Materials and bindings | Experimental | Default materials and explicit factor-only metallic-roughness materials, with OPAQUE, MASK or BLEND alpha and optional vertex colors: Preview and MaterialX networks and bindings, including `doubleSided`. Network structure has been tested locally; display has one [manual Storm check](#manual-visual-checks) of alpha and vertex colors. See the [decision record](../architecture/MATERIAL_FACTORS.md). | `tests/test_file_format.py::test_default_material_with_and_without_vertex_color`, `tests/test_file_format.py::test_factor_materials_and_bindings`, `tests/test_file_format.py::test_alpha_modes`, `tests/test_file_format.py::test_explicit_material_vertex_colors`, `tests/test_file_format.py::test_alpha_modes_view_fixture`, `tests/test_file_format.py::test_material_failures_preserve_layer` |
-| Base color textures | Experimental | Factor, alpha modes, UV set and wrap modes in both networks. Filters and `KHR_texture_transform` are not applied. With COLOR_0, Preview omits the vertex color and warns. Tested locally, with one [manual Storm check](#manual-visual-checks). See the [decision record](../adr/0002-base-color-texture-networks.md). | `tests/test_file_format.py::test_base_color_image_sources_and_networks`, `tests/test_file_format.py::test_base_color_sampler_uv_set_factor_and_alpha`, `tests/test_file_format.py::test_base_color_texture_with_vertex_colors`, `tests/test_file_format.py::test_base_color_textures_view_fixture`, `tests/test_file_format.py::test_material_failures_preserve_layer` |
-| Metallic-roughness, occlusion and emissive textures | Experimental | G = roughness, B = metallic and occlusion R as non-color data, and emissive as color, with factors, strength, UV sets and wrap modes in both networks. Filters and `KHR_texture_transform` are not applied. Occlusion has no visible effect through MaterialX `gltf_pbr` and also darkens direct light through Storm's UsdPreviewSurface. Tested locally, with one [manual Storm check](#manual-visual-checks). See the [decision record](../adr/0003-pbr-texture-networks.md). | `tests/test_file_format.py::test_metallic_roughness_occlusion_and_emissive_networks`, `tests/test_file_format.py::test_pbr_textures_without_terms_they_do_not_need`, `tests/test_file_format.py::test_pbr_textures_view_fixture`, `tests/test_file_format.py::test_pbr_texture_failures_preserve_layer`, `tests/test_file_format.py::test_material_failures_preserve_layer` |
-| Normal textures and tangents | Experimental | Scale, UV sets and wrap modes in both networks, as non-color data. Renderers derive the tangent frame, so a map baked against other tangents can differ, and filters and `KHR_texture_transform` are not applied. TANGENT is validated and retained as a primvar that no network reads. Tested locally, with one measured [manual Storm check](#manual-visual-checks) of uniform images on flat quads. See the [decision record](../adr/0004-normal-textures-and-tangents.md). | `tests/test_file_format.py::test_normal_texture_networks`, `tests/test_file_format.py::test_materials_without_a_normal_texture_author_no_normal`, `tests/test_file_format.py::test_normal_textures_view_fixture`, `tests/test_file_format.py::test_pbr_texture_failures_preserve_layer`, `tests/test_file_format.py::test_tangents_are_retained`, `tests/test_file_format.py::test_tangent_failures_preserve_layer` |
+| Release package | Experimental | Local Windows only: a bundle package extracted outside the repository registers, opens fixtures, serves KTX2 images and carries its licenses, and packaging twice gives one digest. [The release workflow](../../.github/workflows/release.yml) has not yet run, so Linux and macOS packages are unconfirmed. | `tests/check_package.py` |
+| Materials and bindings | Experimental | Default materials and explicit factor-only metallic-roughness materials, with OPAQUE, MASK or BLEND alpha and optional vertex colors: Preview and MaterialX networks and bindings, including `doubleSided`. Network structure has been tested locally; display has the [display check](#display-checks) of alpha and vertex colors. See the [decision record](../architecture/MATERIAL_FACTORS.md). | `tests/test_file_format.py::test_default_material_with_and_without_vertex_color`, `tests/test_file_format.py::test_factor_materials_and_bindings`, `tests/test_file_format.py::test_alpha_modes`, `tests/test_file_format.py::test_explicit_material_vertex_colors`, `tests/test_file_format.py::test_alpha_modes_view_fixture`, `tests/test_file_format.py::test_material_failures_preserve_layer` |
+| Base color textures | Experimental | Factor, alpha modes, UV set and wrap modes in both networks. Filters and `KHR_texture_transform` are not applied. With COLOR_0, Preview omits the vertex color and warns. Tested locally, with the [display check](#display-checks). See the [decision record](../adr/0002-base-color-texture-networks.md). | `tests/test_file_format.py::test_base_color_image_sources_and_networks`, `tests/test_file_format.py::test_base_color_sampler_uv_set_factor_and_alpha`, `tests/test_file_format.py::test_base_color_texture_with_vertex_colors`, `tests/test_file_format.py::test_base_color_textures_view_fixture`, `tests/test_file_format.py::test_material_failures_preserve_layer` |
+| Metallic-roughness, occlusion and emissive textures | Experimental | G = roughness, B = metallic and occlusion R as non-color data, and emissive as color, with factors, strength, UV sets and wrap modes in both networks. Filters and `KHR_texture_transform` are not applied. Occlusion has no visible effect through MaterialX `gltf_pbr` and also darkens direct light through Storm's UsdPreviewSurface. Tested locally, with the [display check](#display-checks). See the [decision record](../adr/0003-pbr-texture-networks.md). | `tests/test_file_format.py::test_metallic_roughness_occlusion_and_emissive_networks`, `tests/test_file_format.py::test_pbr_textures_without_terms_they_do_not_need`, `tests/test_file_format.py::test_pbr_textures_view_fixture`, `tests/test_file_format.py::test_pbr_texture_failures_preserve_layer`, `tests/test_file_format.py::test_material_failures_preserve_layer` |
+| Normal textures and tangents | Experimental | Scale, UV sets and wrap modes in both networks, as non-color data. Renderers derive the tangent frame, so a map baked against other tangents can differ, and filters and `KHR_texture_transform` are not applied. TANGENT is validated and retained as a primvar that no network reads. Tested locally, with the [display check](#display-checks) of uniform images on flat quads. See the [decision record](../adr/0004-normal-textures-and-tangents.md). | `tests/test_file_format.py::test_normal_texture_networks`, `tests/test_file_format.py::test_materials_without_a_normal_texture_author_no_normal`, `tests/test_file_format.py::test_normal_textures_view_fixture`, `tests/test_file_format.py::test_pbr_texture_failures_preserve_layer`, `tests/test_file_format.py::test_tangents_are_retained`, `tests/test_file_format.py::test_tangent_failures_preserve_layer` |
 | PNG and JPEG images | Experimental | bufferView, data URI and restricted local file images, served by a package resolver or a layer-relative path; embedded images resolve after moving an asset and through references. No image is written during import. See the [decision record](../adr/0001-image-assets.md). Import checks structure without decoding: damaged files, sides above 16384 and external files above 2 GiB fail. Not found: a PNG crafted with valid chunks and invalid data, which [crashes OpenUSD's image loader](../adr/0006-image-failures.md#limits) with or without this plugin; damage inside a JPEG scan; and external files damaged after import. Loader behavior was observed on Windows with Storm only. | `tests/image.cpp`, `tests/test_file_format.py::test_base_color_image_sources_and_networks`, `tests/test_file_format.py::test_images_resolve_after_moving_and_through_references`, `tests/test_file_format.py::test_package_resolver_rejects_invalid_entries`, `tests/test_file_format.py::test_texture_failures_preserve_layer`, `tests/test_file_format.py::test_damaged_and_oversized_images_fail_import`, `tests/test_file_format.py::test_unusual_but_valid_images_are_accepted`, `tests/test_file_format.py::test_checks_do_not_decode_image_data`, `tests/test_file_format.py::test_image_damaged_after_import_is_not_served`, `tests/test_file_format.py::test_external_image_file_size_limit` |
-| KTX2 (`KHR_texture_basisu`) | Experimental | ETC1S and UASTC LDR 4x4 single 2D images, up to 16384 per side, from bufferViews, data URIs and restricted local files, served as PNG by the package resolver and decoded on each read, without a cache. Other codecs, cubemaps and arrays are rejected. Import reads the header only, so a damaged body fails when read, with a warning, after the layer is published. Tested locally, with [manual Storm checks](#manual-visual-checks). See the [decision record](../adr/0005-ktx2-decoder.md). | `tests/image.cpp`, `tests/test_file_format.py::test_ktx2_images_are_served_as_png`, `tests/test_file_format.py::test_ktx2_is_preferred_over_its_fallback_and_does_not_warn`, `tests/test_file_format.py::test_ktx2_file_resolves_after_moving_and_on_reload`, `tests/test_file_format.py::test_ktx2_failures_preserve_layer`, `tests/test_file_format.py::test_ktx2_orientation_required_by_the_extension_is_accepted`, `tests/test_file_format.py::test_damaged_ktx2_body_fails_when_read`, `tests/test_file_format.py::test_ktx2_textures_view_fixture` |
+| KTX2 (`KHR_texture_basisu`) | Experimental | ETC1S and UASTC LDR 4x4 single 2D images, up to 16384 per side, from bufferViews, data URIs and restricted local files, served as PNG by the package resolver and decoded on each read, without a cache. Other codecs, cubemaps and arrays are rejected. Import reads the header only, so a damaged body fails when read, with a warning, after the layer is published. Tested locally, with the [display check](#display-checks). See the [decision record](../adr/0005-ktx2-decoder.md). | `tests/image.cpp`, `tests/test_file_format.py::test_ktx2_images_are_served_as_png`, `tests/test_file_format.py::test_ktx2_is_preferred_over_its_fallback_and_does_not_warn`, `tests/test_file_format.py::test_ktx2_file_resolves_after_moving_and_on_reload`, `tests/test_file_format.py::test_ktx2_failures_preserve_layer`, `tests/test_file_format.py::test_ktx2_orientation_required_by_the_extension_is_accepted`, `tests/test_file_format.py::test_damaged_ktx2_body_fails_when_read`, `tests/test_file_format.py::test_ktx2_textures_view_fixture` |
 | Point and line primitives, other vertex attributes, sparse accessors | Unsupported | Rejected with a diagnostic. | `tests/test_file_format.py::test_mesh_failures_and_reload_preservation` |
 | Skins, cameras, lights and morphs | Unsupported | Rejected when used in the selected scene, including morph targets and node or mesh morph weights. | `tests/test_file_format.py::test_unsupported_features_fail_without_publishing`, `tests/test_file_format.py::test_optional_lights_outside_selected_scene_and_required_lights` |
 | Animation | Unsupported | Any asset with animations is rejected, including animations outside the selected scene. | `tests/test_file_format.py::test_unsupported_features_fail_without_publishing`, `tests/test_file_format.py::test_animation_outside_selected_scene_is_rejected` |
@@ -68,107 +69,73 @@ the evidence above was produced.
 The `install_smoke` and `docs_consistency` tests were added after this run.
 The CI configuration is pinned in [openstrata.ci.yaml](../../openstrata.ci.yaml).
 
-## Manual visual checks
+## Display checks
 
-On Windows with OpenUSD 26.08 and the OpenStrata lookdev runtime, usdview's
-Storm renderer with OpenGL and backface culling was used to view the
-[reflection fixture](../../tests/fixtures/reflections.gltf). It shows four
-front-facing triangles: no reflection, a reflected parent, a reflected child,
-and two reflections. The first two use supplied normals and the next two use
-generated normals. All four were visible with culling enabled; a fifth,
-deliberately reversed triangle disappeared. With culling disabled all five were
-visible. This checks a simple front view and default lighting, not general
-shading correctness, other camera angles, materials or other renderers.
+[`tests/check_display.py`](../../tests/check_display.py) renders the fixtures below with
+Storm through MaterialX and UsdPreviewSurface, and compares pixels. The
+[README](../../README.md#development) has the command, and
+[ADR 0007](../adr/0007-display-check.md) explains the comparisons and their limits.
 
-To repeat the check after building the plugin bundle and installing the lookdev
-runtime (the `usd` profile alone does not provide usdview):
+Last result: 395 comparisons passed, none failed, on Windows with OpenUSD 26.08, the
+OpenStrata lookdev runtime and an NVIDIA RTX A5000. Two runs produced byte-identical
+images. This checks simple fixtures, not general shading correctness.
 
-```powershell
-ost plugin view --profile lookdev plugins\usdGltfFileFormat (Join-Path $PWD 'tests\fixtures\reflections.gltf')
-```
+The [reflection fixture](../../tests/fixtures/reflections.gltf) has four front-facing
+triangles: no reflection, a reflected parent, a reflected child, and two reflections. The
+first two use supplied normals and the next two use generated normals. With usdview's
+backface culling all four are visible and lit alike, and a fifth, deliberately reversed
+triangle disappears. Without culling all five are visible. This fixture is rendered through
+the engine call that usdview makes, not through usdview, and with the default material's
+MaterialX path only.
 
-In usdview, use **Viewer > Cull Backfaces (GL)** to toggle culling. With the
-default front view, the rightmost triangle is the reversed control.
+The [alpha fixture](../../tests/fixtures/alpha_modes.gltf) has vertex alpha falling from 1
+at the left of each quad to 0 at the right, in front of a red backdrop. Both paths show,
+from the left: two green quads cut at their centers (MASK, with vertex alpha alone and with
+a factor), a whole green quad (MASK with cutoff 0), a green quad fading into the backdrop
+(BLEND), a half-transparent quad fading likewise (BLEND with a factor), and a whole green
+quad (OPAQUE with a factor). The yellow factor leaves green unchanged, so this checks alpha
+and a multiply that keeps the vertex color.
 
-The [alpha fixture](../../tests/fixtures/alpha_modes.gltf) was rendered with
-`usdrecord` and Storm on the same runtime, through MaterialX and, in a copy with
-`outputs:mtlx:surface` removed from each material, through UsdPreviewSurface.
-Vertex alpha falls from 1 at the left of each quad to 0 at the right, in front of
-a red backdrop. Both paths compiled and showed, from the left: two green quads
-cut at their centers (MASK, with vertex alpha alone and with a factor), a whole
-green quad (MASK with cutoff 0), a green quad fading into the backdrop (BLEND), a
-half-transparent quad fading likewise (BLEND with a factor), and a whole green
-quad (OPAQUE with a factor). The yellow factor leaves green unchanged, so this
-checks alpha and a multiply that keeps the vertex color, not general shading.
-Compare the two paths by eye; pixels were not measured.
+The [base color texture fixture](../../tests/fixtures/base_color_textures.gltf) uses an
+image with red, green, blue and white quadrants, from upper left to lower right. Both paths
+show, from the left: the image upright from a data URI; from a bufferView with a yellow
+factor, so blue turns black and white yellow; from an external PNG; an external JPEG under
+BLEND, fully opaque because it has no alpha; a MASK cut at the image's alpha edge; a BLEND
+with a factor of 0.5; mirrored in S and clamped in T; and turned upside down by TEXCOORD_1.
+In the last quad, a green COLOR_0 multiplies the image in MaterialX only, which is the
+documented difference.
 
-To repeat the MaterialX render after building the workspace:
-
-```powershell
-ost env cy2026 --profile lookdev --shell powershell | Out-String | Invoke-Expression
-$env:PXR_PLUGINPATH_NAME = "$PWD\build\cy2026-windows-x86_64-py313-usd\plugin\resources\usdGltfFileFormat;$env:PXR_PLUGINPATH_NAME"
-usdrecord --imageWidth 1400 tests\fixtures\alpha_modes.gltf alpha_modes.png
-```
-
-The [base color texture fixture](../../tests/fixtures/base_color_textures.gltf) was
-rendered the same way through both paths. Its image has red, green, blue and white
-quadrants, from upper left to lower right. Both paths compiled and showed, from the
-left: the image upright from a data URI; from a bufferView with a yellow factor, so
-blue turns black and white yellow; from an external PNG; an external JPEG under BLEND,
-fully opaque because it has no alpha; a MASK cut at the image's alpha edge; a BLEND
-with a factor of 0.5; mirrored in S and clamped in T; and turned upside down by
-TEXCOORD_1. In the last quad, a green COLOR_0 multiplies the image in MaterialX only,
-which is the documented difference. Compare the two paths by eye.
-
-Color space was measured once with a throwaway asset, not a fixture: a gray texture of
-sRGB 188 (linear 0.503) beside a factor of 0.5, both rough and non-metallic. The
-rendered pixels were equal within each path, at 188 through MaterialX and 186 through
-UsdPreviewSurface. A raw reading of the texture would have been much brighter.
-
-To repeat this render, follow the commands above with this input:
-
-```powershell
-usdrecord --imageWidth 1500 tests\fixtures\base_color_textures.gltf base_color_textures.png
-```
-
-The [PBR texture fixture](../../tests/fixtures/pbr_textures.gltf) was rendered the same
-way through both paths. Both compiled and showed, from the left: metallic-roughness
-quadrants, with the metal lower half darker and a change of shade between the smooth
-left and rough right; the same image with metallic factor 0 and roughness factor 0.5,
-leaving only a roughness edge; occlusion, unoccluded on the left; occlusion at strength 0.5; the emissive image
-upright; and the emissive image with a yellow factor upside down through TEXCOORD_1.
-Both occlusion quads are dark on the right through UsdPreviewSurface (black, then
-midway) and uniform through MaterialX, which is the
+The [PBR texture fixture](../../tests/fixtures/pbr_textures.gltf) shows through both paths,
+from the left: metallic-roughness quadrants, with the metal half darker and a change of
+shade between the smooth left and rough right of the metal; the same image with metallic
+factor 0 and roughness factor 0.5, leaving only a roughness edge; occlusion, unoccluded on
+the left; occlusion at strength 0.5; the emissive image upright; and the emissive image with
+a yellow factor upside down through TEXCOORD_1. Both occlusion quads are dark on the right
+through UsdPreviewSurface (black, then midway) and uniform through MaterialX, which is the
 [documented difference](../adr/0003-pbr-texture-networks.md#occlusion-differs-between-the-paths).
 
-Color and non-color reading were measured once with throwaway assets, not fixtures,
-each rendered alone so that geometry and view were the same. An image value of 188 is
-0.737 read as data and 0.503 read as sRGB. Center pixels, MaterialX then
-UsdPreviewSurface:
+Color and non-color reading are measured on assets the check generates, each rendered alone
+so that geometry and view are the same. An image value of 188 is 0.737 read as data and
+0.503 read as sRGB. Center pixels are given as MaterialX then UsdPreviewSurface. Compare
+down a path, not across: the two shaders differ in brightness, most for metallic.
 
-| Case | Image | Equal factor | Factor at 0.503 |
+| Case | Image | Factor of the correct reading | Factor of the wrong reading |
 | --- | --- | --- | --- |
-| Roughness from G | 144, 143 | 144, 143 | 169, 169 |
-| Metallic from B | 104, 100 | 104, 100 | 117, 113 |
+| Base color | 189, 186 | 189, 186 | 223, 220 |
+| Roughness from G | 233, 231 | 233, 231 | 247, 247 |
+| Metallic from B | 207, 133 | 207, 133 | 215, 155 |
 | One image as base color and metallic-roughness | 193, 183 | 193, 183 | |
+| Emissive | 190, 190 | 190, 190 | |
 
-An emissive image of 188 equaled an emissive factor of 0.503 at 190 through both paths.
-Through UsdPreviewSurface, occlusion of 188 and a black image at strength 0.263 both
-took 251 down to 219, which is what multiplying by 0.737 gives. Through MaterialX they
-stayed within 1 of the unoccluded 254.
+Through UsdPreviewSurface, occlusion of 188 and a black image at strength 0.263 both take 228
+down to 199. Through MaterialX both stay at the unoccluded 231.
 
-To repeat the fixture render, follow the commands above with this input:
-
-```powershell
-usdrecord --imageWidth 1500 tests\fixtures\pbr_textures.gltf pbr_textures.png
-```
-
-The [normal texture fixture](../../tests/fixtures/normal_textures.gltf) has one quad
-per case, each with a uniform image tilting the normal. Its
-[reference](../../tests/fixtures/normal_textures_reference.gltf) has no normal
-textures, and each quad supplies the expected result as NORMAL. Both were rendered
-through both paths from the same off-axis camera, whose light separates opposite
-tilts. Center pixels, map then reference:
+The [normal texture fixture](../../tests/fixtures/normal_textures.gltf) has one quad per
+case, each with a uniform image tilting the normal. Its
+[reference](../../tests/fixtures/normal_textures_reference.gltf) has no normal textures, and
+each quad supplies the expected result as NORMAL. Both are rendered through both paths from
+the [same off-axis camera](../../tests/fixtures/normal_textures_view.usda), whose light
+separates opposite tilts. Center pixels, map then reference:
 
 | Case | Expected | MaterialX | UsdPreviewSurface |
 | --- | --- | --- | --- |
@@ -191,33 +158,23 @@ tilts. Center pixels, map then reference:
 Map and reference agree within 1 in every case. Pixel values also vary across the row
 because of the position of the light, so compare within a row of this table only.
 
-To repeat this render, follow the commands above with these inputs, using the same
-copy with `outputs:mtlx:surface` removed for UsdPreviewSurface:
-
-```powershell
-usdrecord --camera /Cam --sessionLayer tests\fixtures\normal_textures_view.usda --imageWidth 1800 tests\fixtures\normal_textures.gltf normal_textures.png
-usdrecord --camera /Cam --sessionLayer tests\fixtures\normal_textures_view.usda --imageWidth 1800 tests\fixtures\normal_textures_reference.gltf normal_textures_reference.png
-```
+The scale row cannot separate scales from this view. A generated quad tilted 45 degrees
+toward the light does: at scale 0.5 it equals its reference at 220 through MaterialX and 217
+through UsdPreviewSurface, and at scale 1 it is 198 and 196.
 
 The [KTX2 fixture](../../tests/fixtures/ktx2_textures.gltf) has six quads showing red,
-green, blue and white quadrants from upper left to lower right: a PNG as the reference,
-then ETC1S, ETC1S with mips and UASTC with Zstandard, then ETC1S and UASTC with alpha
-of 0.25 in the lower half under BLEND. Both paths compiled and showed all six upright.
-Pixels at the quadrant centers, as red, green, blue and white channels that should be
-high, were 253 for the reference and 252 to 255 for KTX2 through MaterialX, and 250 and
-249 to 252 through UsdPreviewSurface. The two alpha quads agreed with each other within
-1. The reference image is smaller, so only centers are comparable.
+green, blue and white quadrants from upper left to lower right: a PNG as the reference, then
+ETC1S, ETC1S with mips and UASTC with Zstandard, then ETC1S and UASTC with alpha of 0.25 in
+the lower half under BLEND. Both paths show all six upright. Channels that should be high, at
+the quadrant centers, are 250 to 251 for the reference and 251 to 254 for KTX2 through
+MaterialX, and 247 to 248 and 248 to 252 through UsdPreviewSurface. The two alpha quads
+agree within 3. Swapping their materials once showed that the part above 1 follows position,
+through the light, and not the codec.
 
-The Khronos FlightHelmet sample, which is not in this repository, was rendered the same
-way and looked correct through both paths by eye. All of its images use KTX2, including
-normal and metallic-roughness data.
+Multiple primitives sharing one POSITION accessor, on a generated asset, display correctly.
+Storm warns, because each mesh authors the accessor's whole vertex array and its topology uses
+only part of it.
 
-To repeat the fixture render, follow the commands above with this input:
-
-```powershell
-usdrecord --imageWidth 1500 tests\fixtures\ktx2_textures.gltf ktx2_textures.png
-```
-
-Multiple primitives sharing one POSITION accessor were also rendered. They
-displayed correctly, but Storm warns because each mesh authors the accessor's
-whole vertex array and its topology uses only part of it.
+The Khronos FlightHelmet sample, which is not in this repository and not part of the check,
+was once rendered through both paths and looked correct by eye. All of its images use KTX2,
+including normal and metallic-roughness data.

@@ -43,3 +43,16 @@ Every release must satisfy these checks:
       are not treated as a current guarantee.
 - [ ] The tag and release notes briefly state changes, the supported subset, known
       constraints and test environments, without copying the capability matrix.
+
+## Release process
+
+1. For a release, set the version in `openstrata.toml` and the bundle manifest, and give the
+   changelog a dated section. A pre-release such as `v0.1.0-alpha.1` needs neither.
+2. Run the [release workflow](../../.github/workflows/release.yml) by hand on the candidate
+   commit. This dry run creates no release.
+3. Run the [display check](../reference/CAPABILITY_MATRIX.md#display-checks) on that commit.
+4. Push the tag. The workflow builds, tests and packages on each CI platform, checks that each
+   package works without the source tree, and creates a draft release.
+5. Go through the release gate, edit the draft's notes, and publish it.
+
+The [decision record](../adr/0008-release-workflow.md) explains what the workflow does not do.

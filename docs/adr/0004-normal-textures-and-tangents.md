@@ -51,7 +51,7 @@ an otherwise usable asset on them would gain nothing.
 
 ## Evidence and limits
 
-[Manual visual checks](../reference/CAPABILITY_MATRIX.md#manual-visual-checks) compared
+[Manual visual checks](../reference/CAPABILITY_MATRIX.md#display-checks) compared
 each normal map with a flat quad whose supplied NORMAL is the expected result, through
 both paths in Storm, with uniform images on flat quads. This establishes direction,
 handedness, scale and UV set selection in one renderer. It does not compare a baked

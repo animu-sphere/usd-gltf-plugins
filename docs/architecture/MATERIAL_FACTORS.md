@@ -71,7 +71,7 @@ invalid factors without publishing the temporary layer.
 
 Those are structural USD checks. They passed while `gltf:colorAlpha` made every
 MaterialX graph reading it fail to compile in Storm, which is why these primvars
-avoid colons: [structure alone does not establish display](../reference/CAPABILITY_MATRIX.md#manual-visual-checks).
+avoid colons: [structure alone does not establish display](../reference/CAPABILITY_MATRIX.md#display-checks).
 Renderers may differ in their MaterialX support and shading approximations.
 Texture reads require further decisions and verification.
 

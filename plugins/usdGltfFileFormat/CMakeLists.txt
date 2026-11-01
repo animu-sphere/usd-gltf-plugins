@@ -44,12 +44,18 @@ configure_file(
     "${USD_GLTF_REPOSITORY_ROOT}/third_party/NOTICES.txt"
     "${USD_GLTF_OUTPUT_ROOT}/plugin/resources/usdGltfFileFormat/NOTICES.txt"
     COPYONLY)
+# A bundle package holds only the plugin's own tree, so the license must be in it too.
+configure_file(
+    "${USD_GLTF_REPOSITORY_ROOT}/LICENSE"
+    "${USD_GLTF_OUTPUT_ROOT}/plugin/resources/usdGltfFileFormat/LICENSE"
+    COPYONLY)
 install(TARGETS UsdGltfFileFormat
     RUNTIME DESTINATION lib
     LIBRARY DESTINATION lib)
 install(FILES
     "${USD_GLTF_OUTPUT_ROOT}/plugin/resources/usdGltfFileFormat/plugInfo.json"
     "${USD_GLTF_OUTPUT_ROOT}/plugin/resources/usdGltfFileFormat/NOTICES.txt"
+    "${USD_GLTF_OUTPUT_ROOT}/plugin/resources/usdGltfFileFormat/LICENSE"
     DESTINATION plugin/resources/usdGltfFileFormat)
 install(FILES
     "${USD_GLTF_REPOSITORY_ROOT}/LICENSE"

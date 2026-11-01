@@ -34,7 +34,7 @@ class InstallSmokeTest(unittest.TestCase):
             subprocess.run(command, check=True, capture_output=True, text=True)
             registration = prefix / "plugin" / "resources" / "usdGltfFileFormat"
             licenses = prefix / "share" / "licenses" / "usd-gltf-plugins"
-            for path in (registration / "plugInfo.json", registration / "NOTICES.txt",
+            for path in (registration / "plugInfo.json", registration / "NOTICES.txt", registration / "LICENSE",
                          licenses / "LICENSE", licenses / "NOTICES.txt"):
                 self.assertTrue(path.is_file(), path)
 

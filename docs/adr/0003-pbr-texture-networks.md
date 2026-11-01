@@ -56,7 +56,7 @@ because the input is valid and the behavior belongs to the renderer.
 
 ## Evidence and limits
 
-[Manual visual checks](../reference/CAPABILITY_MATRIX.md#manual-visual-checks) cover
+[Manual visual checks](../reference/CAPABILITY_MATRIX.md#display-checks) cover
 one renderer and simple images. They measure the color versus non-color reading, but not
 general shading against glTF's reference. Filters and `KHR_texture_transform` remain
 unapplied, as in ADR 0002.

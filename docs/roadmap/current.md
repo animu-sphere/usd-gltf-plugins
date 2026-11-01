@@ -5,12 +5,6 @@ implementation order.
 
 ## v0.1.0: practical import of static PBR glTF
 
-### Work
-
-| Task | Done when |
-| --- | --- |
-| Reproducible Storm display check | The manual renders in the [capability matrix](../reference/CAPABILITY_MATRIX.md#manual-visual-checks) can be repeated by a command that compares results, including the two shader paths. |
-
 ### Decisions to verify
 
 Record the investigation and outcome in an ADR before relying on these in

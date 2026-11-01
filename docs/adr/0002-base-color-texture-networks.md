@@ -46,7 +46,7 @@ MASK and BLEND multiplies alpha by the vertex alpha.
 ## Evidence and limits
 
 Both paths compiled and displayed in Storm, as described under
-[manual visual checks](../reference/CAPABILITY_MATRIX.md#manual-visual-checks). That
+[manual visual checks](../reference/CAPABILITY_MATRIX.md#display-checks). That
 is one renderer, one set of simple images, and comparison by eye.
 
 `KHR_texture_transform` remains ignored with the existing optional extension warning.
