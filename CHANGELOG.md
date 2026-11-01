@@ -22,6 +22,10 @@ here.
   Basis Universal transcoder.
 - Apache-2.0 license, installed with the plugin, and community health files.
 - Install smoke test and documentation consistency test.
+- Display check, `tests/check_display.py`, which renders the fixtures with Storm through
+  both shader paths and compares pixels.
+- Release workflow, which builds, verifies and packages the plugin on each CI platform
+  and creates a draft GitHub release. Plugin packages now include `LICENSE`.
 - clang-format configuration, applied to the project's C++ sources.
 
 ### Changed

@@ -1,0 +1,61 @@
+# Hand-authored. `ost ci generate github` renders this bootstrap into each generated job,
+# and release.yml, which it cannot generate, needs the same pinned and checksum-verified
+# `ost`. Every other pin is read from openstrata.ci.yaml through `ost ci matrix`.
+name: Bootstrap ost
+description: Install a pinned, checksum-verified `ost` release and put it on PATH
+
+inputs:
+  version:
+    description: The `ost` version to install, from openstrata.ci.yaml
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Bootstrap ost ${{ inputs.version }} (pinned release asset, checksum-verified)
+      shell: bash
+      env:
+        OST_VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        case "${RUNNER_OS}-${RUNNER_ARCH}" in
+          Linux-X64)   triple=x86_64-unknown-linux-musl ; ext=tar.xz ;;
+          macOS-ARM64) triple=aarch64-apple-darwin ; ext=tar.xz ;;
+          macOS-X64)   triple=x86_64-apple-darwin ; ext=tar.xz ;;
+          Windows-X64) triple=x86_64-pc-windows-msvc ; ext=zip ;;
+          *) echo "::error title=ost bootstrap::no ost release asset for ${RUNNER_OS}-${RUNNER_ARCH}" ; exit 1 ;;
+        esac
+        asset="ost-cli-${triple}.${ext}"
+        base="https://github.com/animu-sphere/open-strata/releases/download/v${OST_VERSION}"
+        work="$(mktemp -d)"
+        curl -fsSLo "$work/$asset" "$base/$asset"
+        curl -fsSLo "$work/$asset.sha256" "$base/$asset.sha256"
+        actual="$( (command -v sha256sum > /dev/null && sha256sum "$work/$asset" || shasum -a 256 "$work/$asset") | cut -d' ' -f1 )"
+        published="$(cut -d' ' -f1 "$work/$asset.sha256")"
+        if [ "$actual" != "$published" ]; then
+          echo "::error title=ost bootstrap::$asset hashes to $actual but the release publishes $published" ; exit 1
+        fi
+        mkdir -p "$work/bin"
+        if [ "$ext" = "zip" ]; then
+          powershell -NoProfile -Command "Expand-Archive -LiteralPath '$(cygpath -w "$work/$asset")' -DestinationPath '$(cygpath -w "$work/bin")' -Force"
+        else
+          tar -xf "$work/$asset" -C "$work/bin"
+        fi
+        bin="$(find "$work/bin" -type f \( -name ost -o -name ost.exe \) | head -n 1)"
+        if [ -z "$bin" ]; then echo "::error title=ost bootstrap::no ost binary inside $asset" ; exit 1 ; fi
+        chmod +x "$bin" 2> /dev/null || true
+        bin_dir="$(cd "$(dirname "$bin")" && pwd)"
+        # GITHUB_PATH needs a native path for Windows processes to find it.
+        if command -v cygpath > /dev/null; then bin_dir="$(cygpath -w "$bin_dir")"; fi
+        echo "$bin_dir" >> "$GITHUB_PATH"
+    - name: Check the bootstrapped ost is the pinned version
+      shell: bash
+      env:
+        OST_VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        version="$(ost --version | tr -d '\r')"
+        echo "$version"
+        if [ "$version" != "ost ${OST_VERSION}" ]; then
+          echo "::error title=ost bootstrap::expected 'ost ${OST_VERSION}', got '$version'" ; exit 1
+        fi

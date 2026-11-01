@@ -4,7 +4,7 @@
 
 ```text
 usd-gltf-plugins/
-  .github/workflows/       generated CI workflow
+  .github/workflows/       generated CI workflow, and the hand-written release workflow
   cmake/                   shared dependency setup for both build entry points
   docs/                    project documentation
   libs/
@@ -13,6 +13,7 @@ usd-gltf-plugins/
     gltfUsd/               USD scene translation
   plugins/
     usdGltfFileFormat/     OpenUSD file-format entry point and bundle manifest
+  scripts/                 release tooling
   tools/
     gltfConvert/           only if a CLI is needed
   tests/

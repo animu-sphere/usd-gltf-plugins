@@ -55,6 +55,17 @@ ost plugin build plugins/usdGltfFileFormat
 ost plugin test plugins/usdGltfFileFormat --up-to 2
 ```
 
+To check display with Storm after `ost build`, which needs a GPU and the lookdev runtime
+and is not part of `ost test`:
+
+```powershell
+ost env cy2026 --profile lookdev --shell powershell | Out-String | Invoke-Expression
+python tests\check_display.py build\cy2026-windows-x86_64-py313-usd
+```
+
+It exits nonzero if a comparison fails, and keeps images and logs in `display_check` in
+the build directory.
+
 ## Documentation
 
 - [Documentation index](docs/README.md)
