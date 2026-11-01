@@ -26,7 +26,16 @@ documentation checks, and mention in the pull request that the build was not run
 python tests/check_docs.py
 ```
 
-Please do not reformat vendored code under `third_party/`.
+## Formatting
+
+C and C++ files use the repository's `.clang-format` configuration. Run
+clang-format on files you changed, for example:
+
+```sh
+clang-format -i path/to/file.cpp path/to/file.h
+```
+
+Please do not format vendored code under `third_party/`.
 
 ## Documentation
 

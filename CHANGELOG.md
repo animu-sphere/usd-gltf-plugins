@@ -12,6 +12,7 @@ here.
 
 - Apache-2.0 license, installed with the plugin, and community health files.
 - Install smoke test and documentation consistency test.
+- clang-format configuration, applied to the project's C++ sources.
 
 ### Changed
 

@@ -8,23 +8,29 @@
 #include <string>
 #include <vector>
 
-namespace {
+namespace
+{
 
-bool checkParse(const std::vector<std::byte>& bytes, bool expectSuccess)
+bool
+checkParse(const std::vector<std::byte>& bytes, bool expectSuccess)
 {
     auto data = fastgltf::GltfDataBuffer::FromBytes(bytes.data(), bytes.size());
-    if (data.error() != fastgltf::Error::None) {
+    if (data.error() != fastgltf::Error::None)
+    {
         std::cerr << "Failed to allocate input buffer\n";
         return false;
     }
 
     fastgltf::Parser parser;
     auto asset = parser.loadGltf(data.get(), {}, fastgltf::Options::None);
-    if ((asset.error() == fastgltf::Error::None) != expectSuccess) {
-        std::cerr << "Unexpected parse result: " << fastgltf::getErrorMessage(asset.error()) << '\n';
+    if ((asset.error() == fastgltf::Error::None) != expectSuccess)
+    {
+        std::cerr << "Unexpected parse result: " << fastgltf::getErrorMessage(asset.error())
+                  << '\n';
         return false;
     }
-    if (expectSuccess && (asset->nodes.size() != 1 || asset->nodes[0].name != "Root")) {
+    if (expectSuccess && (asset->nodes.size() != 1 || asset->nodes[0].name != "Root"))
+    {
         std::cerr << "Parsed asset did not preserve the node\n";
         return false;
     }
@@ -33,7 +39,8 @@ bool checkParse(const std::vector<std::byte>& bytes, bool expectSuccess)
 
 } // namespace
 
-int main()
+int
+main()
 {
     const std::string json = R"({"asset":{"version":"2.0"},"nodes":[{"name":"Root"}]})";
     const std::string requiredExtension =
@@ -42,7 +49,8 @@ int main()
     auto truncatedGlb = glb;
     truncatedGlb.pop_back();
     return checkParse(gltfTestData::bytesOf(json), true) && checkParse(glb, true) &&
-                   checkParse(gltfTestData::bytesOf("{"), false) && checkParse(truncatedGlb, false) &&
+                   checkParse(gltfTestData::bytesOf("{"), false) &&
+                   checkParse(truncatedGlb, false) &&
                    checkParse(gltfTestData::bytesOf(requiredExtension), false)
                ? 0
                : 1;

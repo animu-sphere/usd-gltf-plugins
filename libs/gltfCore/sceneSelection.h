@@ -6,14 +6,17 @@
 #include <cstddef>
 #include <variant>
 
-namespace gltfCore {
+namespace gltfCore
+{
 
-struct SelectedScene {
+struct SelectedScene
+{
     std::size_t index;
     bool usedFallback;
 };
 
-enum class SceneSelectionError {
+enum class SceneSelectionError
+{
     NoScenes,
     InvalidDefaultScene,
 };
