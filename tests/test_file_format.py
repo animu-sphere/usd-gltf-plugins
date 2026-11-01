@@ -141,6 +141,69 @@ def color_document(extension, component_type, components, external=False):
     return document, binary
 
 
+def unsupported_document(extension, feature):
+    document, binary = mesh_document("glb")
+    del document["nodes"][0]["mesh"]
+    node = document["nodes"][1]
+
+    def add_accessor(data, component_type, count, accessor_type, **kwargs):
+        nonlocal binary
+        binary += b"\0" * (-len(binary) % 4)
+        view = len(document["bufferViews"])
+        document["bufferViews"].append({
+            "buffer": 0, "byteOffset": len(binary), "byteLength": len(data),
+        })
+        binary += data
+        index = len(document["accessors"])
+        document["accessors"].append({
+            "bufferView": view, "componentType": component_type, "count": count,
+            "type": accessor_type, **kwargs,
+        })
+        return index
+
+    if feature == "skin":
+        joints = add_accessor(bytes(12), 5121, 3, "VEC4")
+        weights = add_accessor(struct.pack("<12f", *([1, 0, 0, 0] * 3)), 5126, 3, "VEC4")
+        for item in document["meshes"][0]["primitives"]:
+            item["attributes"].update({"JOINTS_0": joints, "WEIGHTS_0": weights})
+        node["skin"] = 0
+        document["skins"] = [{"joints": [0]}]
+    elif feature == "camera":
+        node["camera"] = 0
+        document["cameras"] = [{"type": "perspective", "perspective": {
+            "yfov": 1.0, "znear": 0.1,
+        }}]
+    elif feature == "light":
+        document["extensionsUsed"] = ["KHR_lights_punctual"]
+        document["extensions"] = {"KHR_lights_punctual": {"lights": [{"type": "point"}]}}
+        node["extensions"] = {"KHR_lights_punctual": {"light": 0}}
+    elif feature in ("morph target", "mesh weights", "node weights"):
+        delta = add_accessor(struct.pack("<9f", *([0.0] * 9)), 5126, 3, "VEC3",
+                             min=[0, 0, 0], max=[0, 0, 0])
+        for item in document["meshes"][0]["primitives"]:
+            item["targets"] = [{"POSITION": delta}]
+        if feature == "mesh weights":
+            document["meshes"][0]["weights"] = [0.5]
+        elif feature == "node weights":
+            node["weights"] = [0.5]
+    elif feature == "animation":
+        times = add_accessor(struct.pack("<2f", 0, 1), 5126, 2, "SCALAR", min=[0], max=[1])
+        values = add_accessor(struct.pack("<6f", 0, 0, 0, 1, 0, 0), 5126, 2, "VEC3")
+        document["animations"] = [{
+            "samplers": [{"input": times, "output": values}],
+            "channels": [{"sampler": 0, "target": {"node": 0, "path": "translation"}}],
+        }]
+    else:
+        raise ValueError(feature)
+
+    document["buffers"][0]["byteLength"] = len(binary)
+    if extension == "gltf":
+        document["buffers"][0]["uri"] = "data:application/octet-stream;base64," + (
+            base64.b64encode(binary).decode())
+        return document, None
+    return document, binary
+
+
 def topology_document(extension, mode, indices, external=False, normal=False, index_type=5123):
     vertices = (
         (0, 0, 0), (1, 0, 0), (0, 1, 0), (1, 1, 0), (0, 2, 0),
@@ -749,6 +812,78 @@ class FileFormatTest(unittest.TestCase):
                 with self.assertRaisesRegex(Tf.ErrorException, "index is out of range"):
                     layer.Reload(True)
                 self.assertEqual(layer.ExportToString(), before)
+                write_asset(path, document, binary)
+                self.assertTrue(layer.Reload(True))
+
+    def test_optional_lights_outside_selected_scene_and_required_lights(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            for extension in ("gltf", "glb"):
+                with self.subTest(extension=extension):
+                    document, binary = unsupported_document(extension, "light")
+                    document["scenes"][0]["nodes"] = [0]
+                    document["nodes"][0]["mesh"] = 0
+                    path = root / ("optional." + extension)
+                    write_asset(path, document, binary)
+                    stage = Usd.Stage.Open(str(path))
+                    self.assertTrue(stage.GetPrimAtPath("/Asset/geo/Node_0"))
+                    self.assertFalse(stage.GetPrimAtPath("/Asset/geo/Node_1"))
+                    layer = stage.GetRootLayer()
+                    before = layer.ExportToString()
+
+                    document["extensionsRequired"] = ["KHR_lights_punctual"]
+                    required_path = root / ("required." + extension)
+                    write_asset(required_path, document, binary)
+                    with self.assertRaisesRegex(Tf.ErrorException, "cannot parse"):
+                        Usd.Stage.Open(str(required_path))
+                    write_asset(path, document, binary)
+                    with self.assertRaisesRegex(Tf.ErrorException, "cannot parse"):
+                        layer.Reload(True)
+                    self.assertEqual(layer.ExportToString(), before)
+                    self.assertTrue(stage.GetPrimAtPath("/Asset/geo/Node_0"))
+
+    def test_animation_outside_selected_scene_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for extension in ("gltf", "glb"):
+                with self.subTest(extension=extension):
+                    document, binary = unsupported_document(extension, "animation")
+                    document["scenes"][0]["nodes"] = [1]
+                    path = pathlib.Path(directory) / ("animation." + extension)
+                    write_asset(path, document, binary)
+                    with self.assertRaisesRegex(Tf.ErrorException, "animations are not supported"):
+                        Usd.Stage.Open(str(path))
+
+    def test_unsupported_features_fail_without_publishing(self):
+        cases = {
+            "skin": "skin, camera, light, or morph",
+            "camera": "skin, camera, light, or morph",
+            "light": "skin, camera, light, or morph",
+            "morph target": "morph targets",
+            "mesh weights": "morph weights",
+            "node weights": "skin, camera, light, or morph",
+            "animation": "animations are not supported",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            for extension in ("gltf", "glb"):
+                path = root / ("reload." + extension)
+                document, binary = mesh_document(extension)
+                write_asset(path, document, binary)
+                stage = Usd.Stage.Open(str(path))
+                layer = stage.GetRootLayer()
+                before = layer.ExportToString()
+                for feature, message in cases.items():
+                    with self.subTest(extension=extension, feature=feature):
+                        invalid, invalid_binary = unsupported_document(extension, feature)
+                        initial_path = root / (feature + "." + extension)
+                        write_asset(initial_path, invalid, invalid_binary)
+                        with self.assertRaisesRegex(Tf.ErrorException, message):
+                            Usd.Stage.Open(str(initial_path))
+                        write_asset(path, invalid, invalid_binary)
+                        with self.assertRaisesRegex(Tf.ErrorException, message):
+                            layer.Reload(True)
+                        self.assertEqual(layer.ExportToString(), before)
+                        self.assertTrue(stage.GetPrimAtPath("/Asset/geo/Node_0/Mesh_0/Primitive_0"))
                 write_asset(path, document, binary)
                 self.assertTrue(layer.Reload(True))
 
