@@ -8,7 +8,8 @@
 
 #include <cstddef>
 
-namespace gltfUsd {
+namespace gltfUsd
+{
 
 [[nodiscard]] bool AuthorMesh(const fastgltf::Asset& asset, std::size_t meshIndex,
                               const pxr::SdfPrimSpecHandle& parent,

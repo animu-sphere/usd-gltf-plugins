@@ -23,49 +23,59 @@
 #include <utility>
 #include <vector>
 
-namespace gltfUsd {
-namespace {
+namespace gltfUsd
+{
+namespace
+{
 
 using namespace pxr;
 
 static_assert(sizeof(float) == 4 && std::numeric_limits<float>::is_iec559);
 
-std::uint32_t readUnsigned(const std::byte* data, std::size_t size)
+std::uint32_t
+readUnsigned(const std::byte* data, std::size_t size)
 {
     std::uint32_t value = 0;
-    for (std::size_t i = 0; i < size; ++i) {
+    for (std::size_t i = 0; i < size; ++i)
+    {
         value |= std::uint32_t(std::to_integer<unsigned char>(data[i])) << (8 * i);
     }
     return value;
 }
 
-float readRealComponent(const std::byte* data, std::size_t size,
-                        fastgltf::ComponentType type)
+float
+readRealComponent(const std::byte* data, std::size_t size, fastgltf::ComponentType type)
 {
     const auto bits = readUnsigned(data, size);
-    return type == fastgltf::ComponentType::Float
-        ? std::bit_cast<float>(bits)
-        : float(bits) / float(size == 1 ? 255 : 65535);
+    return type == fastgltf::ComponentType::Float ? std::bit_cast<float>(bits)
+                                                  : float(bits) / float(size == 1 ? 255 : 65535);
 }
 
-bool readVectors(const fastgltf::Asset& asset, std::size_t index, VtVec3fArray& values,
-                 std::string& error, const gltfCore::BufferLoader& loadBuffer)
+bool
+readVectors(const fastgltf::Asset& asset, std::size_t index, VtVec3fArray& values,
+            std::string& error, const gltfCore::BufferLoader& loadBuffer)
 {
     gltfCore::AccessorData data;
     if (!gltfCore::GetAccessorData(asset, index, fastgltf::AccessorType::Vec3,
-                                   fastgltf::ComponentType::Float, 12, true, data, error, loadBuffer)) {
+                                   fastgltf::ComponentType::Float, 12, true, data, error,
+                                   loadBuffer))
+    {
         return false;
     }
-    if (data.count > std::size_t(std::numeric_limits<int>::max())) {
+    if (data.count > std::size_t(std::numeric_limits<int>::max()))
+    {
         error = "vertex count exceeds USD's index range";
         return false;
     }
     values.resize(data.count);
-    for (std::size_t i = 0; i < data.count; ++i) {
-        for (std::size_t component = 0; component < 3; ++component) {
+    for (std::size_t i = 0; i < data.count; ++i)
+    {
+        for (std::size_t component = 0; component < 3; ++component)
+        {
             const auto bits = readUnsigned(data.bytes.data() + i * data.stride + component * 4, 4);
             const float value = std::bit_cast<float>(bits);
-            if (!std::isfinite(value)) {
+            if (!std::isfinite(value))
+            {
                 error = "vertex attribute contains a non-finite value";
                 return false;
             }
@@ -75,39 +85,52 @@ bool readVectors(const fastgltf::Asset& asset, std::size_t index, VtVec3fArray& 
     return true;
 }
 
-bool readTexcoords(const fastgltf::Asset& asset, std::size_t index, VtVec2fArray& values,
-                   std::string& error, const gltfCore::BufferLoader& loadBuffer)
+bool
+readTexcoords(const fastgltf::Asset& asset, std::size_t index, VtVec2fArray& values,
+              std::string& error, const gltfCore::BufferLoader& loadBuffer)
 {
-    if (index >= asset.accessors.size()) {
+    if (index >= asset.accessors.size())
+    {
         error = "texture coordinate accessor index is out of range";
         return false;
     }
     const auto type = asset.accessors[index].componentType;
     std::size_t size;
-    switch (type) {
-    case fastgltf::ComponentType::Float: size = 4; break;
-    case fastgltf::ComponentType::UnsignedByte: size = 1; break;
-    case fastgltf::ComponentType::UnsignedShort: size = 2; break;
+    switch (type)
+    {
+    case fastgltf::ComponentType::Float:
+        size = 4;
+        break;
+    case fastgltf::ComponentType::UnsignedByte:
+        size = 1;
+        break;
+    case fastgltf::ComponentType::UnsignedShort:
+        size = 2;
+        break;
     default:
         error = "texture coordinate accessor has an unsupported component type";
         return false;
     }
     gltfCore::AccessorData data;
-    if (!gltfCore::GetAccessorData(asset, index, fastgltf::AccessorType::Vec2,
-                                   type, size * 2, true, data, error, loadBuffer,
-                                   type != fastgltf::ComponentType::Float)) {
+    if (!gltfCore::GetAccessorData(asset, index, fastgltf::AccessorType::Vec2, type, size * 2, true,
+                                   data, error, loadBuffer, type != fastgltf::ComponentType::Float))
+    {
         return false;
     }
-    if (data.count > std::size_t(std::numeric_limits<int>::max())) {
+    if (data.count > std::size_t(std::numeric_limits<int>::max()))
+    {
         error = "texture coordinate count exceeds USD's index range";
         return false;
     }
     values.resize(data.count);
-    for (std::size_t i = 0; i < data.count; ++i) {
-        for (std::size_t component = 0; component < 2; ++component) {
+    for (std::size_t i = 0; i < data.count; ++i)
+    {
+        for (std::size_t component = 0; component < 2; ++component)
+        {
             const float value = readRealComponent(
                 data.bytes.data() + i * data.stride + component * size, size, type);
-            if (!std::isfinite(value)) {
+            if (!std::isfinite(value))
+            {
                 error = "texture coordinate contains a non-finite value";
                 return false;
             }
@@ -117,58 +140,80 @@ bool readTexcoords(const fastgltf::Asset& asset, std::size_t index, VtVec2fArray
     return true;
 }
 
-bool readColors(const fastgltf::Asset& asset, std::size_t index, VtVec3fArray& colors,
-                VtFloatArray& alpha, std::string& error, const gltfCore::BufferLoader& loadBuffer)
+bool
+readColors(const fastgltf::Asset& asset, std::size_t index, VtVec3fArray& colors,
+           VtFloatArray& alpha, std::string& error, const gltfCore::BufferLoader& loadBuffer)
 {
-    if (index >= asset.accessors.size()) {
+    if (index >= asset.accessors.size())
+    {
         error = "vertex color accessor index is out of range";
         return false;
     }
     const auto& accessor = asset.accessors[index];
     std::size_t components;
-    if (accessor.type == fastgltf::AccessorType::Vec3) {
+    if (accessor.type == fastgltf::AccessorType::Vec3)
+    {
         components = 3;
-    } else if (accessor.type == fastgltf::AccessorType::Vec4) {
+    }
+    else if (accessor.type == fastgltf::AccessorType::Vec4)
+    {
         components = 4;
-    } else {
+    }
+    else
+    {
         error = "vertex color accessor has an invalid type";
         return false;
     }
     const auto type = accessor.componentType;
     std::size_t size;
-    switch (type) {
-    case fastgltf::ComponentType::Float: size = 4; break;
-    case fastgltf::ComponentType::UnsignedByte: size = 1; break;
-    case fastgltf::ComponentType::UnsignedShort: size = 2; break;
+    switch (type)
+    {
+    case fastgltf::ComponentType::Float:
+        size = 4;
+        break;
+    case fastgltf::ComponentType::UnsignedByte:
+        size = 1;
+        break;
+    case fastgltf::ComponentType::UnsignedShort:
+        size = 2;
+        break;
     default:
         error = "vertex color accessor has an unsupported component type";
         return false;
     }
     gltfCore::AccessorData data;
-    if (!gltfCore::GetAccessorData(asset, index, accessor.type, type, size * components,
-                                   true, data, error, loadBuffer,
-                                   type != fastgltf::ComponentType::Float)) {
+    if (!gltfCore::GetAccessorData(asset, index, accessor.type, type, size * components, true, data,
+                                   error, loadBuffer, type != fastgltf::ComponentType::Float))
+    {
         return false;
     }
-    if (data.count > std::size_t(std::numeric_limits<int>::max())) {
+    if (data.count > std::size_t(std::numeric_limits<int>::max()))
+    {
         error = "vertex color count exceeds USD's index range";
         return false;
     }
     colors.resize(data.count);
-    if (components == 4) {
+    if (components == 4)
+    {
         alpha.resize(data.count);
     }
-    for (std::size_t i = 0; i < data.count; ++i) {
-        for (std::size_t component = 0; component < components; ++component) {
+    for (std::size_t i = 0; i < data.count; ++i)
+    {
+        for (std::size_t component = 0; component < components; ++component)
+        {
             const float value = readRealComponent(
                 data.bytes.data() + i * data.stride + component * size, size, type);
-            if (!std::isfinite(value) || value < 0 || value > 1) {
+            if (!std::isfinite(value) || value < 0 || value > 1)
+            {
                 error = "vertex color contains a non-finite or out-of-range value";
                 return false;
             }
-            if (component == 3) {
+            if (component == 3)
+            {
                 alpha[i] = value;
-            } else {
+            }
+            else
+            {
                 colors[i][component] = value;
             }
         }
@@ -176,53 +221,71 @@ bool readColors(const fastgltf::Asset& asset, std::size_t index, VtVec3fArray& c
     return true;
 }
 
-bool validateIndexCount(std::size_t count, fastgltf::PrimitiveType type, std::string& error)
+bool
+validateIndexCount(std::size_t count, fastgltf::PrimitiveType type, std::string& error)
 {
     const auto limit = std::size_t(std::numeric_limits<int>::max());
-    if (type == fastgltf::PrimitiveType::Triangles) {
-        if (count < 3 || count > limit || count % 3 != 0) {
+    if (type == fastgltf::PrimitiveType::Triangles)
+    {
+        if (count < 3 || count > limit || count % 3 != 0)
+        {
             error = "triangle index count is invalid";
             return false;
         }
-    } else if (count < 3 || count - 2 > limit / 3) {
+    }
+    else if (count < 3 || count - 2 > limit / 3)
+    {
         error = "triangle strip or fan index count is invalid";
         return false;
     }
     return true;
 }
 
-bool readIndices(const fastgltf::Asset& asset, std::size_t index, std::size_t pointCount,
-                 fastgltf::PrimitiveType type,
-                 VtIntArray& values, std::string& error, const gltfCore::BufferLoader& loadBuffer)
+bool
+readIndices(const fastgltf::Asset& asset, std::size_t index, std::size_t pointCount,
+            fastgltf::PrimitiveType type, VtIntArray& values, std::string& error,
+            const gltfCore::BufferLoader& loadBuffer)
 {
-    if (index >= asset.accessors.size()) {
+    if (index >= asset.accessors.size())
+    {
         error = "index accessor is out of range";
         return false;
     }
     const auto componentType = asset.accessors[index].componentType;
     std::size_t size;
-    switch (componentType) {
-    case fastgltf::ComponentType::UnsignedByte: size = 1; break;
-    case fastgltf::ComponentType::UnsignedShort: size = 2; break;
-    case fastgltf::ComponentType::UnsignedInt: size = 4; break;
+    switch (componentType)
+    {
+    case fastgltf::ComponentType::UnsignedByte:
+        size = 1;
+        break;
+    case fastgltf::ComponentType::UnsignedShort:
+        size = 2;
+        break;
+    case fastgltf::ComponentType::UnsignedInt:
+        size = 4;
+        break;
     default:
         error = "index accessor has an unsupported component type";
         return false;
     }
     gltfCore::AccessorData data;
-    if (!gltfCore::GetAccessorData(asset, index, fastgltf::AccessorType::Scalar,
-                                   componentType, size, false, data, error, loadBuffer)) {
+    if (!gltfCore::GetAccessorData(asset, index, fastgltf::AccessorType::Scalar, componentType,
+                                   size, false, data, error, loadBuffer))
+    {
         return false;
     }
-    if (!validateIndexCount(data.count, type, error)) {
+    if (!validateIndexCount(data.count, type, error))
+    {
         return false;
     }
     values.resize(data.count);
-    for (std::size_t i = 0; i < data.count; ++i) {
+    for (std::size_t i = 0; i < data.count; ++i)
+    {
         const auto value = readUnsigned(data.bytes.data() + i * data.stride, size);
         const auto reserved = size == 4 ? std::numeric_limits<std::uint32_t>::max()
                                         : (std::uint32_t(1) << (size * 8)) - 1;
-        if (value >= pointCount || value == reserved) {
+        if (value >= pointCount || value == reserved)
+        {
             error = "triangle index is out of range";
             return false;
         }
@@ -231,21 +294,25 @@ bool readIndices(const fastgltf::Asset& asset, std::size_t index, std::size_t po
     return true;
 }
 
-bool setAttribute(const SdfPrimSpecHandle& prim, const char* name,
-                  const SdfValueTypeName& type, const VtValue& value)
+bool
+setAttribute(const SdfPrimSpecHandle& prim, const char* name, const SdfValueTypeName& type,
+             const VtValue& value)
 {
     const auto attribute = SdfAttributeSpec::New(prim, name, type);
     return attribute && attribute->SetDefaultValue(value);
 }
 
-bool authorPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& primitive,
-                     const SdfPrimSpecHandle& parent, std::size_t index, std::string& error,
-                     const gltfCore::BufferLoader& loadBuffer)
+bool
+authorPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& primitive,
+                const SdfPrimSpecHandle& parent, std::size_t index, std::string& error,
+                const gltfCore::BufferLoader& loadBuffer)
 {
     if ((primitive.type != fastgltf::PrimitiveType::Triangles &&
          primitive.type != fastgltf::PrimitiveType::TriangleStrip &&
-         primitive.type != fastgltf::PrimitiveType::TriangleFan) || primitive.materialIndex ||
-        !primitive.targets.empty() || primitive.dracoCompression || !primitive.mappings.empty()) {
+         primitive.type != fastgltf::PrimitiveType::TriangleFan) ||
+        primitive.materialIndex || !primitive.targets.empty() || primitive.dracoCompression ||
+        !primitive.mappings.empty())
+    {
         error = "primitive mode, material, morph targets, or compression is not supported";
         return false;
     }
@@ -253,93 +320,126 @@ bool authorPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& pr
     const fastgltf::Attribute* normal = nullptr;
     const fastgltf::Attribute* color = nullptr;
     std::vector<std::pair<std::size_t, const fastgltf::Attribute*>> texcoords;
-    for (const auto& attribute : primitive.attributes) {
-        if (attribute.name == "POSITION" && !position) {
+    for (const auto& attribute : primitive.attributes)
+    {
+        if (attribute.name == "POSITION" && !position)
+        {
             position = &attribute;
-        } else if (attribute.name == "NORMAL" && !normal) {
+        }
+        else if (attribute.name == "NORMAL" && !normal)
+        {
             normal = &attribute;
-        } else if (attribute.name == "COLOR_0" && !color) {
+        }
+        else if (attribute.name == "COLOR_0" && !color)
+        {
             color = &attribute;
-        } else if (attribute.name.starts_with("TEXCOORD_")) {
+        }
+        else if (attribute.name.starts_with("TEXCOORD_"))
+        {
             const auto suffix = std::string_view(attribute.name).substr(9);
             std::size_t set = 0;
             const auto parsed = std::from_chars(suffix.data(), suffix.data() + suffix.size(), set);
             if (suffix.empty() || (suffix.size() > 1 && suffix[0] == '0') ||
-                parsed.ec != std::errc{} || parsed.ptr != suffix.data() + suffix.size()) {
+                parsed.ec != std::errc{} || parsed.ptr != suffix.data() + suffix.size())
+            {
                 error = "invalid texture coordinate attribute: " + attribute.name;
                 return false;
             }
             texcoords.emplace_back(set, &attribute);
-        } else {
+        }
+        else
+        {
             error = "unsupported or repeated vertex attribute: " + attribute.name;
             return false;
         }
     }
-    if (!position) {
+    if (!position)
+    {
         error = "primitive has no POSITION attribute";
         return false;
     }
     std::sort(texcoords.begin(), texcoords.end(),
               [](const auto& a, const auto& b) { return a.first < b.first; });
-    for (std::size_t i = 0; i < texcoords.size(); ++i) {
-        if (texcoords[i].first != i) {
+    for (std::size_t i = 0; i < texcoords.size(); ++i)
+    {
+        if (texcoords[i].first != i)
+        {
             error = "texture coordinate sets must start at zero and be consecutive";
             return false;
         }
     }
     VtVec3fArray points;
-    if (!readVectors(asset, position->accessorIndex, points, error, loadBuffer)) {
+    if (!readVectors(asset, position->accessorIndex, points, error, loadBuffer))
+    {
         return false;
     }
     VtVec3fArray normals;
     if (normal && (!readVectors(asset, normal->accessorIndex, normals, error, loadBuffer) ||
-                   normals.size() != points.size())) {
-        if (error.empty()) {
+                   normals.size() != points.size()))
+    {
+        if (error.empty())
+        {
             error = "normal and position counts differ";
         }
         return false;
     }
     VtVec3fArray colors;
     VtFloatArray alpha;
-    if (color && !readColors(asset, color->accessorIndex, colors, alpha, error, loadBuffer)) {
+    if (color && !readColors(asset, color->accessorIndex, colors, alpha, error, loadBuffer))
+    {
         return false;
     }
-    if (color && colors.size() != points.size()) {
+    if (color && colors.size() != points.size())
+    {
         error = "vertex color and position counts differ";
         return false;
     }
     std::vector<VtVec2fArray> uvSets(texcoords.size());
-    for (std::size_t i = 0; i < texcoords.size(); ++i) {
-        if (!readTexcoords(asset, texcoords[i].second->accessorIndex, uvSets[i], error, loadBuffer)) {
+    for (std::size_t i = 0; i < texcoords.size(); ++i)
+    {
+        if (!readTexcoords(asset, texcoords[i].second->accessorIndex, uvSets[i], error, loadBuffer))
+        {
             return false;
         }
-        if (uvSets[i].size() != points.size()) {
+        if (uvSets[i].size() != points.size())
+        {
             error = "texture coordinate and position counts differ";
             return false;
         }
     }
     VtIntArray indices;
-    if (primitive.indicesAccessor) {
-        if (!readIndices(asset, *primitive.indicesAccessor, points.size(), primitive.type,
-                         indices, error, loadBuffer)) {
+    if (primitive.indicesAccessor)
+    {
+        if (!readIndices(asset, *primitive.indicesAccessor, points.size(), primitive.type, indices,
+                         error, loadBuffer))
+        {
             return false;
         }
-    } else {
-        if (!validateIndexCount(points.size(), primitive.type, error)) {
+    }
+    else
+    {
+        if (!validateIndexCount(points.size(), primitive.type, error))
+        {
             return false;
         }
         indices.resize(points.size());
-        for (std::size_t i = 0; i < points.size(); ++i) {
+        for (std::size_t i = 0; i < points.size(); ++i)
+        {
             indices[i] = static_cast<int>(i);
         }
     }
-    if (primitive.type != fastgltf::PrimitiveType::Triangles) {
+    if (primitive.type != fastgltf::PrimitiveType::Triangles)
+    {
         VtIntArray triangles((indices.size() - 2) * 3);
-        for (std::size_t i = 0; i + 2 < indices.size(); ++i) {
-            if (primitive.type == fastgltf::PrimitiveType::TriangleFan) {
+        for (std::size_t i = 0; i + 2 < indices.size(); ++i)
+        {
+            if (primitive.type == fastgltf::PrimitiveType::TriangleFan)
+            {
                 triangles[i * 3] = indices[0];
                 triangles[i * 3 + 1] = indices[i + 1];
-            } else {
+            }
+            else
+            {
                 // Alternate strip winding, including across degenerate triangles.
                 triangles[i * 3] = indices[i + (i % 2)];
                 triangles[i * 3 + 1] = indices[i + 1 - (i % 2)];
@@ -348,59 +448,72 @@ bool authorPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& pr
         }
         indices = std::move(triangles);
     }
-    if (!normal) {
+    if (!normal)
+    {
         normals.resize(indices.size() / 3);
-        for (std::size_t i = 0; i < normals.size(); ++i) {
+        for (std::size_t i = 0; i < normals.size(); ++i)
+        {
             const auto& a = points[indices[i * 3]];
             const auto& b = points[indices[i * 3 + 1]];
             const auto& c = points[indices[i * 3 + 2]];
-            const double ux = double(b[0]) - a[0], uy = double(b[1]) - a[1], uz = double(b[2]) - a[2];
-            const double vx = double(c[0]) - a[0], vy = double(c[1]) - a[1], vz = double(c[2]) - a[2];
+            const double ux = double(b[0]) - a[0], uy = double(b[1]) - a[1],
+                         uz = double(b[2]) - a[2];
+            const double vx = double(c[0]) - a[0], vy = double(c[1]) - a[1],
+                         vz = double(c[2]) - a[2];
             const double x = uy * vz - uz * vy, y = uz * vx - ux * vz, z = ux * vy - uy * vx;
             const double length = std::hypot(x, y, z);
-            normals[i] = length == 0 ? GfVec3f(0) :
-                GfVec3f(float(x / length), float(y / length), float(z / length));
+            normals[i] = length == 0
+                             ? GfVec3f(0)
+                             : GfVec3f(float(x / length), float(y / length), float(z / length));
         }
     }
-    const auto mesh = SdfPrimSpec::New(parent, "Primitive_" + std::to_string(index),
-                                       SdfSpecifierDef, "Mesh");
+    const auto mesh =
+        SdfPrimSpec::New(parent, "Primitive_" + std::to_string(index), SdfSpecifierDef, "Mesh");
     const VtIntArray counts(indices.size() / 3, 3);
     if (!mesh || !setAttribute(mesh, "points", SdfValueTypeNames->Point3fArray, VtValue(points)) ||
         !setAttribute(mesh, "faceVertexCounts", SdfValueTypeNames->IntArray, VtValue(counts)) ||
         !setAttribute(mesh, "faceVertexIndices", SdfValueTypeNames->IntArray, VtValue(indices)) ||
-        !setAttribute(mesh, "subdivisionScheme", SdfValueTypeNames->Token, VtValue(TfToken("none")))) {
+        !setAttribute(mesh, "subdivisionScheme", SdfValueTypeNames->Token,
+                      VtValue(TfToken("none"))))
+    {
         error = "could not author USD mesh";
         return false;
     }
     const auto attr = SdfAttributeSpec::New(mesh, "normals", SdfValueTypeNames->Normal3fArray);
-    if (!attr || !attr->SetDefaultValue(VtValue(normals))) {
+    if (!attr || !attr->SetDefaultValue(VtValue(normals)))
+    {
         error = "could not author USD normals";
         return false;
     }
     attr->SetInfo(TfToken("interpolation"), VtValue(TfToken(normal ? "vertex" : "uniform")));
-    if (color) {
-        const auto displayColor = SdfAttributeSpec::New(
-            mesh, "primvars:displayColor", SdfValueTypeNames->Color3fArray);
-        if (!displayColor || !displayColor->SetDefaultValue(VtValue(colors))) {
+    if (color)
+    {
+        const auto displayColor =
+            SdfAttributeSpec::New(mesh, "primvars:displayColor", SdfValueTypeNames->Color3fArray);
+        if (!displayColor || !displayColor->SetDefaultValue(VtValue(colors)))
+        {
             error = "could not author USD vertex colors";
             return false;
         }
         displayColor->SetInfo(TfToken("interpolation"), VtValue(TfToken("vertex")));
-        if (!alpha.empty()) {
-            const auto colorAlpha = SdfAttributeSpec::New(
-                mesh, "primvars:gltf:colorAlpha", SdfValueTypeNames->FloatArray);
-            if (!colorAlpha || !colorAlpha->SetDefaultValue(VtValue(alpha))) {
+        if (!alpha.empty())
+        {
+            const auto colorAlpha = SdfAttributeSpec::New(mesh, "primvars:gltf:colorAlpha",
+                                                          SdfValueTypeNames->FloatArray);
+            if (!colorAlpha || !colorAlpha->SetDefaultValue(VtValue(alpha)))
+            {
                 error = "could not author USD vertex color alpha";
                 return false;
             }
             colorAlpha->SetInfo(TfToken("interpolation"), VtValue(TfToken("vertex")));
         }
     }
-    for (std::size_t i = 0; i < uvSets.size(); ++i) {
-        const auto name = i == 0 ? std::string("primvars:st")
-                                 : "primvars:st" + std::to_string(i);
+    for (std::size_t i = 0; i < uvSets.size(); ++i)
+    {
+        const auto name = i == 0 ? std::string("primvars:st") : "primvars:st" + std::to_string(i);
         const auto uv = SdfAttributeSpec::New(mesh, name, SdfValueTypeNames->TexCoord2fArray);
-        if (!uv || !uv->SetDefaultValue(VtValue(uvSets[i]))) {
+        if (!uv || !uv->SetDefaultValue(VtValue(uvSets[i])))
+        {
             error = "could not author USD texture coordinates";
             return false;
         }
@@ -411,30 +524,38 @@ bool authorPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& pr
 
 } // namespace
 
-bool AuthorMesh(const fastgltf::Asset& asset, std::size_t meshIndex,
-                const pxr::SdfPrimSpecHandle& parent, const gltfCore::BufferLoader& loadBuffer)
+bool
+AuthorMesh(const fastgltf::Asset& asset, std::size_t meshIndex,
+           const pxr::SdfPrimSpecHandle& parent, const gltfCore::BufferLoader& loadBuffer)
 {
-    if (meshIndex >= asset.meshes.size()) {
+    if (meshIndex >= asset.meshes.size())
+    {
         TF_RUNTIME_ERROR("glTF mesh index %zu is out of range", meshIndex);
         return false;
     }
     const auto& source = asset.meshes[meshIndex];
-    if (source.primitives.empty() || !source.weights.empty()) {
-        TF_RUNTIME_ERROR("glTF mesh %zu has no primitives or uses unsupported morph weights", meshIndex);
+    if (source.primitives.empty() || !source.weights.empty())
+    {
+        TF_RUNTIME_ERROR("glTF mesh %zu has no primitives or uses unsupported morph weights",
+                         meshIndex);
         return false;
     }
-    const auto group = SdfPrimSpec::New(parent, "Mesh_" + std::to_string(meshIndex),
-                                        SdfSpecifierDef, "Xform");
-    if (!group) {
+    const auto group =
+        SdfPrimSpec::New(parent, "Mesh_" + std::to_string(meshIndex), SdfSpecifierDef, "Xform");
+    if (!group)
+    {
         TF_RUNTIME_ERROR("Could not author glTF mesh %zu", meshIndex);
         return false;
     }
-    if (!source.name.empty()) {
+    if (!source.name.empty())
+    {
         group->SetInfo(SdfFieldKeys->DisplayName, VtValue(source.name));
     }
-    for (std::size_t i = 0; i < source.primitives.size(); ++i) {
+    for (std::size_t i = 0; i < source.primitives.size(); ++i)
+    {
         std::string error;
-        if (!authorPrimitive(asset, source.primitives[i], group, i, error, loadBuffer)) {
+        if (!authorPrimitive(asset, source.primitives[i], group, i, error, loadBuffer))
+        {
             TF_RUNTIME_ERROR("glTF mesh %zu primitive %zu: %s", meshIndex, i, error.c_str());
             return false;
         }

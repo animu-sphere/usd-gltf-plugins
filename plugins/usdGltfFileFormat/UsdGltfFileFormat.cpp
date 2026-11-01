@@ -22,48 +22,55 @@ PXR_NAMESPACE_OPEN_SCOPE
 
 class UsdGltfFileFormat : public SdfFileFormat
 {
-public:
-    bool CanRead(const std::string& path) const override
+  public:
+    bool
+    CanRead(const std::string& path) const override
     {
         const auto resolved = ArGetResolver().Resolve(path);
         const auto input = ArGetResolver().OpenAsset(resolved);
-        if (!input || input->GetSize() == 0) {
+        if (!input || input->GetSize() == 0)
+        {
             return false;
         }
         const auto bytes = input->GetBuffer();
-        if (!bytes) {
+        if (!bytes)
+        {
             return false;
         }
-        return gltfCore::Parse(reinterpret_cast<const std::byte*>(bytes.get()),
-                               input->GetSize()).error() == fastgltf::Error::None;
+        return gltfCore::Parse(reinterpret_cast<const std::byte*>(bytes.get()), input->GetSize())
+                   .error() == fastgltf::Error::None;
     }
 
-    bool Read(SdfLayer* layer, const std::string& path, bool) const override
+    bool
+    Read(SdfLayer* layer, const std::string& path, bool) const override
     {
         const auto input = ArGetResolver().OpenAsset(ArResolvedPath(path));
-        if (!input || input->GetSize() == 0) {
+        if (!input || input->GetSize() == 0)
+        {
             TF_RUNTIME_ERROR("usdGltfFileFormat: cannot open or empty asset '%s'", path.c_str());
             return false;
         }
         const auto bytes = input->GetBuffer();
-        if (!bytes) {
+        if (!bytes)
+        {
             TF_RUNTIME_ERROR("usdGltfFileFormat: cannot read asset '%s'", path.c_str());
             return false;
         }
-        auto asset = gltfCore::Parse(
-            reinterpret_cast<const std::byte*>(bytes.get()), input->GetSize());
-        if (asset.error() != fastgltf::Error::None) {
+        auto asset =
+            gltfCore::Parse(reinterpret_cast<const std::byte*>(bytes.get()), input->GetSize());
+        if (asset.error() != fastgltf::Error::None)
+        {
             TF_RUNTIME_ERROR("usdGltfFileFormat: cannot parse '%s': %s", path.c_str(),
                              fastgltf::getErrorMessage(asset.error()).data());
             return false;
         }
         ExternalBufferLoader loader(path);
         auto converted = gltfUsd::ConvertScene(
-            asset.get(), [&loader](const fastgltf::Buffer& buffer,
-                                   std::span<const std::byte>& data, std::string& error) {
-                return loader.Load(buffer, data, error);
-            });
-        if (!converted) {
+            asset.get(),
+            [&loader](const fastgltf::Buffer& buffer, std::span<const std::byte>& data,
+                      std::string& error) { return loader.Load(buffer, data, error); });
+        if (!converted)
+        {
             return false;
         }
         TfErrorMark mark;
@@ -71,7 +78,7 @@ public:
         return mark.IsClean();
     }
 
-protected:
+  protected:
     SDF_FILE_FORMAT_FACTORY_ACCESS;
     UsdGltfFileFormat()
         : SdfFileFormat(TfToken("gltf"), TfToken("1.0"), TfToken("usd"),

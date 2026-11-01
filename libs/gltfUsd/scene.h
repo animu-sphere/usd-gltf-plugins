@@ -8,7 +8,8 @@
 
 #include <fastgltf/types.hpp>
 
-namespace gltfUsd {
+namespace gltfUsd
+{
 
 [[nodiscard]] pxr::SdfLayerRefPtr ConvertScene(const fastgltf::Asset& asset,
                                                const gltfCore::BufferLoader& loadBuffer);

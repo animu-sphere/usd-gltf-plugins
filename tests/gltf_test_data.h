@@ -7,24 +7,30 @@
 #include <string_view>
 #include <vector>
 
-namespace gltfTestData {
+namespace gltfTestData
+{
 
-inline std::vector<std::byte> bytesOf(std::string_view text)
+inline std::vector<std::byte>
+bytesOf(std::string_view text)
 {
     const auto* begin = reinterpret_cast<const std::byte*>(text.data());
     return {begin, begin + text.size()};
 }
 
-inline void appendUint32(std::vector<std::byte>& bytes, std::uint32_t value)
+inline void
+appendUint32(std::vector<std::byte>& bytes, std::uint32_t value)
 {
-    for (unsigned int shift = 0; shift < 32; shift += 8) {
+    for (unsigned int shift = 0; shift < 32; shift += 8)
+    {
         bytes.push_back(static_cast<std::byte>((value >> shift) & 0xff));
     }
 }
 
-inline std::vector<std::byte> glbOf(std::string text)
+inline std::vector<std::byte>
+glbOf(std::string text)
 {
-    while (text.size() % 4 != 0) {
+    while (text.size() % 4 != 0)
+    {
         text.push_back(' ');
     }
     std::vector<std::byte> bytes;

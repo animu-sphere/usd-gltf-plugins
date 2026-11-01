@@ -8,17 +8,19 @@
 #include <utility>
 #include <vector>
 
-namespace {
+namespace
+{
 
-bool check(const fastgltf::Asset& asset, bool expected, const char* label,
-           bool normalized = false)
+bool
+check(const fastgltf::Asset& asset, bool expected, const char* label, bool normalized = false)
 {
     gltfCore::AccessorData result;
     std::string error;
-    const bool success = gltfCore::GetAccessorData(
-        asset, 0, fastgltf::AccessorType::Vec3, fastgltf::ComponentType::Float,
-        12, true, result, error, {}, normalized);
-    if (success != expected || (!success && error.empty())) {
+    const bool success = gltfCore::GetAccessorData(asset, 0, fastgltf::AccessorType::Vec3,
+                                                   fastgltf::ComponentType::Float, 12, true, result,
+                                                   error, {}, normalized);
+    if (success != expected || (!success && error.empty()))
+    {
         std::cerr << label << ": unexpected accessor result: " << error << '\n';
         return false;
     }
@@ -27,7 +29,8 @@ bool check(const fastgltf::Asset& asset, bool expected, const char* label,
 
 } // namespace
 
-int main()
+int
+main()
 {
     fastgltf::Asset asset;
     fastgltf::Buffer buffer{};
@@ -79,16 +82,19 @@ int main()
     gltfCore::AccessorData result;
     std::string error;
     if (gltfCore::GetAccessorData(asset, 0, fastgltf::AccessorType::Vec2,
-                                  fastgltf::ComponentType::UnsignedByte, 2, true,
-                                  result, error, {}, true) || error.empty()) {
+                                  fastgltf::ComponentType::UnsignedByte, 2, true, result, error, {},
+                                  true) ||
+        error.empty())
+    {
         std::cerr << "misaligned packed byte vertices were accepted\n";
         ok = false;
     }
     asset.bufferViews[0].byteStride = 4;
     error.clear();
     if (!gltfCore::GetAccessorData(asset, 0, fastgltf::AccessorType::Vec2,
-                                   fastgltf::ComponentType::UnsignedByte, 2, true,
-                                   result, error, {}, true)) {
+                                   fastgltf::ComponentType::UnsignedByte, 2, true, result, error,
+                                   {}, true))
+    {
         std::cerr << "aligned byte vertices rejected: " << error << '\n';
         ok = false;
     }

@@ -1,17 +1,22 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "sceneSelection.h"
 
-namespace gltfCore {
-
-SceneSelection SelectScene(const fastgltf::Asset& asset)
+namespace gltfCore
 {
-    if (asset.scenes.empty()) {
+
+SceneSelection
+SelectScene(const fastgltf::Asset& asset)
+{
+    if (asset.scenes.empty())
+    {
         return SceneSelectionError::NoScenes;
     }
-    if (!asset.defaultScene.has_value()) {
+    if (!asset.defaultScene.has_value())
+    {
         return SelectedScene{0, true};
     }
-    if (*asset.defaultScene >= asset.scenes.size()) {
+    if (*asset.defaultScene >= asset.scenes.size())
+    {
         return SceneSelectionError::InvalidDefaultScene;
     }
     return SelectedScene{*asset.defaultScene, false};
