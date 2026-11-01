@@ -12,8 +12,19 @@ Parse(const std::byte* bytes, std::size_t size)
     {
         return data.error();
     }
-    fastgltf::Parser parser;
-    return parser.loadGltf(data.get(), {}, fastgltf::Options::None);
+    // Parse light references so the scene converter can reject selected lights.
+    // Enabling parsing does not mean the extension is supported.
+    fastgltf::Parser parser(fastgltf::Extensions::KHR_lights_punctual);
+    auto asset = parser.loadGltf(data.get(), {}, fastgltf::Options::None);
+    if (asset.error() != fastgltf::Error::None)
+    {
+        return asset.error();
+    }
+    if (!asset->extensionsRequired.empty())
+    {
+        return fastgltf::Error::MissingExtensions;
+    }
+    return asset;
 }
 
 } // namespace gltfCore

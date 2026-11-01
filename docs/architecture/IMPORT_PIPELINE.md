@@ -23,8 +23,10 @@ lifecycle and portability requirements.
 ## Failure policy
 
 Reject unsupported content rather than silently dropping it or presenting an
-incorrect scene. Unsupported required extensions fail; fastgltf rejects them
-during parsing. Unsupported optional extensions are reported as warnings.
+incorrect scene. unsupported required extensions fail during parsing. Unsupported optional
+extensions are reported as warnings. `KHR_lights_punctual` is parsed to detect
+light references on selected nodes, which are rejected; parsing it does not
+enable support for the extension.
 Malformed or unsafe data must produce explicit diagnostics and failure rather
 than a success result containing an unintentionally incomplete stage. Scene
 selection is defined in
