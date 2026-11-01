@@ -38,13 +38,14 @@ CI success is not evidence of display compatibility.
 | Reflections, winding and normals | Verified (USD data, CI) | Indexed and non-indexed triangles with odd and even reflections in hierarchical transforms and a mirrored reference. | `tests/test_file_format.py::test_hierarchical_reflection_winding_and_normals`, `tests/test_file_format.py::test_reflection_view_fixture` |
 | Failure and reload behavior | Verified (USD data, CI) | Tested failures emit a diagnostic and do not publish a partial layer. Not proven for every USD error; [the transfer itself is not atomic](../architecture/LAYER_AUTHORING.md#decision). | `tests/test_file_format.py::test_failed_reload_does_not_publish_partial_stage`, `tests/test_file_format.py::test_mesh_failures_and_reload_preservation`, `tests/test_file_format.py::test_nonfinite_position_is_rejected` |
 | Extensions | Experimental | Any required extension fails. Optional extensions warn and are ignored, except that a selected node using `KHR_lights_punctual` is rejected. No extension is implemented. | `tests/test_file_format.py::test_failures_report_diagnostics`, `tests/test_file_format.py::test_node_order_and_optional_extension_warning`, `tests/test_file_format.py::test_optional_lights_outside_selected_scene_and_required_lights`, `tests/test_file_format.py::test_unsupported_features_fail_without_publishing` |
-| usdview/Storm display | Experimental | Four [manual checks](#manual-visual-checks) of simple fixtures on Windows. Not general renderer support. | `tests/fixtures/reflections.gltf`, `tests/fixtures/alpha_modes.gltf`, `tests/fixtures/base_color_textures.gltf`, `tests/fixtures/pbr_textures.gltf` |
+| usdview/Storm display | Experimental | Five [manual checks](#manual-visual-checks) of simple fixtures on Windows. Not general renderer support. | `tests/fixtures/reflections.gltf`, `tests/fixtures/alpha_modes.gltf`, `tests/fixtures/base_color_textures.gltf`, `tests/fixtures/pbr_textures.gltf`, `tests/fixtures/normal_textures.gltf` |
 | OpenStrata workspace build and tests | Verified (Windows x86-64, Linux x86-64, macOS arm64; OpenUSD 26.08) | The environments listed under [tested environments](#tested-environments). | [CI run 41297241072](https://github.com/animu-sphere/usd-gltf-plugins/actions/runs/41297241072) |
 | Standalone OpenStrata bundle | Verified (Local Windows) | `ost plugin test --up-to 2` confirms discovery of the file format, not a successful import. | `plugins/usdGltfFileFormat/openstrata.plugin.yaml` |
 | Root CMake build, install and registration | Verified (Local Windows) | A separate process registers the installed plugin and opens a stage. | `tests/test_install_smoke.py::test_installed_plugin_registers_and_opens_a_stage` |
 | Materials and bindings | Experimental | Default materials and explicit factor-only metallic-roughness materials, with OPAQUE, MASK or BLEND alpha and optional vertex colors: Preview and MaterialX networks and bindings, including `doubleSided`. Network structure has been tested locally; display has one [manual Storm check](#manual-visual-checks) of alpha and vertex colors. See the [decision record](../architecture/MATERIAL_FACTORS.md). | `tests/test_file_format.py::test_default_material_with_and_without_vertex_color`, `tests/test_file_format.py::test_factor_materials_and_bindings`, `tests/test_file_format.py::test_alpha_modes`, `tests/test_file_format.py::test_explicit_material_vertex_colors`, `tests/test_file_format.py::test_alpha_modes_view_fixture`, `tests/test_file_format.py::test_material_failures_preserve_layer` |
-| Base color textures | Experimental | Factor, alpha modes, UV set and wrap modes in both networks. Filters and `KHR_texture_transform` are not applied. With COLOR_0, Preview omits the vertex color and warns. Normal textures fail, and so do assets with TANGENT. Tested locally, with one [manual Storm check](#manual-visual-checks). See the [decision record](../adr/0002-base-color-texture-networks.md). | `tests/test_file_format.py::test_base_color_image_sources_and_networks`, `tests/test_file_format.py::test_base_color_sampler_uv_set_factor_and_alpha`, `tests/test_file_format.py::test_base_color_texture_with_vertex_colors`, `tests/test_file_format.py::test_base_color_textures_view_fixture`, `tests/test_file_format.py::test_material_failures_preserve_layer` |
+| Base color textures | Experimental | Factor, alpha modes, UV set and wrap modes in both networks. Filters and `KHR_texture_transform` are not applied. With COLOR_0, Preview omits the vertex color and warns. Tested locally, with one [manual Storm check](#manual-visual-checks). See the [decision record](../adr/0002-base-color-texture-networks.md). | `tests/test_file_format.py::test_base_color_image_sources_and_networks`, `tests/test_file_format.py::test_base_color_sampler_uv_set_factor_and_alpha`, `tests/test_file_format.py::test_base_color_texture_with_vertex_colors`, `tests/test_file_format.py::test_base_color_textures_view_fixture`, `tests/test_file_format.py::test_material_failures_preserve_layer` |
 | Metallic-roughness, occlusion and emissive textures | Experimental | G = roughness, B = metallic and occlusion R as non-color data, and emissive as color, with factors, strength, UV sets and wrap modes in both networks. Filters and `KHR_texture_transform` are not applied. Occlusion has no visible effect through MaterialX `gltf_pbr` and also darkens direct light through Storm's UsdPreviewSurface. Tested locally, with one [manual Storm check](#manual-visual-checks). See the [decision record](../adr/0003-pbr-texture-networks.md). | `tests/test_file_format.py::test_metallic_roughness_occlusion_and_emissive_networks`, `tests/test_file_format.py::test_pbr_textures_without_terms_they_do_not_need`, `tests/test_file_format.py::test_pbr_textures_view_fixture`, `tests/test_file_format.py::test_pbr_texture_failures_preserve_layer`, `tests/test_file_format.py::test_material_failures_preserve_layer` |
+| Normal textures and tangents | Experimental | Scale, UV sets and wrap modes in both networks, as non-color data. Renderers derive the tangent frame, so a map baked against other tangents can differ, and filters and `KHR_texture_transform` are not applied. TANGENT is validated and retained as a primvar that no network reads. Tested locally, with one measured [manual Storm check](#manual-visual-checks) of uniform images on flat quads. See the [decision record](../adr/0004-normal-textures-and-tangents.md). | `tests/test_file_format.py::test_normal_texture_networks`, `tests/test_file_format.py::test_materials_without_a_normal_texture_author_no_normal`, `tests/test_file_format.py::test_normal_textures_view_fixture`, `tests/test_file_format.py::test_pbr_texture_failures_preserve_layer`, `tests/test_file_format.py::test_tangents_are_retained`, `tests/test_file_format.py::test_tangent_failures_preserve_layer` |
 | PNG and JPEG images | Experimental | bufferView, data URI and restricted local file images, served by a package resolver or a layer-relative path; embedded images resolve after moving an asset and through references. No image is written during import. Import checks the signature only, so a damaged image body is reported at render time. Image dimensions and size are not limited. See the [decision record](../adr/0001-image-assets.md). | `tests/image.cpp`, `tests/test_file_format.py::test_base_color_image_sources_and_networks`, `tests/test_file_format.py::test_images_resolve_after_moving_and_through_references`, `tests/test_file_format.py::test_package_resolver_rejects_invalid_entries`, `tests/test_file_format.py::test_texture_failures_preserve_layer` |
 | KTX2 (`KHR_texture_basisu`) | Unsupported | No decoder or image cache exists. A required declaration fails. | |
 | Point and line primitives, other vertex attributes, sparse accessors | Unsupported | Rejected with a diagnostic. | `tests/test_file_format.py::test_mesh_failures_and_reload_preservation` |
@@ -160,6 +161,42 @@ To repeat the fixture render, follow the commands above with this input:
 
 ```powershell
 usdrecord --imageWidth 1500 tests\fixtures\pbr_textures.gltf pbr_textures.png
+```
+
+The [normal texture fixture](../../tests/fixtures/normal_textures.gltf) has one quad
+per case, each with a uniform image tilting the normal. Its
+[reference](../../tests/fixtures/normal_textures_reference.gltf) has no normal
+textures, and each quad supplies the expected result as NORMAL. Both were rendered
+through both paths from the same off-axis camera, whose light separates opposite
+tilts. Center pixels, map then reference:
+
+| Case | Expected | MaterialX | UsdPreviewSurface |
+| --- | --- | --- | --- |
+| Flat | +Z | 188, 188 | 189, 188 |
+| Tilt +X | +X | 209, 209 | 209, 209 |
+| Tilt -X | -X | 117, 116 | 124, 123 |
+| Tilt +Y | +Y | 217, 217 | 217, 217 |
+| Tilt -Y | -Y | 103, 102 | 110, 109 |
+| Tilt +X at scale 0.5 | Half tilt +X | 205, 205 | 205, 205 |
+| Tilt +Y, UV rotated | -X | 135, 134 | 140, 139 |
+| Tilt +X, U mirrored | -X | 139, 139 | 144, 143 |
+| Tilt +Y, U mirrored | +Y | 223, 223 | 223, 223 |
+| Tilt +Y, rotated in UV 1, base color in UV 0 | -X | 148, 147 | 151, 151 |
+| Tilt +Y, rotated in UV 0, base color in UV 1 | -X | 152, 151 | 155, 154 |
+| Tilt +Y, rotated in UV 1 alone | -X | 155, 155 | 158, 158 |
+| Tilt +X under a reflected node | Mirrored +X | 159, 158 | 161, 161 |
+| Tilt +X without NORMAL | +X | 196, 195 | 196, 195 |
+| Tilt +Y with TANGENT W of -1 | +Y, so TANGENT is unused | 237, 236 | 237, 237 |
+
+Map and reference agree within 1 in every case. Pixel values also vary across the row
+because of the position of the light, so compare within a row of this table only.
+
+To repeat this render, follow the commands above with these inputs, using the same
+copy with `outputs:mtlx:surface` removed for UsdPreviewSurface:
+
+```powershell
+usdrecord --camera /Cam --sessionLayer tests\fixtures\normal_textures_view.usda --imageWidth 1800 tests\fixtures\normal_textures.gltf normal_textures.png
+usdrecord --camera /Cam --sessionLayer tests\fixtures\normal_textures_view.usda --imageWidth 1800 tests\fixtures\normal_textures_reference.gltf normal_textures_reference.png
 ```
 
 Multiple primitives sharing one POSITION accessor were also rendered. They

@@ -9,8 +9,9 @@ schema, shader, or imaging plugin is required.
 
 The initial factor-only mapping and its current limitations are recorded in
 the [material factor decision](../architecture/MATERIAL_FACTORS.md), and textures
-in the [base color](../adr/0002-base-color-texture-networks.md) and
-[other PBR texture](../adr/0003-pbr-texture-networks.md) decisions.
+in the [base color](../adr/0002-base-color-texture-networks.md),
+[other PBR texture](../adr/0003-pbr-texture-networks.md) and
+[normal texture](../adr/0004-normal-textures-and-tangents.md) decisions.
 
 Share image data and conversion parameters where possible, but use separate
 nodes where the two paths require incompatible node interfaces. The
@@ -27,7 +28,7 @@ glTF data model.
 | Base color factor and texture | Base/diffuse color and alpha |
 | Metallic and roughness factors | Metallic and roughness |
 | Metallic-roughness texture | G = roughness, B = metallic |
-| Normal texture | Tangent-space normal map and its scale |
+| Normal texture | Tangent-space normal map, with its scale on X and Y, in a frame [the renderer derives](../adr/0004-normal-textures-and-tangents.md#tangents) |
 | Occlusion texture | R channel and strength, connected to each shader's occlusion input without compensating for [how renderers apply it](../adr/0003-pbr-texture-networks.md#occlusion-differs-between-the-paths) |
 | Emissive factor and texture | Emissive color / emission |
 | Alpha mode and cutoff | MaterialX `alpha`, `alpha_mode` and `alpha_cutoff`; Preview `opacity` and, for MASK, `opacityThreshold`. OPAQUE ignores alpha. A MASK cutoff of 0 is opaque in Preview, whose threshold of 0 means no masking |

@@ -6,6 +6,7 @@
 
 #include "pxr/base/gf/vec2f.h"
 #include "pxr/base/gf/vec3f.h"
+#include "pxr/base/gf/vec4f.h"
 #include "pxr/base/tf/diagnostic.h"
 #include "pxr/base/vt/array.h"
 #include "pxr/base/vt/value.h"
@@ -80,6 +81,35 @@ readVectors(const fastgltf::Asset& asset, std::size_t index, VtVec3fArray& value
             if (!std::isfinite(value))
             {
                 error = "vertex attribute contains a non-finite value";
+                return false;
+            }
+            values[i][component] = value;
+        }
+    }
+    return true;
+}
+
+bool
+readTangents(const fastgltf::Asset& asset, std::size_t index, VtVec4fArray& values,
+             std::string& error, const gltfCore::BufferLoader& loadBuffer)
+{
+    gltfCore::AccessorData data;
+    if (!gltfCore::GetAccessorData(asset, index, fastgltf::AccessorType::Vec4,
+                                   fastgltf::ComponentType::Float, 16, true, data, error,
+                                   loadBuffer))
+    {
+        return false;
+    }
+    values.resize(data.count);
+    for (std::size_t i = 0; i < data.count; ++i)
+    {
+        for (std::size_t component = 0; component < 4; ++component)
+        {
+            const auto bits = readUnsigned(data.bytes.data() + i * data.stride + component * 4, 4);
+            const float value = std::bit_cast<float>(bits);
+            if (!std::isfinite(value))
+            {
+                error = "tangent contains a non-finite value";
                 return false;
             }
             values[i][component] = value;
@@ -312,6 +342,7 @@ authorPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& primiti
     }
     const fastgltf::Attribute* position = nullptr;
     const fastgltf::Attribute* normal = nullptr;
+    const fastgltf::Attribute* tangent = nullptr;
     const fastgltf::Attribute* color = nullptr;
     std::vector<std::pair<std::size_t, const fastgltf::Attribute*>> texcoords;
     for (const auto& attribute : primitive.attributes)
@@ -323,6 +354,10 @@ authorPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& primiti
         else if (attribute.name == "NORMAL" && !normal)
         {
             normal = &attribute;
+        }
+        else if (attribute.name == "TANGENT" && !tangent)
+        {
+            tangent = &attribute;
         }
         else if (attribute.name == "COLOR_0" && !color)
         {
@@ -375,6 +410,16 @@ authorPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& primiti
         {
             error = "normal and position counts differ";
         }
+        return false;
+    }
+    VtVec4fArray tangents;
+    if (tangent && !readTangents(asset, tangent->accessorIndex, tangents, error, loadBuffer))
+    {
+        return false;
+    }
+    if (tangent && tangents.size() != points.size())
+    {
+        error = "tangent and position counts differ";
         return false;
     }
     VtVec3fArray colors;
@@ -490,6 +535,14 @@ authorPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& primiti
         return false;
     }
     const UsdGeomPrimvarsAPI primvars(mesh);
+    if (tangent && !primvars
+                        .CreatePrimvar(TfToken("gltf_tangent"), SdfValueTypeNames->Float4Array,
+                                       UsdGeomTokens->vertex)
+                        .Set(tangents))
+    {
+        error = "could not author USD tangents";
+        return false;
+    }
     if (color)
     {
         if (!mesh.CreateDisplayColorPrimvar(UsdGeomTokens->vertex).Set(colors))

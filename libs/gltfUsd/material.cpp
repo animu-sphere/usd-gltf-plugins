@@ -63,6 +63,7 @@ struct PbrFactors
     float metallic;
     float roughness;
     float occlusionStrength;
+    float normalScale;
     fastgltf::AlphaMode alphaMode;
 };
 
@@ -77,6 +78,7 @@ pbrFactors(const fastgltf::Material& source)
             float(pbr.metallicFactor),
             float(pbr.roughnessFactor),
             source.occlusionTexture ? float(source.occlusionTexture->strength) : 1.0f,
+            source.normalTexture ? float(source.normalTexture->scale) : 1.0f,
             source.alphaMode};
 }
 
@@ -156,6 +158,7 @@ struct MaterialTextures
 {
     std::optional<TextureInput> baseColor;
     std::optional<TextureInput> metallicRoughness;
+    std::optional<TextureInput> normal;
     std::optional<TextureInput> occlusion;
     std::optional<TextureInput> emissive;
 };
@@ -254,6 +257,19 @@ connectPreviewMetallicRoughness(const UsdShadeNodeGraph& graph, UsdShadeShader& 
            connectPreviewOutput(image, "b", SdfValueTypeNames->Float, surface, "metallic");
 }
 
+// Maps the image to a tangent-space vector, with glTF's scale on X and Y only.
+bool
+connectPreviewNormal(const UsdShadeNodeGraph& graph, UsdShadeShader& surface,
+                     const PbrFactors& factors, const TextureInput& texture)
+{
+    const float scale = factors.normalScale;
+    auto image =
+        authorPreviewTexture(graph, "normalTexture", texture, "raw",
+                             GfVec4f(2 * scale, 2 * scale, 2, 1), GfVec4f(-scale, -scale, -1, 0));
+    return image && setInput(surface, "normal", SdfValueTypeNames->Normal3f, GfVec3f(0, 0, 1)) &&
+           connectPreviewOutput(image, "rgb", SdfValueTypeNames->Float3, surface, "normal");
+}
+
 bool
 connectPreviewOcclusion(const UsdShadeNodeGraph& graph, UsdShadeShader& surface,
                         const PbrFactors& factors, const TextureInput& texture)
@@ -283,6 +299,7 @@ connectPreviewTextures(const UsdShadeNodeGraph& graph, UsdShadeShader& surface,
     return (!textures.metallicRoughness ||
             connectPreviewMetallicRoughness(graph, surface, factors,
                                             *textures.metallicRoughness)) &&
+           (!textures.normal || connectPreviewNormal(graph, surface, factors, *textures.normal)) &&
            (!textures.occlusion ||
             connectPreviewOcclusion(graph, surface, factors, *textures.occlusion)) &&
            (!textures.emissive ||
@@ -491,6 +508,25 @@ connectMtlxMetallicRoughness(const UsdShadeNodeGraph& graph, UsdShadeShader& sur
                             factors.metallic);
 }
 
+bool
+connectMtlxNormal(const UsdShadeNodeGraph& graph, UsdShadeShader& surface,
+                  const PbrFactors& factors, const TextureInput& texture)
+{
+    const auto image = authorMtlxImage(graph, "normalImage", texture, false);
+    const auto xyz = image
+                         ? authorMtlxImageChannel(graph, "normalXyz", "ND_convert_vector4_vector3",
+                                                  image, SdfValueTypeNames->Vector3f)
+                         : UsdShadeOutput();
+    auto map = xyz ? defineMtlxNode(graph, "normalMap", "ND_normalmap_float") : UsdShadeShader();
+    const auto in =
+        map ? map.CreateInput(TfToken("in"), SdfValueTypeNames->Vector3f) : UsdShadeInput();
+    const auto normal = surface.CreateInput(TfToken("normal"), SdfValueTypeNames->Vector3f);
+    return in && normal && in.ConnectToSource(xyz) &&
+           (factors.normalScale == 1.0f ||
+            setInput(map, "scale", SdfValueTypeNames->Float, factors.normalScale)) &&
+           normal.ConnectToSource(map.CreateOutput(TfToken("out"), SdfValueTypeNames->Vector3f));
+}
+
 // glTF's 1 + strength * (occlusion - 1) is a mix from 1 to the image.
 bool
 connectMtlxOcclusion(const UsdShadeNodeGraph& graph, UsdShadeShader& surface,
@@ -539,6 +575,7 @@ connectMtlxTextures(const UsdShadeNodeGraph& graph, UsdShadeShader& surface,
 {
     return (!textures.metallicRoughness ||
             connectMtlxMetallicRoughness(graph, surface, factors, *textures.metallicRoughness)) &&
+           (!textures.normal || connectMtlxNormal(graph, surface, factors, *textures.normal)) &&
            (!textures.occlusion ||
             connectMtlxOcclusion(graph, surface, factors, *textures.occlusion)) &&
            (!textures.emissive || connectMtlxEmissive(graph, surface, factors, *textures.emissive));
@@ -725,17 +762,18 @@ MaterialAuthor::Bind(std::size_t index, std::size_t uvSetCount, const pxr::VtVec
     }
     const auto& source = _asset.materials[index];
     const auto& pbr = source.pbrData;
-    if (source.normalTexture)
-    {
-        error = "material normal textures are not supported";
-        return false;
-    }
     const auto hasUvSet = [uvSetCount](const auto& info)
     { return !info || info->texCoordIndex < uvSetCount; };
     if (!hasUvSet(pbr.baseColorTexture) || !hasUvSet(pbr.metallicRoughnessTexture) ||
-        !hasUvSet(source.occlusionTexture) || !hasUvSet(source.emissiveTexture))
+        !hasUvSet(source.normalTexture) || !hasUvSet(source.occlusionTexture) ||
+        !hasUvSet(source.emissiveTexture))
     {
         error = "material texture uses a texture coordinate set the primitive does not have";
+        return false;
+    }
+    if (source.normalTexture && !std::isfinite(source.normalTexture->scale))
+    {
+        error = "material normal scale is non-finite";
         return false;
     }
     if (source.occlusionTexture && !inUnitRange(source.occlusionTexture->strength))
@@ -780,6 +818,7 @@ MaterialAuthor::Bind(std::size_t index, std::size_t uvSetCount, const pxr::VtVec
         MaterialTextures textures;
         if (!resolve(pbr.baseColorTexture, textures.baseColor) ||
             !resolve(pbr.metallicRoughnessTexture, textures.metallicRoughness) ||
+            !resolve(source.normalTexture, textures.normal) ||
             !resolve(source.occlusionTexture, textures.occlusion) ||
             !resolve(source.emissiveTexture, textures.emissive))
         {
