@@ -18,11 +18,12 @@ loading. Keep the plugin thin and the translator reusable. The import-only
 plugin registration must explicitly declare writing unsupported, using the
 metadata supported by the selected OpenUSD version.
 
-Investigate direct `SdfLayer` authoring versus authoring through a temporary
-`UsdStage` before selecting an approach. Verify layer consistency, error
-recovery and that conversion does not create unrelated files. Image assets
-may require deliberate persistent storage; their lifecycle and portability
-are separate unresolved requirements in [TEXTURES](../design/TEXTURES.md).
+The selected approach is to author on a temporary `UsdStage` and transfer
+the resulting layer only after successful conversion. See the
+[layer authoring decision](LAYER_AUTHORING.md) for experiments and remaining
+integration tests. Image assets may require deliberate persistent storage;
+their lifecycle and portability are separate unresolved requirements in
+[TEXTURES](../design/TEXTURES.md).
 
 Resolve relative external buffers and image URIs against the source asset;
 also handle GLB embedded data. Define a safe URI policy. Reject unsupported
