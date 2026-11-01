@@ -1,7 +1,7 @@
 # Documentation
 
-This documentation records the adopted initial design, not an implementation
-claim. Design decisions are distinguished from questions that require
+This documentation records the adopted initial design and its implementation
+status. Design decisions are distinguished from questions that require
 experiments or an architecture decision record (ADR).
 
 | Category | Purpose | Start here |
@@ -18,6 +18,6 @@ the roadmap records outstanding work. When implementation diverges from an
 adopted design, resolve the discrepancy explicitly rather than presenting
 planned behavior as implemented.
 
-Installation, build, and usage guides will be added when there are verified
-procedures to document. ADRs will record decisions reached through the
+The root README documents the development build; usage guidance will be added
+when import works. ADRs will record decisions reached through the
 investigations listed in the [roadmap](roadmap/README.md#decisions-to-verify).

@@ -1,6 +1,7 @@
 # Import pipeline
 
-Status: **planned**. No file-format plugin or importer is implemented yet.
+Status: **early implementation**. A file-format registration scaffold exists;
+the importer is not implemented and reads fail explicitly.
 
 ```text
 .gltf / .glb

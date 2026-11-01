@@ -1,0 +1,26 @@
+{
+    "Plugins": [
+        {
+            "Type": "library",
+            "Name": "UsdGltfFileFormat",
+            "Root": ".",
+            "LibraryPath": "../../../lib/libUsdGltfFileFormat@CMAKE_SHARED_LIBRARY_SUFFIX@",
+            "ResourcePath": ".",
+            "Info": {
+                "Types": {
+                    "UsdGltfFileFormat": {
+                        "bases": ["SdfFileFormat"],
+                        "displayName": "glTF File Format",
+                        "extensions": ["gltf", "glb"],
+                        "formatId": "gltf",
+                        "primary": true,
+                        "target": "usd",
+                        "supportsReading": true,
+                        "supportsWriting": false,
+                        "supportsEditing": false
+                    }
+                }
+            }
+        }
+    ]
+}
