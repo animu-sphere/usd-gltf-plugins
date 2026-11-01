@@ -11,6 +11,7 @@
 namespace gltfUsd
 {
 
+// loadBuffer is invoked synchronously on the conversion worker thread.
 [[nodiscard]] pxr::SdfLayerRefPtr ConvertScene(const fastgltf::Asset& asset,
                                                const gltfCore::BufferLoader& loadBuffer);
 

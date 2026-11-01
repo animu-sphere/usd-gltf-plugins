@@ -1,20 +1,25 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "scene.h"
 
+#include "material.h"
 #include "mesh.h"
 #include "sceneSelection.h"
 
 #include "pxr/base/gf/matrix4d.h"
 #include "pxr/base/tf/diagnostic.h"
 #include "pxr/base/tf/errorMark.h"
+#include "pxr/base/tf/errorTransport.h"
 #include "pxr/base/vt/array.h"
 #include "pxr/base/vt/value.h"
 #include "pxr/usd/sdf/attributeSpec.h"
 #include "pxr/usd/sdf/primSpec.h"
 #include "pxr/usd/sdf/schema.h"
 #include "pxr/usd/sdf/types.h"
+#include "pxr/usd/usd/stage.h"
 
 #include <cmath>
+#include <exception>
+#include <future>
 #include <string>
 #include <utility>
 #include <variant>
@@ -71,37 +76,10 @@ nodeMatrix(const fastgltf::Node& node, GfMatrix4d& result)
     return true;
 }
 
-} // namespace
-
-pxr::SdfLayerRefPtr
-ConvertScene(const fastgltf::Asset& asset, const gltfCore::BufferLoader& loadBuffer)
+SdfLayerRefPtr
+authorScene(const fastgltf::Asset& asset, const gltfCore::BufferLoader& loadBuffer,
+            std::size_t selectedIndex)
 {
-    using namespace pxr;
-    const auto selection = gltfCore::SelectScene(asset);
-    const auto* selected = std::get_if<gltfCore::SelectedScene>(&selection);
-    if (!selected)
-    {
-        const auto error = std::get<gltfCore::SceneSelectionError>(selection);
-        TF_RUNTIME_ERROR("glTF scene selection failed: %s",
-                         error == gltfCore::SceneSelectionError::NoScenes
-                             ? "no scenes"
-                             : "default scene index is out of range");
-        return {};
-    }
-    if (selected->usedFallback)
-    {
-        TF_WARN("glTF has no default scene; selecting scene 0");
-    }
-    if (!asset.animations.empty())
-    {
-        TF_RUNTIME_ERROR("glTF animations are not supported yet");
-        return {};
-    }
-    for (const auto& extension : asset.extensionsUsed)
-    {
-        TF_WARN("glTF optional extension '%s' is not supported", extension.c_str());
-    }
-
     TfErrorMark mark;
     auto layer = SdfLayer::CreateAnonymous("gltf-conversion.usda");
     if (!layer)
@@ -116,7 +94,8 @@ ConvertScene(const fastgltf::Asset& asset, const gltfCore::BufferLoader& loadBuf
         return {};
     }
     const auto geo = SdfPrimSpec::New(root, "geo", SdfSpecifierDef, "Scope");
-    if (!geo || !SdfPrimSpec::New(root, "mtl", SdfSpecifierDef, "Scope"))
+    const auto mtl = SdfPrimSpec::New(root, "mtl", SdfSpecifierDef, "Scope");
+    if (!geo || !mtl)
     {
         TF_RUNTIME_ERROR("Could not author glTF layer scopes");
         return {};
@@ -125,9 +104,16 @@ ConvertScene(const fastgltf::Asset& asset, const gltfCore::BufferLoader& loadBuf
     layer->GetPseudoRoot()->SetInfo(TfToken("upAxis"), VtValue(TfToken("Y")));
     layer->GetPseudoRoot()->SetInfo(TfToken("metersPerUnit"), VtValue(1.0));
 
+    const auto stage = UsdStage::Open(layer);
+    if (!stage)
+    {
+        TF_RUNTIME_ERROR("Could not open temporary glTF authoring stage");
+        return {};
+    }
+    MaterialAuthor materials(asset, stage, mtl->GetPath());
     std::vector<bool> visited(asset.nodes.size(), false);
     std::vector<std::pair<std::size_t, SdfPrimSpecHandle>> pending;
-    const auto& roots = asset.scenes[selected->index].nodeIndices;
+    const auto& roots = asset.scenes[selectedIndex].nodeIndices;
     for (auto it = roots.rbegin(); it != roots.rend(); ++it)
     {
         pending.emplace_back(*it, geo);
@@ -179,7 +165,7 @@ ConvertScene(const fastgltf::Asset& asset, const gltfCore::BufferLoader& loadBuf
             TF_RUNTIME_ERROR("Could not author glTF node %zu transform", index);
             return {};
         }
-        if (node.meshIndex && !AuthorMesh(asset, *node.meshIndex, xform, loadBuffer))
+        if (node.meshIndex && !AuthorMesh(asset, *node.meshIndex, xform, loadBuffer, materials))
         {
             return {};
         }
@@ -194,6 +180,78 @@ ConvertScene(const fastgltf::Asset& asset, const gltfCore::BufferLoader& loadBuf
         return {};
     }
     return layer;
+}
+
+} // namespace
+
+pxr::SdfLayerRefPtr
+ConvertScene(const fastgltf::Asset& asset, const gltfCore::BufferLoader& loadBuffer)
+{
+    using namespace pxr;
+    const auto selection = gltfCore::SelectScene(asset);
+    const auto* selected = std::get_if<gltfCore::SelectedScene>(&selection);
+    if (!selected)
+    {
+        const auto error = std::get<gltfCore::SceneSelectionError>(selection);
+        TF_RUNTIME_ERROR("glTF scene selection failed: %s",
+                         error == gltfCore::SceneSelectionError::NoScenes
+                             ? "no scenes"
+                             : "default scene index is out of range");
+        return {};
+    }
+    if (selected->usedFallback)
+    {
+        TF_WARN("glTF has no default scene; selecting scene 0");
+    }
+    if (!asset.animations.empty())
+    {
+        TF_RUNTIME_ERROR("glTF animations are not supported yet");
+        return {};
+    }
+    for (const auto& extension : asset.extensionsUsed)
+    {
+        TF_WARN("glTF optional extension '%s' is not supported", extension.c_str());
+    }
+
+    // Reload can hold a change block on this thread; author the stage on another thread.
+    TfErrorTransport errors;
+    SdfLayerRefPtr result;
+    try
+    {
+        auto task = std::async(std::launch::async,
+                               [&]()
+                               {
+                                   TfErrorMark mark;
+                                   SdfLayerRefPtr staged;
+                                   try
+                                   {
+                                       staged = authorScene(asset, loadBuffer, selected->index);
+                                   }
+                                   catch (const std::exception& e)
+                                   {
+                                       TF_RUNTIME_ERROR("glTF authoring failed: %s", e.what());
+                                   }
+                                   mark.TransportTo(errors);
+                                   return staged;
+                               });
+        result = task.get();
+    }
+    catch (const std::exception& e)
+    {
+        TF_RUNTIME_ERROR("Could not run glTF authoring: %s", e.what());
+        return {};
+    }
+    const bool failed = !errors.IsEmpty();
+    errors.Post();
+    if (failed)
+    {
+        return {};
+    }
+    if (!result)
+    {
+        TF_RUNTIME_ERROR("glTF authoring did not produce a layer");
+    }
+    return result;
 }
 
 } // namespace gltfUsd
