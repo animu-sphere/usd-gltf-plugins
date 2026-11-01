@@ -28,13 +28,17 @@ glTF data model.
 | Normal texture | Tangent-space normal map and its scale |
 | Occlusion texture | R channel and strength; approximate or explicitly report unsupported behavior according to shader capability |
 | Emissive factor and texture | Emissive color / emission |
-| Alpha mode and cutoff | Preserve OPAQUE, MASK and BLEND semantics where possible |
+| Alpha mode and cutoff | MaterialX `alpha`, `alpha_mode` and `alpha_cutoff`; Preview `opacity` and, for MASK, `opacityThreshold`. OPAQUE ignores alpha. A MASK cutoff of 0 is opaque in Preview, whose threshold of 0 means no masking |
 | `doubleSided` | Keep UsdGeom sidedness and material behavior consistent |
 
 For vertex colors, multiply base color by the linear `displayColor` primvar
-and use the retained `gltf:colorAlpha` primvar when present (otherwise 1)
-for alpha, subject to the material's alpha mode. See
-[scene conventions](SCENE_CONVENTIONS.md#vertex-colors).
+and use the retained `gltf_colorAlpha` primvar when present (otherwise 1)
+for alpha, subject to the material's alpha mode. MaterialX multiplies in its
+graph. UsdPreviewSurface has no multiply node and reads the per-mesh products
+described in the [scene conventions](SCENE_CONVENTIONS.md#vertex-colors), which
+are exact because scaling by a constant does not change linear interpolation.
+A material used with and without COLOR_0 needs two graphs and so two `Material`
+prims.
 
 Distinguish color data (base color and emissive) from non-color data
 (metallic, roughness, normal and occlusion). Texture readers consume the

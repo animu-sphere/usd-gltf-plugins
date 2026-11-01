@@ -2,8 +2,9 @@
 #pragma once
 
 #include <fastgltf/types.hpp>
-#include "pxr/usd/sdf/primSpec.h"
+#include "pxr/base/vt/types.h"
 #include "pxr/usd/usd/stage.h"
+#include "pxr/usd/usdGeom/mesh.h"
 #include "pxr/usd/usdShade/material.h"
 
 #include <cstddef>
@@ -19,19 +20,23 @@ class MaterialAuthor
     MaterialAuthor(const fastgltf::Asset& asset, const pxr::UsdStageRefPtr& stage,
                    const pxr::SdfPath& scope);
 
-    [[nodiscard]] bool Bind(std::size_t index, bool hasVertexColor,
-                            const pxr::SdfPrimSpecHandle& mesh, std::string& error);
-    [[nodiscard]] bool BindDefault(bool hasVertexColor, const pxr::SdfPrimSpecHandle& mesh,
+    // `colors` is null for a primitive without COLOR_0; `alpha` is empty without
+    // vertex alpha.
+    [[nodiscard]] bool Bind(std::size_t index, const pxr::VtVec3fArray* colors,
+                            const pxr::VtFloatArray& alpha, const pxr::UsdGeomMesh& mesh,
+                            std::string& error);
+    [[nodiscard]] bool BindDefault(bool hasVertexColor, const pxr::UsdGeomMesh& mesh,
                                    std::string& error);
 
   private:
     [[nodiscard]] bool BindMaterial(const pxr::UsdShadeMaterial& material, bool doubleSided,
-                                    const pxr::SdfPrimSpecHandle& mesh, std::string& error);
+                                    const pxr::UsdGeomMesh& mesh, std::string& error);
 
     const fastgltf::Asset& _asset;
     pxr::UsdStageRefPtr _stage;
     pxr::SdfPath _scope;
     std::vector<pxr::UsdShadeMaterial> _materials;
+    std::vector<pxr::UsdShadeMaterial> _vertexColorMaterials;
     pxr::UsdShadeMaterial _defaultMaterial;
     pxr::UsdShadeMaterial _defaultVertexColorMaterial;
 };

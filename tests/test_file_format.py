@@ -12,6 +12,13 @@ import urllib.parse
 from pxr import Gf, Sdf, Sdr, Tf, Usd, UsdGeom, UsdShade
 
 
+def layer_text(layer):
+    """Returns a layer's content; ExportToString is empty for a read-only format."""
+    text = Sdf.Layer.CreateAnonymous(".usda")
+    text.TransferContent(layer)
+    return text.ExportToString()
+
+
 def write_asset(path, document, binary=None):
     data = json.dumps(document, separators=(",", ":")).encode()
     if path.suffix == ".glb":
@@ -404,7 +411,7 @@ class FileFormatTest(unittest.TestCase):
                             self.assertEqual(list(mesh.GetNormalsAttr().Get()), [Gf.Vec3f(0, 0, 1)] * 3)
                             self.assertEqual(mesh.GetNormalsInterpolation(), UsdGeom.Tokens.vertex)
                             self.assertFalse(UsdGeom.PrimvarsAPI(mesh).GetPrimvar("displayColor").HasAuthoredValue())
-                            self.assertFalse(UsdGeom.PrimvarsAPI(mesh).GetPrimvar("gltf:colorAlpha"))
+                            self.assertFalse(UsdGeom.PrimvarsAPI(mesh).GetPrimvar("gltf_colorAlpha"))
                             self.assertEqual(mesh.GetSubdivisionSchemeAttr().Get(), UsdGeom.Tokens.none)
                             self.assertEqual(mesh.GetOrientationAttr().Get(), UsdGeom.Tokens.rightHanded)
                             self.assertFalse(UsdGeom.PrimvarsAPI(mesh).GetPrimvar("st"))
@@ -502,7 +509,7 @@ class FileFormatTest(unittest.TestCase):
                     write_asset(path, document)
                     stage = Usd.Stage.Open(str(path))
                     layer = stage.GetRootLayer()
-                    before = layer.ExportToString()
+                    before = layer_text(layer)
                     for case in ("short indexed", "short nonindexed", "out of range", "reserved"):
                         with self.subTest(extension=extension, mode=mode, case=case):
                             invalid, invalid_binary = topology_document(
@@ -521,7 +528,7 @@ class FileFormatTest(unittest.TestCase):
                             message = "index count is invalid" if case.startswith("short") else "index is out of range"
                             with self.assertRaisesRegex(Tf.ErrorException, message):
                                 layer.Reload(True)
-                            self.assertEqual(layer.ExportToString(), before)
+                            self.assertEqual(layer_text(layer), before)
                     document, binary = topology_document(extension, mode, [4, 3, 2], external=True)
                     buffer_path.write_bytes(binary)
                     write_asset(path, document)
@@ -614,7 +621,7 @@ class FileFormatTest(unittest.TestCase):
                 write_asset(path, document)
                 stage = Usd.Stage.Open(str(path))
                 layer = stage.GetRootLayer()
-                before = layer.ExportToString()
+                before = layer_text(layer)
                 for name, message in cases.items():
                     with self.subTest(extension=extension, name=name):
                         invalid, _ = uv_document(extension, external=True)
@@ -622,7 +629,7 @@ class FileFormatTest(unittest.TestCase):
                         write_asset(path, invalid)
                         with self.assertRaisesRegex(Tf.ErrorException, message):
                             layer.Reload(True)
-                        self.assertEqual(layer.ExportToString(), before)
+                        self.assertEqual(layer_text(layer), before)
                 invalid = bytearray(binary)
                 uv_offset = document["bufferViews"][2]["byteOffset"]
                 invalid[uv_offset:uv_offset + 4] = struct.pack("<f", float("nan"))
@@ -630,7 +637,7 @@ class FileFormatTest(unittest.TestCase):
                 write_asset(path, document)
                 with self.assertRaisesRegex(Tf.ErrorException, "non-finite"):
                     layer.Reload(True)
-                self.assertEqual(layer.ExportToString(), before)
+                self.assertEqual(layer_text(layer), before)
                 updated = bytearray(binary)
                 updated[uv_offset:uv_offset + 4] = struct.pack("<f", 0.75)
                 (path.parent / "mesh.bin").write_bytes(updated)
@@ -668,7 +675,7 @@ class FileFormatTest(unittest.TestCase):
                                         self.assertEqual(color.GetInterpolation(), UsdGeom.Tokens.vertex)
                                         self.assertFalse(color.IsIndexed())
                                         self.assertEqual(list(color.Get()), list(expected))
-                                        alpha = api.GetPrimvar("gltf:colorAlpha")
+                                        alpha = api.GetPrimvar("gltf_colorAlpha")
                                         if components == 4:
                                             self.assertEqual(alpha.GetTypeName(), Sdf.ValueTypeNames.FloatArray)
                                             self.assertEqual(alpha.GetInterpolation(), UsdGeom.Tokens.vertex)
@@ -718,7 +725,7 @@ class FileFormatTest(unittest.TestCase):
                 write_asset(path, document)
                 stage = Usd.Stage.Open(str(path))
                 layer = stage.GetRootLayer()
-                before = layer.ExportToString()
+                before = layer_text(layer)
                 for name, message in cases.items():
                     with self.subTest(extension=extension, name=name):
                         invalid, _ = color_document(extension, 5121, 4, external=True)
@@ -726,7 +733,7 @@ class FileFormatTest(unittest.TestCase):
                         write_asset(path, invalid)
                         with self.assertRaisesRegex(Tf.ErrorException, message):
                             layer.Reload(True)
-                        self.assertEqual(layer.ExportToString(), before)
+                        self.assertEqual(layer_text(layer), before)
                 floats, float_binary = color_document(extension, 5126, 4, external=True)
                 offset = floats["bufferViews"][2]["byteOffset"]
                 for component in (0, 3):
@@ -739,7 +746,7 @@ class FileFormatTest(unittest.TestCase):
                             write_asset(path, floats)
                             with self.assertRaisesRegex(Tf.ErrorException, "non-finite or out-of-range"):
                                 layer.Reload(True)
-                            self.assertEqual(layer.ExportToString(), before)
+                            self.assertEqual(layer_text(layer), before)
                 updated = bytearray(binary)
                 updated[document["bufferViews"][2]["byteOffset"]] = 128
                 updated[document["bufferViews"][2]["byteOffset"] + 3] = 64
@@ -750,7 +757,7 @@ class FileFormatTest(unittest.TestCase):
                 self.assertAlmostEqual(
                     UsdGeom.PrimvarsAPI(mesh).GetPrimvar("displayColor").Get()[0][0], 128 / 255, places=6)
                 self.assertAlmostEqual(
-                    UsdGeom.PrimvarsAPI(mesh).GetPrimvar("gltf:colorAlpha").Get()[0], 64 / 255, places=6)
+                    UsdGeom.PrimvarsAPI(mesh).GetPrimvar("gltf_colorAlpha").Get()[0], 64 / 255, places=6)
 
     def test_mesh_failures_and_reload_preservation(self):
         def mutate(document, name):
@@ -785,7 +792,9 @@ class FileFormatTest(unittest.TestCase):
                 document["bufferViews"][0]["byteStride"] = 8
             elif name == "material":
                 primitive["material"] = 0
-                document["materials"] = [{"alphaMode": "BLEND"}]
+                document["images"] = [{"uri": "data:image/png;base64,AA=="}]
+                document["textures"] = [{"source": 0}]
+                document["materials"] = [{"normalTexture": {"index": 0}}]
             elif name == "attribute":
                 primitive["attributes"]["COLOR_1"] = 0
             elif name == "mode":
@@ -815,7 +824,7 @@ class FileFormatTest(unittest.TestCase):
                 write_asset(path, document, binary)
                 stage = Usd.Stage.Open(str(path))
                 layer = stage.GetRootLayer()
-                before = layer.ExportToString()
+                before = layer_text(layer)
                 for name, message in cases.items():
                     with self.subTest(extension=extension, name=name):
                         invalid, invalid_binary = mesh_document(extension)
@@ -823,7 +832,7 @@ class FileFormatTest(unittest.TestCase):
                         write_asset(path, invalid, invalid_binary)
                         with self.assertRaisesRegex(Tf.ErrorException, message):
                             layer.Reload(True)
-                        self.assertEqual(layer.ExportToString(), before)
+                        self.assertEqual(layer_text(layer), before)
                         self.assertTrue(stage.GetPrimAtPath("/Asset/geo/Node_0/Mesh_0/Primitive_0"))
                 invalid, invalid_binary = mesh_document(extension)
                 if extension == "glb":
@@ -835,7 +844,7 @@ class FileFormatTest(unittest.TestCase):
                 write_asset(path, invalid, invalid_binary)
                 with self.assertRaisesRegex(Tf.ErrorException, "index is out of range"):
                     layer.Reload(True)
-                self.assertEqual(layer.ExportToString(), before)
+                self.assertEqual(layer_text(layer), before)
                 write_asset(path, document, binary)
                 self.assertTrue(layer.Reload(True))
 
@@ -951,7 +960,9 @@ class FileFormatTest(unittest.TestCase):
                         "attributes": {"POSITION": 0}, "material": 1,
                     }]})
                     document["meshes"][0]["primitives"][0]["material"] = 0
-                    document["materials"] = [{}, {"alphaMode": "BLEND"}]
+                    document["images"] = [{"uri": "data:image/png;base64,AA=="}]
+                    document["textures"] = [{"source": 0}]
+                    document["materials"] = [{}, {"normalTexture": {"index": 0}}]
                     write_asset(path, document, binary)
                     stage = Usd.Stage.Open(str(path))
                     self.assertTrue(UsdShade.Material.Get(stage, "/Asset/mtl/Material_0"))
@@ -975,13 +986,13 @@ class FileFormatTest(unittest.TestCase):
                         self.assertTrue(layer.Reload(True))
                     shader = UsdShade.Shader.Get(stage, "/Asset/mtl/Material_0/preview/surface")
                     self.assertAlmostEqual(shader.GetInput("roughness").Get(), 0.7, places=6)
-                    before = layer.ExportToString()
+                    before = layer_text(layer)
                     document["meshes"][0]["primitives"][0]["material"] = 5
                     write_asset(path, document, binary)
                     with self.assertRaisesRegex(Tf.ErrorException, "material index is out of range"):
                         with Sdf.ChangeBlock():
                             layer.Reload(True)
-                    self.assertEqual(layer.ExportToString(), before)
+                    self.assertEqual(layer_text(layer), before)
                     self.assertAlmostEqual(shader.GetInput("roughness").Get(), 0.7, places=6)
 
     def test_default_material_with_and_without_vertex_color(self):
@@ -1043,6 +1054,219 @@ class FileFormatTest(unittest.TestCase):
                         bound, _ = UsdShade.MaterialBindingAPI(mesh).ComputeBoundMaterial()
                         self.assertEqual(bound.GetPath(), Sdf.Path("/Asset/mtl/DefaultVertexColor"))
 
+    def test_mesh_schema_attributes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for extension in ("gltf", "glb"):
+                with self.subTest(extension=extension):
+                    path = pathlib.Path(directory) / ("mesh." + extension)
+                    document, binary = mesh_document(extension)
+                    write_asset(path, document, binary)
+                    stage = Usd.Stage.Open(str(path))
+                    mesh = UsdGeom.Mesh.Get(stage, "/Asset/geo/Node_0/Mesh_0/Primitive_0")
+                    self.assertTrue(layer_text(stage.GetRootLayer()))
+                    points = mesh.GetPointsAttr().Get()
+                    self.assertEqual(mesh.GetExtentAttr().Get(),
+                                     UsdGeom.PointBased.ComputeExtent(points))
+                    self.assertEqual(mesh.GetSubdivisionSchemeAttr().Get(), "none")
+                    self.assertEqual(mesh.GetSubdivisionSchemeAttr().GetVariability(),
+                                     Sdf.VariabilityUniform)
+                    self.assertEqual(stage.GetDefaultPrim().GetPath(), Sdf.Path("/Asset"))
+
+    def test_alpha_modes(self):
+        factors = {"baseColorFactor": [0.2, 0.4, 0.6, 0.25]}
+        cases = (
+            # glTF material, Preview opacity and threshold, MaterialX alpha, mode and cutoff.
+            ({"alphaMode": "MASK", "alphaCutoff": 0.75}, 0.25, 0.75, 0.25, 1, 0.75),
+            ({"alphaMode": "MASK"}, 0.25, 0.5, 0.25, 1, 0.5),
+            ({"alphaMode": "MASK", "alphaCutoff": 0}, None, None, 0.25, 1, 0),
+            ({"alphaMode": "BLEND", "alphaCutoff": 0.75}, 0.25, None, 0.25, 2, None),
+            ({"alphaMode": "OPAQUE", "alphaCutoff": 0.75}, None, None, None, 0, None),
+        )
+        node = Sdr.Registry().GetShaderNodeByIdentifier("UsdPreviewSurface")
+        self.assertIsNotNone(node.GetShaderInput("opacityThreshold"))
+        self.assertEqual(node.GetShaderInput("opacityThreshold").GetDefaultValue(), 0)
+        node = Sdr.Registry().GetShaderNodeByIdentifier("ND_gltf_pbr_surfaceshader")
+        self.assertIsNotNone(node.GetShaderInput("alpha_cutoff"))
+        with tempfile.TemporaryDirectory() as directory:
+            for extension in ("gltf", "glb"):
+                path = pathlib.Path(directory) / ("alpha." + extension)
+                for source, opacity, threshold, alpha, mode, cutoff in cases:
+                    with self.subTest(extension=extension, source=source):
+                        document, binary = mesh_document(extension)
+                        document["meshes"][0]["primitives"][0]["material"] = 0
+                        document["materials"] = [dict(source, pbrMetallicRoughness=factors)]
+                        write_asset(path, document, binary)
+                        stage = Usd.Stage.Open(str(path))
+                        self.assertTrue(stage.GetRootLayer().Reload(True))
+                        material = UsdShade.Material.Get(stage, "/Asset/mtl/Material_0")
+                        preview, _, _ = material.ComputeSurfaceSource()
+                        mtlx, _, _ = material.ComputeSurfaceSource("mtlx")
+                        self.assert_material_nodegraphs(material, preview, mtlx)
+                        for shader, name, expected in (
+                            (preview, "opacity", opacity),
+                            (preview, "opacityThreshold", threshold),
+                            (mtlx, "alpha", alpha),
+                            (mtlx, "alpha_cutoff", cutoff),
+                        ):
+                            if expected is None:
+                                self.assertFalse(shader.GetInput(name), name)
+                            else:
+                                self.assertAlmostEqual(shader.GetInput(name).Get(), expected, places=6)
+                        self.assertEqual(mtlx.GetInput("alpha_mode").Get(), mode)
+
+    def test_explicit_material_vertex_colors(self):
+        registry = Sdr.Registry()
+        for node_id, inputs, output in (
+            ("UsdPrimvarReader_float", ("varname", "fallback"), "result"),
+            ("ND_geompropvalue_float", ("geomprop", "default"), "out"),
+            ("ND_multiply_color3", ("in1", "in2"), "out"),
+            ("ND_multiply_float", ("in1", "in2"), "out"),
+        ):
+            node = registry.GetShaderNodeByIdentifier(node_id)
+            self.assertIsNotNone(node, node_id)
+            self.assertIn(output, node.GetShaderOutputNames())
+            for name in inputs:
+                self.assertIsNotNone(node.GetShaderInput(name), name)
+
+        def reader_of(shader, input_name):
+            connections = shader.GetInput(input_name).GetAttr().GetConnections()
+            self.assertEqual(len(connections), 1)
+            return UsdShade.Shader.Get(shader.GetPrim().GetStage(), connections[0].GetPrimPath())
+
+        vertex_rgb = (Gf.Vec3f(0, 1, 0), Gf.Vec3f(1, 0, 1), Gf.Vec3f(0.5, 1, 0))
+        vertex_alpha = (1, 0, 0.5)
+        with tempfile.TemporaryDirectory() as directory:
+            for extension in ("gltf", "glb"):
+                for case, (components, mode, rgb, alpha) in enumerate((
+                    (4, "BLEND", (0.5, 0.25, 1), 0.5),
+                    (3, "BLEND", (0.5, 0.25, 1), 0.5),
+                    (4, "MASK", (1, 1, 1), 1),
+                    (3, "MASK", (1, 1, 1), 0.5),
+                    (4, "OPAQUE", (0.5, 0.25, 1), 0.5),
+                )):
+                    with self.subTest(extension=extension, components=components, mode=mode,
+                                      rgb=rgb, alpha=alpha):
+                        path = pathlib.Path(directory) / f"colors{case}.{extension}"
+                        document, binary = color_document(extension, 5126, components)
+                        primitives = document["meshes"][0]["primitives"]
+                        primitives[0]["material"] = 0
+                        primitives[1]["material"] = 0
+                        del primitives[1]["attributes"]["COLOR_0"]
+                        document["materials"] = [{
+                            "name": "Tinted",
+                            "alphaMode": mode,
+                            "alphaCutoff": 0.25,
+                            "doubleSided": True,
+                            "pbrMetallicRoughness": {"baseColorFactor": [*rgb, alpha]},
+                        }]
+                        write_asset(path, document, binary)
+                        stage = Usd.Stage.Open(str(path))
+
+                        # A primitive without COLOR_0 keeps the plain factor material.
+                        plain = UsdShade.Material.Get(stage, "/Asset/mtl/Material_0")
+                        material = UsdShade.Material.Get(stage, "/Asset/mtl/Material_0_VertexColor")
+                        self.assertEqual(material.GetPrim().GetDisplayName(), "Tinted")
+                        plain_preview, _, _ = plain.ComputeSurfaceSource()
+                        self.assertFalse(plain_preview.GetInput("diffuseColor").HasConnectedSource())
+                        for node in (0, 1):
+                            for primitive, name in ((0, "Material_0_VertexColor"), (1, "Material_0")):
+                                mesh = UsdGeom.Mesh.Get(
+                                    stage, f"/Asset/geo/Node_{node}/Mesh_0/Primitive_{primitive}")
+                                bound, _ = UsdShade.MaterialBindingAPI(mesh).ComputeBoundMaterial()
+                                self.assertEqual(bound.GetPath(), Sdf.Path("/Asset/mtl/" + name))
+                                self.assertTrue(mesh.GetDoubleSidedAttr().Get())
+
+                        preview, _, _ = material.ComputeSurfaceSource()
+                        mtlx, _, _ = material.ComputeSurfaceSource("mtlx")
+                        tinted = rgb != (1, 1, 1)
+                        translucent = mode != "OPAQUE"
+                        primvars = UsdGeom.PrimvarsAPI(
+                            stage.GetPrimAtPath("/Asset/geo/Node_0/Mesh_0/Primitive_0"))
+
+                        # Preview has no multiply node and reads a per-mesh product.
+                        reader = reader_of(preview, "diffuseColor")
+                        self.assertEqual(reader.GetIdAttr().Get(), "UsdPrimvarReader_float3")
+                        self.assertEqual(reader.GetInput("varname").Get(),
+                                         "gltf_previewBaseColor" if tinted else "displayColor")
+                        self.assertTrue(Gf.IsClose(reader.GetInput("fallback").Get(),
+                                                   Gf.Vec3f(*rgb), 1e-6))
+                        product = primvars.GetPrimvar("gltf_previewBaseColor")
+                        self.assertEqual(bool(product), tinted)
+                        if tinted:
+                            self.assertEqual(product.GetInterpolation(), "vertex")
+                            for value, source in zip(product.Get(), vertex_rgb):
+                                self.assertTrue(Gf.IsClose(
+                                    value, Gf.CompMult(source, Gf.Vec3f(*rgb)), 1e-6))
+
+                        # MaterialX multiplies in the graph, only when the factor is not 1.
+                        node = reader_of(mtlx, "base_color")
+                        if tinted:
+                            self.assertEqual(node.GetIdAttr().Get(), "ND_multiply_color3")
+                            self.assertTrue(Gf.IsClose(node.GetInput("in2").Get(),
+                                                       Gf.Vec3f(*rgb), 1e-6))
+                            node = reader_of(node, "in1")
+                        self.assertEqual(node.GetIdAttr().Get(), "ND_geompropvalue_color3")
+                        self.assertEqual(node.GetInput("geomprop").Get(), "displayColor")
+                        self.assertEqual(node.GetInput("default").Get(), Gf.Vec3f(1))
+
+                        if not translucent:
+                            self.assertFalse(preview.GetInput("opacity"))
+                            self.assertFalse(mtlx.GetInput("alpha"))
+                            self.assertFalse(primvars.GetPrimvar("gltf_previewAlpha"))
+                            continue
+                        reader = reader_of(preview, "opacity")
+                        self.assertEqual(reader.GetIdAttr().Get(), "UsdPrimvarReader_float")
+                        self.assertEqual(reader.GetInput("varname").Get(),
+                                         "gltf_colorAlpha" if alpha == 1 else "gltf_previewAlpha")
+                        self.assertAlmostEqual(reader.GetInput("fallback").Get(), alpha, places=6)
+                        product = primvars.GetPrimvar("gltf_previewAlpha")
+                        self.assertEqual(bool(product), components == 4 and alpha != 1)
+                        if product:
+                            self.assertEqual(product.GetInterpolation(), "vertex")
+                            for value, source in zip(product.Get(), vertex_alpha):
+                                self.assertAlmostEqual(value, source * alpha, places=6)
+                        self.assertEqual(primvars.GetPrimvar("gltf_colorAlpha").IsDefined(),
+                                         components == 4)
+                        node = reader_of(mtlx, "alpha")
+                        if alpha != 1:
+                            self.assertEqual(node.GetIdAttr().Get(), "ND_multiply_float")
+                            self.assertAlmostEqual(node.GetInput("in2").Get(), alpha, places=6)
+                            node = reader_of(node, "in1")
+                        self.assertEqual(node.GetIdAttr().Get(), "ND_geompropvalue_float")
+                        self.assertEqual(node.GetInput("geomprop").Get(), "gltf_colorAlpha")
+                        self.assertEqual(node.GetInput("default").Get(), 1)
+                        threshold = preview.GetInput("opacityThreshold")
+                        if mode == "MASK":
+                            self.assertAlmostEqual(threshold.Get(), 0.25, places=6)
+                        else:
+                            self.assertFalse(threshold)
+
+                        self.assertTrue(stage.GetRootLayer().Reload(True))
+                        self.assertTrue(stage.GetPrimAtPath("/Asset/mtl/Material_0_VertexColor"))
+                        host = Usd.Stage.CreateInMemory()
+                        host.DefinePrim("/Model").GetReferences().AddReference(str(path))
+                        mesh = host.GetPrimAtPath("/Model/geo/Node_0/Mesh_0/Primitive_0")
+                        bound, _ = UsdShade.MaterialBindingAPI(mesh).ComputeBoundMaterial()
+                        self.assertEqual(bound.GetPath(), Sdf.Path("/Model/mtl/Material_0_VertexColor"))
+
+    def test_alpha_modes_view_fixture(self):
+        path = pathlib.Path(__file__).parent / "fixtures" / "alpha_modes.gltf"
+        stage = Usd.Stage.Open(str(path))
+        modes = []
+        for primitive in range(7):
+            mesh = stage.GetPrimAtPath(f"/Asset/geo/Node_0/Mesh_0/Primitive_{primitive}")
+            material, _ = UsdShade.MaterialBindingAPI(mesh).ComputeBoundMaterial()
+            self.assertEqual(material.GetPath(), Sdf.Path(f"/Asset/mtl/Material_{primitive}_VertexColor"))
+            mtlx, _, _ = material.ComputeSurfaceSource("mtlx")
+            modes.append(mtlx.GetInput("alpha_mode").Get())
+            for prim in material.GetPrim().GetChildren():
+                for shader in prim.GetChildren():
+                    for name in ("varname", "geomprop"):
+                        attribute = UsdShade.Shader(shader).GetInput(name)
+                        if attribute:
+                            self.assertNotIn(":", attribute.Get())
+        self.assertEqual(modes, [1, 1, 1, 2, 2, 0, 0])
+
     def test_material_failures_preserve_layer(self):
         with tempfile.TemporaryDirectory() as directory:
             for extension in ("gltf", "glb"):
@@ -1053,10 +1277,10 @@ class FileFormatTest(unittest.TestCase):
                 write_asset(path, document, binary)
                 stage = Usd.Stage.Open(str(path))
                 layer = stage.GetRootLayer()
-                before = layer.ExportToString()
+                before = layer_text(layer)
                 for case in ("index", "base color", "metallic", "roughness", "emissive",
-                             "MASK", "BLEND", "base texture", "metallic texture",
-                             "normal texture", "occlusion texture", "emissive texture", "color"):
+                             "alpha cutoff", "base texture", "metallic texture",
+                             "normal texture", "occlusion texture", "emissive texture"):
                     with self.subTest(extension=extension, case=case):
                         invalid, invalid_binary = mesh_document(extension)
                         primitive = invalid["meshes"][0]["primitives"][0]
@@ -1074,12 +1298,8 @@ class FileFormatTest(unittest.TestCase):
                             material["pbrMetallicRoughness"] = values[case]
                         elif case == "emissive":
                             material["emissiveFactor"] = [0, -0.1, 0]
-                        elif case in ("MASK", "BLEND"):
-                            material["alphaMode"] = case
-                        elif case == "color":
-                            invalid, invalid_binary = color_document(extension, 5126, 4)
-                            invalid["materials"] = [{}]
-                            invalid["meshes"][0]["primitives"][0]["material"] = 0
+                        elif case == "alpha cutoff":
+                            material.update(alphaMode="MASK", alphaCutoff=-0.5)
                         else:
                             invalid["images"] = [{"uri": "data:image/png;base64,AA=="}]
                             invalid["textures"] = [{"source": 0}]
@@ -1097,11 +1317,13 @@ class FileFormatTest(unittest.TestCase):
                             message = "material index is out of range"
                         elif case in ("base color", "metallic", "roughness", "emissive"):
                             message = "material .* factor is non-finite or out of range"
+                        elif case == "alpha cutoff":
+                            message = "material alpha cutoff is non-finite or negative"
                         else:
-                            message = "material textures, non-opaque alpha, or material with vertex colors"
+                            message = "material textures are not supported"
                         with self.assertRaisesRegex(Tf.ErrorException, message):
                             layer.Reload(True)
-                        self.assertEqual(layer.ExportToString(), before)
+                        self.assertEqual(layer_text(layer), before)
                         self.assertTrue(UsdShade.Material.Get(stage, "/Asset/mtl/Material_0"))
 
     def test_optional_lights_outside_selected_scene_and_required_lights(self):
@@ -1118,7 +1340,7 @@ class FileFormatTest(unittest.TestCase):
                     self.assertTrue(stage.GetPrimAtPath("/Asset/geo/Node_0"))
                     self.assertFalse(stage.GetPrimAtPath("/Asset/geo/Node_1"))
                     layer = stage.GetRootLayer()
-                    before = layer.ExportToString()
+                    before = layer_text(layer)
 
                     document["extensionsRequired"] = ["KHR_lights_punctual"]
                     required_path = root / ("required." + extension)
@@ -1128,7 +1350,7 @@ class FileFormatTest(unittest.TestCase):
                     write_asset(path, document, binary)
                     with self.assertRaisesRegex(Tf.ErrorException, "cannot parse"):
                         layer.Reload(True)
-                    self.assertEqual(layer.ExportToString(), before)
+                    self.assertEqual(layer_text(layer), before)
                     self.assertTrue(stage.GetPrimAtPath("/Asset/geo/Node_0"))
 
     def test_animation_outside_selected_scene_is_rejected(self):
@@ -1160,7 +1382,7 @@ class FileFormatTest(unittest.TestCase):
                 write_asset(path, document, binary)
                 stage = Usd.Stage.Open(str(path))
                 layer = stage.GetRootLayer()
-                before = layer.ExportToString()
+                before = layer_text(layer)
                 for feature, message in cases.items():
                     with self.subTest(extension=extension, feature=feature):
                         invalid, invalid_binary = unsupported_document(extension, feature)
@@ -1171,7 +1393,7 @@ class FileFormatTest(unittest.TestCase):
                         write_asset(path, invalid, invalid_binary)
                         with self.assertRaisesRegex(Tf.ErrorException, message):
                             layer.Reload(True)
-                        self.assertEqual(layer.ExportToString(), before)
+                        self.assertEqual(layer_text(layer), before)
                         self.assertTrue(stage.GetPrimAtPath("/Asset/geo/Node_0/Mesh_0/Primitive_0"))
                 write_asset(path, document, binary)
                 self.assertTrue(layer.Reload(True))
@@ -1196,11 +1418,11 @@ class FileFormatTest(unittest.TestCase):
                     self.assertEqual(list(mesh.GetFaceVertexIndicesAttr().Get()), [2, 0, 1])
                     self.assertEqual(list(mesh.GetNormalsAttr().Get()), [Gf.Vec3f(0, 0, 1)] * 3)
 
-                    before = layer.ExportToString()
+                    before = layer_text(layer)
                     buffer_path.write_bytes(binary[:-1])
                     with self.assertRaisesRegex(Tf.ErrorException, "shorter than its declared byteLength"):
                         layer.Reload(True)
-                    self.assertEqual(layer.ExportToString(), before)
+                    self.assertEqual(layer_text(layer), before)
                     buffer_path.write_bytes(struct.pack("<f", 4) + binary[4:])
                     self.assertTrue(layer.Reload(True))
                     self.assertEqual(mesh.GetPointsAttr().Get()[0], Gf.Vec3f(4, 0, 0))
@@ -1224,19 +1446,19 @@ class FileFormatTest(unittest.TestCase):
                 write_asset(path, document)
                 stage = Usd.Stage.Open(str(path))
                 layer = stage.GetRootLayer()
-                before = layer.ExportToString()
+                before = layer_text(layer)
                 for uri in uris:
                     with self.subTest(extension=extension, uri=uri):
                         document["buffers"][0]["uri"] = uri
                         write_asset(path, document)
                         with self.assertRaisesRegex(Tf.ErrorException, "unsafe or unsupported|cannot parse"):
                             layer.Reload(True)
-                        self.assertEqual(layer.ExportToString(), before)
+                        self.assertEqual(layer_text(layer), before)
                 document["buffers"][0]["uri"] = "missing.bin"
                 write_asset(path, document)
                 with self.assertRaisesRegex(Tf.ErrorException, "cannot resolve external buffer"):
                     layer.Reload(True)
-                self.assertEqual(layer.ExportToString(), before)
+                self.assertEqual(layer_text(layer), before)
 
     def test_external_buffers_with_unicode_and_mixed_glb_data(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1535,13 +1757,13 @@ class FileFormatTest(unittest.TestCase):
                     write_asset(path, scene_document())
                     stage = Usd.Stage.Open(str(path))
                     layer = stage.GetRootLayer()
-                    before = layer.ExportToString()
+                    before = layer_text(layer)
                     document = scene_document()
                     document["nodes"][1]["children"] = [0]
                     write_asset(path, document)
                     with self.assertRaisesRegex(Tf.ErrorException, "cyclic node"):
                         layer.Reload(True)
-                    self.assertEqual(layer.ExportToString(), before)
+                    self.assertEqual(layer_text(layer), before)
                     self.assertTrue(stage.GetPrimAtPath("/Asset/geo/Node_0/Node_1"))
                     changed = scene_document()
                     changed["nodes"][0]["children"] = []
