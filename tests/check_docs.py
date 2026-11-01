@@ -11,7 +11,9 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 MATRIX = ROOT / "docs" / "reference" / "CAPABILITY_MATRIX.md"
-ROADMAP = ROOT / "docs" / "roadmap" / "README.md"
+ROADMAP = ROOT / "docs" / "roadmap"
+ROADMAP_CURRENT = ROADMAP / "current.md"
+ROADMAP_BACKLOG = ROADMAP / "backlog.md"
 CHANGELOG = ROOT / "CHANGELOG.md"
 MATRIX_HEADER = ["Capability", "State", "Supported subset and limitations", "Evidence"]
 STATE = re.compile(r"Unsupported|Experimental|Verified \(.+\)")
@@ -19,6 +21,7 @@ LINK = re.compile(r"(?<!!)\[[^\]]*\]\(([^)\s]+)\)")
 HEADING = re.compile(r"(#{1,6})\s+(.*\S)\s*$")
 STATUS_LINE = re.compile(r"\**Status\b[^|]*:")
 RELEASE_HEADING = re.compile(r"v\d+\.\d+")
+CHECKED_ITEM = re.compile(r"\s*[-*]\s+\[[xX]\]")
 
 
 def documents():
@@ -67,7 +70,7 @@ def check_single_owner(path):
         if path != MATRIX and "/actions/runs/" in line:
             yield f"{location}: CI run evidence belongs in the capability matrix"
         heading = HEADING.match(line)
-        if path not in (ROADMAP, CHANGELOG) and heading and RELEASE_HEADING.match(heading[2]):
+        if path not in (ROADMAP_CURRENT, ROADMAP_BACKLOG, CHANGELOG) and heading and RELEASE_HEADING.match(heading[2]):
             yield f"{location}: release scope belongs in the roadmap"
 
 
@@ -114,15 +117,23 @@ def check_matrix():
         yield f"{MATRIX.relative_to(ROOT)}: no capability rows found"
 
 
-def check_roadmap_headings():
+def check_roadmap():
     seen = set()
-    for number, line in prose_lines(ROADMAP):
-        heading = HEADING.match(line)
-        if heading and RELEASE_HEADING.match(heading[2]):
-            version = heading[2].split()[0]
-            if version in seen:
-                yield f"{ROADMAP.relative_to(ROOT)}:{number}: duplicate release heading {version}"
-            seen.add(version)
+    current = 0
+    for path in (ROADMAP_CURRENT, ROADMAP_BACKLOG):
+        for number, line in prose_lines(path):
+            location = f"{path.relative_to(ROOT)}:{number}"
+            if CHECKED_ITEM.match(line):
+                yield f"{location}: delete finished work instead of checking it off"
+            heading = HEADING.match(line)
+            if heading and RELEASE_HEADING.match(heading[2]):
+                version = heading[2].split()[0]
+                if version in seen:
+                    yield f"{location}: duplicate release heading {version}"
+                seen.add(version)
+                current += path == ROADMAP_CURRENT
+    if current != 1:
+        yield f"{ROADMAP_CURRENT.relative_to(ROOT)}: expected one version, found {current}"
 
 
 def main():
@@ -131,7 +142,7 @@ def main():
         errors += check_links(path)
         errors += check_single_owner(path)
     errors += check_matrix()
-    errors += check_roadmap_headings()
+    errors += check_roadmap()
     print("\n".join(errors) if errors else "Documentation checks passed.")
     return 1 if errors else 0
 

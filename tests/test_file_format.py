@@ -8,8 +8,9 @@ import sys
 import tempfile
 import unittest
 import urllib.parse
+import zlib
 
-from pxr import Gf, Sdf, Sdr, Tf, Usd, UsdGeom, UsdShade
+from pxr import Ar, Gf, Sdf, Sdr, Tf, Usd, UsdGeom, UsdShade
 
 
 def layer_text(layer):
@@ -114,6 +115,51 @@ def uv_document(extension, external=False):
     elif extension == "gltf":
         document["buffers"][0]["uri"] = "data:application/octet-stream;base64," + (
             base64.b64encode(binary).decode())
+    return document, binary
+
+
+def png_bytes():
+    def chunk(kind, data):
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 6, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(b"\0\xff\x80\x40\xff")) + chunk(b"IEND", b""))
+
+
+PNG = png_bytes()
+# Conversion checks only the signature, so structural tests need no decodable JPEG.
+JPEG = b"\xff\xd8\xff\xe0" + bytes(16)
+
+
+def asset_bytes(resolved_path):
+    return bytes(Ar.GetResolver().OpenAsset(Ar.ResolvedPath(resolved_path)).GetBuffer())
+
+
+def append_view(document, binary, extension, data):
+    """Appends a bufferView holding `data` and returns the longer binary."""
+    binary += b"\0" * (-len(binary) % 4)
+    document["bufferViews"].append({"buffer": 0, "byteOffset": len(binary), "byteLength": len(data)})
+    binary += data
+    document["buffers"][0]["byteLength"] = len(binary)
+    if extension == "gltf":
+        document["buffers"][0]["uri"] = "data:application/octet-stream;base64," + (
+            base64.b64encode(binary).decode())
+    return binary
+
+
+def textured_document(extension, image, data):
+    """A uv_document whose first primitive has a base color texture.
+
+    `image` is the glTF image, or None to embed `data` through a bufferView.
+    """
+    document, binary = uv_document(extension)
+    if image is None:
+        binary = append_view(document, binary, extension, data)
+        image = {"bufferView": len(document["bufferViews"]) - 1,
+                 "mimeType": "image/png" if data == PNG else "image/jpeg"}
+    document["images"] = [image]
+    document["textures"] = [{"source": 0}]
+    document["materials"] = [{"pbrMetallicRoughness": {"baseColorTexture": {"index": 0}}}]
+    document["meshes"][0]["primitives"][0]["material"] = 0
     return document, binary
 
 
@@ -1267,6 +1313,293 @@ class FileFormatTest(unittest.TestCase):
                             self.assertNotIn(":", attribute.Get())
         self.assertEqual(modes, [1, 1, 1, 2, 2, 0, 0])
 
+    def test_base_color_image_sources_and_networks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            (root / "maps").mkdir()
+            (root / "maps" / "a b.png").write_bytes(PNG)
+            for extension in ("gltf", "glb"):
+                for kind, image, data, entry in (
+                    ("data", {"uri": "data:image/png;base64," + base64.b64encode(PNG).decode()},
+                     PNG, "images/0.png"),
+                    ("view", None, JPEG, "images/0.jpg"),
+                    ("external", {"uri": "maps/a%20b.png"}, PNG, None),
+                ):
+                    with self.subTest(extension=extension, kind=kind):
+                        path = root / f"{kind}.{extension}"
+                        document, binary = textured_document(extension, image, data)
+                        write_asset(path, document, binary)
+                        stage = Usd.Stage.Open(str(path))
+                        expected = f"./{path.name}[{entry}]" if entry else "./maps/a b.png"
+
+                        material = UsdShade.Material.Get(stage, "/Asset/mtl/Material_0")
+                        preview, _, _ = material.ComputeSurfaceSource()
+                        self.assertEqual(preview.GetPath().name, "surface")
+                        source = preview.GetInput("diffuseColor").GetConnectedSource()[0]
+                        texture = UsdShade.Shader(source.GetPrim())
+                        self.assertEqual(texture.GetIdAttr().Get(), "UsdUVTexture")
+                        self.assertEqual(texture.GetPath().name, "baseColorTexture")
+                        self.assertEqual(texture.GetInput("sourceColorSpace").Get(), "sRGB")
+                        self.assertEqual(texture.GetInput("wrapS").Get(), "repeat")
+                        self.assertEqual(texture.GetInput("wrapT").Get(), "repeat")
+                        self.assertEqual(texture.GetInput("scale").Get(), Gf.Vec4f(1))
+                        reader = texture.GetInput("st").GetConnectedSource()[0]
+                        self.assertEqual(UsdShade.Shader(reader.GetPrim()).GetInput("varname").Get(), "st")
+                        self.assertFalse(preview.GetInput("opacity"))
+
+                        mtlx, _, _ = material.ComputeSurfaceSource("mtlx")
+                        rgb = UsdShade.Shader(mtlx.GetInput("base_color").GetConnectedSource()[0].GetPrim())
+                        self.assertEqual(rgb.GetIdAttr().Get(), "ND_convert_color4_color3")
+                        node = UsdShade.Shader(rgb.GetInput("in").GetConnectedSource()[0].GetPrim())
+                        self.assertEqual(node.GetIdAttr().Get(), "ND_image_color4")
+                        self.assertEqual(node.GetInput("file").GetAttr().GetColorSpace(), "srgb_texture")
+                        self.assertEqual(node.GetInput("uaddressmode").Get(), "periodic")
+                        self.assertEqual(node.GetInput("vaddressmode").Get(), "periodic")
+                        coordinates = UsdShade.Shader(node.GetInput("texcoord").GetConnectedSource()[0].GetPrim())
+                        self.assertEqual(coordinates.GetIdAttr().Get(), "ND_geompropvalue_vector2")
+                        self.assertEqual(coordinates.GetInput("geomprop").Get(), "st")
+                        self.assertFalse(mtlx.GetInput("alpha"))
+
+                        for shader in (texture, node):
+                            asset = shader.GetInput("file").Get()
+                            self.assertEqual(asset.path, expected)
+                            self.assertEqual(asset_bytes(asset.resolvedPath), data)
+
+                        stage.GetRootLayer().Reload(True)
+                        asset = texture.GetInput("file").Get()
+                        self.assertEqual(asset_bytes(asset.resolvedPath), data)
+
+    def test_base_color_sampler_uv_set_factor_and_alpha(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            for extension in ("gltf", "glb"):
+                with self.subTest(extension=extension):
+                    path = root / ("sampler." + extension)
+                    document, binary = textured_document(extension, None, PNG)
+                    document["samplers"] = [{"wrapS": 33648, "wrapT": 33071}]
+                    document["textures"][0]["sampler"] = 0
+                    material = document["materials"][0]
+                    material["alphaMode"] = "MASK"
+                    material["alphaCutoff"] = 0.25
+                    pbr = material["pbrMetallicRoughness"]
+                    pbr["baseColorFactor"] = [0.5, 0.25, 0.75, 0.5]
+                    pbr["baseColorTexture"]["texCoord"] = 2
+                    write_asset(path, document, binary)
+                    stage = Usd.Stage.Open(str(path))
+                    usd_material = UsdShade.Material.Get(stage, "/Asset/mtl/Material_0")
+
+                    preview, _, _ = usd_material.ComputeSurfaceSource()
+                    self.assertAlmostEqual(preview.GetInput("opacityThreshold").Get(), 0.25)
+                    alpha_source, alpha_output, _ = preview.GetInput("opacity").GetConnectedSource()
+                    self.assertEqual(alpha_output, "a")
+                    texture = UsdShade.Shader(alpha_source.GetPrim())
+                    self.assertEqual(texture.GetInput("wrapS").Get(), "mirror")
+                    self.assertEqual(texture.GetInput("wrapT").Get(), "clamp")
+                    self.assertEqual(texture.GetInput("scale").Get(), Gf.Vec4f(0.5, 0.25, 0.75, 0.5))
+                    reader = texture.GetInput("st").GetConnectedSource()[0]
+                    self.assertEqual(UsdShade.Shader(reader.GetPrim()).GetInput("varname").Get(), "st2")
+
+                    mtlx, _, _ = usd_material.ComputeSurfaceSource("mtlx")
+                    factor = UsdShade.Shader(mtlx.GetInput("base_color").GetConnectedSource()[0].GetPrim())
+                    self.assertEqual(factor.GetPath().name, "baseColorFactor")
+                    self.assertEqual(factor.GetInput("in2").Get(), Gf.Vec3f(0.5, 0.25, 0.75))
+                    alpha_factor = UsdShade.Shader(mtlx.GetInput("alpha").GetConnectedSource()[0].GetPrim())
+                    self.assertEqual(alpha_factor.GetPath().name, "alphaFactor")
+                    self.assertAlmostEqual(alpha_factor.GetInput("in2").Get(), 0.5)
+                    extract = UsdShade.Shader(alpha_factor.GetInput("in1").GetConnectedSource()[0].GetPrim())
+                    self.assertEqual(extract.GetIdAttr().Get(), "ND_extract_color4")
+                    self.assertEqual(extract.GetInput("index").Get(), 3)
+                    image = UsdShade.Shader(extract.GetInput("in").GetConnectedSource()[0].GetPrim())
+                    self.assertEqual(image.GetInput("uaddressmode").Get(), "mirror")
+                    self.assertEqual(image.GetInput("vaddressmode").Get(), "clamp")
+                    coordinates = UsdShade.Shader(image.GetInput("texcoord").GetConnectedSource()[0].GetPrim())
+                    self.assertEqual(coordinates.GetInput("geomprop").Get(), "st2")
+
+    def test_base_color_texture_with_vertex_colors(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            for extension in ("gltf", "glb"):
+                with self.subTest(extension=extension):
+                    path = root / ("colors." + extension)
+                    document, binary = textured_document(extension, None, PNG)
+                    primitive = document["meshes"][0]["primitives"][0]
+                    # The UV accessors are not colors, so build a VEC3 color accessor.
+                    colors = struct.pack("<9f", 1, 0, 0, 0, 1, 0, 0, 0, 1)
+                    binary = append_view(document, binary, extension, colors)
+                    document["accessors"].append({
+                        "bufferView": len(document["bufferViews"]) - 1,
+                        "componentType": 5126, "count": 3, "type": "VEC3",
+                    })
+                    primitive["attributes"]["COLOR_0"] = len(document["accessors"]) - 1
+                    document["materials"][0]["alphaMode"] = "BLEND"
+                    document["materials"][0]["pbrMetallicRoughness"]["baseColorFactor"] = [1, 0.5, 1, 1]
+                    write_asset(path, document, binary)
+
+                    stage = Usd.Stage.Open(str(path))
+                    material = UsdShade.Material.Get(stage, "/Asset/mtl/Material_0_VertexColor")
+                    preview, _, _ = material.ComputeSurfaceSource()
+                    source = preview.GetInput("diffuseColor").GetConnectedSource()[0]
+                    self.assertEqual(source.GetPath().name, "baseColorTexture")
+                    mesh = stage.GetPrimAtPath("/Asset/geo/Node_0/Mesh_0/Primitive_0")
+                    self.assertFalse(UsdGeom.PrimvarsAPI(mesh).HasPrimvar("gltf_previewBaseColor"))
+
+                    mtlx, _, _ = material.ComputeSurfaceSource("mtlx")
+                    factor = UsdShade.Shader(mtlx.GetInput("base_color").GetConnectedSource()[0].GetPrim())
+                    self.assertEqual(factor.GetPath().name, "baseColorFactor")
+                    product = UsdShade.Shader(factor.GetInput("in1").GetConnectedSource()[0].GetPrim())
+                    self.assertEqual(product.GetPath().name, "baseColorVertex")
+                    self.assertEqual(product.GetInput("in1").GetConnectedSource()[0].GetPath().name, "baseColorRgb")
+                    self.assertEqual(product.GetInput("in2").GetConnectedSource()[0].GetPath().name, "displayColorReader")
+                    alpha = UsdShade.Shader(mtlx.GetInput("alpha").GetConnectedSource()[0].GetPrim())
+                    self.assertEqual(alpha.GetPath().name, "alphaVertex")
+                    self.assertEqual(alpha.GetInput("in1").GetConnectedSource()[0].GetPath().name, "baseColorA")
+                    self.assertEqual(alpha.GetInput("in2").GetConnectedSource()[0].GetPath().name, "colorAlphaReader")
+
+                    result = subprocess.run(
+                        [sys.executable, "-c",
+                         "from pxr import Usd; import sys; assert Usd.Stage.Open(sys.argv[1])", str(path)],
+                        capture_output=True, text=True, check=False,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIn("ignores COLOR_0", result.stderr)
+
+    def test_images_resolve_after_moving_and_through_references(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            for extension in ("gltf", "glb"):
+                for number, name in enumerate(("model", "a b", "モデル", "bracket[1]")):
+                    with self.subTest(extension=extension, name=name):
+                        source = root / "source" / extension
+                        source.mkdir(parents=True, exist_ok=True)
+                        document, binary = textured_document(extension, None, PNG)
+                        original = source / f"{name}.{extension}"
+                        write_asset(original, document, binary)
+
+                        moved = root / "moved" / f"{extension}-{name}"
+                        moved.mkdir(parents=True)
+                        target = moved / original.name
+                        target.write_bytes(original.read_bytes())
+                        original.unlink()
+
+                        stage = Usd.Stage.Open(str(target))
+                        texture = UsdShade.Shader.Get(
+                            stage, "/Asset/mtl/Material_0/preview/baseColorTexture")
+                        asset = texture.GetInput("file").Get()
+                        self.assertEqual(asset.path, Ar.JoinPackageRelativePath(
+                            f"./{target.name}", "images/0.png"))
+                        self.assertEqual(asset_bytes(asset.resolvedPath), PNG)
+
+                        host = root / f"host-{extension}-{number}.usda"
+                        host.write_text(
+                            '#usda 1.0\n(\n    defaultPrim = "Root"\n)\n\n'
+                            'def Xform "Root" (\n'
+                            f'    references = @./{target.relative_to(root).as_posix()}@\n'
+                            ')\n{\n}\n',
+                            encoding="utf-8",
+                        )
+                        composed = Usd.Stage.Open(str(host))
+                        texture = UsdShade.Shader.Get(
+                            composed, "/Root/mtl/Material_0/preview/baseColorTexture")
+                        self.assertEqual(asset_bytes(texture.GetInput("file").Get().resolvedPath), PNG)
+
+    def test_package_resolver_rejects_invalid_entries(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            (root / "external.png").write_bytes(PNG)
+            for extension in ("gltf", "glb"):
+                with self.subTest(extension=extension):
+                    path = root / ("package." + extension)
+                    document, binary = textured_document(extension, None, PNG)
+                    document["images"].append({"uri": "external.png"})
+                    write_asset(path, document, binary)
+                    resolver = Ar.GetResolver()
+                    self.assertTrue(resolver.Resolve(f"{path}[images/0.png]"))
+                    for entry in ("images/0.jpg", "images/1.png", "images/2.png", "images/00.png",
+                                  "images/0.png.png", "images/-1.png", "images/.png", "0.png",
+                                  "../external.png", "images/../external.png"):
+                        self.assertFalse(resolver.Resolve(f"{path}[{entry}]"), entry)
+
+    def test_base_color_textures_view_fixture(self):
+        path = pathlib.Path(__file__).parent / "fixtures" / "base_color_textures.gltf"
+        stage = Usd.Stage.Open(str(path))
+        for primitive in range(9):
+            mesh = stage.GetPrimAtPath(f"/Asset/geo/Node_0/Mesh_0/Primitive_{primitive}")
+            material, _ = UsdShade.MaterialBindingAPI(mesh).ComputeBoundMaterial()
+            texture = UsdShade.Shader.Get(
+                stage, material.GetPath().AppendPath(Sdf.Path("preview/baseColorTexture")))
+            image = UsdShade.Shader.Get(
+                stage, material.GetPath().AppendPath(Sdf.Path("mtlx/baseColorImage")))
+            for shader in (texture, image):
+                asset = shader.GetInput("file").Get()
+                self.assertTrue(asset.resolvedPath, asset.path)
+                self.assertTrue(asset_bytes(asset.resolvedPath))
+
+    def test_texture_failures_preserve_layer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            outside = root / "outside.png"
+            outside.write_bytes(PNG)
+            source = root / "source"
+            source.mkdir()
+            (source / "not-image.png").write_bytes(b"not an image")
+            (source / "mismatch.png").write_bytes(JPEG)
+            (source / "image.bmp").write_bytes(PNG)
+            (source / "image.ktx2").write_bytes(b"\xabKTX 20\xbb\r\n\x1a\n")
+            for extension in ("gltf", "glb"):
+                path = source / ("asset." + extension)
+                document, binary = textured_document(extension, None, PNG)
+                write_asset(path, document, binary)
+                stage = Usd.Stage.Open(str(path))
+                layer = stage.GetRootLayer()
+                before = layer_text(layer)
+                for case, change, message in (
+                    ("corrupt embedded", lambda d: d["images"].__setitem__(0, {
+                        "uri": "data:image/png;base64,AAAAAAAAAAAA"}), "embedded image is not PNG or JPEG"),
+                    ("webp data", lambda d: d["images"].__setitem__(0, {
+                        "uri": "data:image/webp;base64,UklGRg=="}), "embedded image is not PNG or JPEG"),
+                    ("missing file", lambda d: d["images"].__setitem__(0, {"uri": "absent.png"}),
+                     "cannot resolve external image"),
+                    ("parent path", lambda d: d["images"].__setitem__(0, {"uri": "../outside.png"}),
+                     "unsafe or unsupported external image URI"),
+                    ("absolute path", lambda d: d["images"].__setitem__(0, {"uri": "/outside.png"}),
+                     "unsafe or unsupported external image URI"),
+                    ("remote", lambda d: d["images"].__setitem__(0, {"uri": "https://example.com/a.png"}),
+                     "unsafe or unsupported external image URI"),
+                    ("not an image", lambda d: d["images"].__setitem__(0, {"uri": "not-image.png"}),
+                     "external image is not PNG or JPEG"),
+                    ("ktx2 file", lambda d: d["images"].__setitem__(0, {"uri": "image.ktx2"}),
+                     "external image is not PNG or JPEG"),
+                    ("wrong content", lambda d: d["images"].__setitem__(0, {"uri": "mismatch.png"}),
+                     "file extension does not match"),
+                    ("wrong extension", lambda d: d["images"].__setitem__(0, {"uri": "image.bmp"}),
+                     "file extension does not match"),
+                    ("image index", lambda d: d["textures"][0].__setitem__("source", 9),
+                     "image index is out of range|cannot parse"),
+                    ("no source", lambda d: d["textures"][0].pop("source"),
+                     "no PNG or JPEG image source|cannot parse"),
+                    ("texture index", lambda d: d["materials"][0]["pbrMetallicRoughness"]["baseColorTexture"]
+                     .__setitem__("index", 9), "texture index is out of range|cannot parse"),
+                    ("sampler index", lambda d: d["textures"][0].__setitem__("sampler", 9),
+                     "sampler index is out of range|cannot parse"),
+                    ("uv set", lambda d: d["materials"][0]["pbrMetallicRoughness"]["baseColorTexture"]
+                     .__setitem__("texCoord", 3), "texture coordinate set the primitive does not have"),
+                    ("bad view", lambda d: d["images"].__setitem__(0, {
+                        "bufferView": 99, "mimeType": "image/png"}), "bufferView index is out of range|cannot parse"),
+                ):
+                    with self.subTest(extension=extension, case=case):
+                        invalid, invalid_binary = textured_document(extension, None, PNG)
+                        change(invalid)
+                        write_asset(path, invalid, invalid_binary)
+                        with self.assertRaisesRegex(Tf.ErrorException, message):
+                            layer.Reload(True)
+                        self.assertEqual(layer_text(layer), before)
+
+                # Only images the selected scene uses are read.
+                unused, unused_binary = textured_document(extension, None, PNG)
+                unused["images"].append({"uri": "absent.png"})
+                write_asset(path, unused, unused_binary)
+                self.assertTrue(layer.Reload(True))
+
     def test_material_failures_preserve_layer(self):
         with tempfile.TemporaryDirectory() as directory:
             for extension in ("gltf", "glb"):
@@ -1319,8 +1652,10 @@ class FileFormatTest(unittest.TestCase):
                             message = "material .* factor is non-finite or out of range"
                         elif case == "alpha cutoff":
                             message = "material alpha cutoff is non-finite or negative"
+                        elif case == "base texture":
+                            message = "texture coordinate set the primitive does not have"
                         else:
-                            message = "material textures are not supported"
+                            message = "material textures other than base color are not supported"
                         with self.assertRaisesRegex(Tf.ErrorException, message):
                             layer.Reload(True)
                         self.assertEqual(layer_text(layer), before)

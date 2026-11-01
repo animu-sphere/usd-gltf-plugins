@@ -10,17 +10,21 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
 
     include(../../cmake/UsdGltfDependencies.cmake)
     add_subdirectory("${USD_GLTF_REPOSITORY_ROOT}/libs/gltfCore" "${CMAKE_CURRENT_BINARY_DIR}/libs/gltfCore")
+    add_subdirectory("${USD_GLTF_REPOSITORY_ROOT}/libs/gltfTexture" "${CMAKE_CURRENT_BINARY_DIR}/libs/gltfTexture")
     add_subdirectory("${USD_GLTF_REPOSITORY_ROOT}/libs/gltfUsd" "${CMAKE_CURRENT_BINARY_DIR}/libs/gltfUsd")
     if(BUILD_TESTING)
         add_subdirectory("${USD_GLTF_REPOSITORY_ROOT}/tests" "${CMAKE_CURRENT_BINARY_DIR}/tests")
     endif()
 endif()
 
-add_library(UsdGltfFileFormat SHARED UsdGltfFileFormat.cpp externalBuffer.cpp)
+add_library(UsdGltfFileFormat SHARED
+    UsdGltfFileFormat.cpp
+    UsdGltfPackageResolver.cpp
+    externalBuffer.cpp)
 target_compile_features(UsdGltfFileFormat PRIVATE cxx_std_20)
 set_target_properties(UsdGltfFileFormat PROPERTIES CXX_EXTENSIONS OFF)
 target_include_directories(UsdGltfFileFormat PRIVATE ${PXR_INCLUDE_DIRS})
-target_link_libraries(UsdGltfFileFormat PRIVATE usd_gltf_usd simdjson::simdjson)
+target_link_libraries(UsdGltfFileFormat PRIVATE usd_gltf_usd)
 
 set_target_properties(UsdGltfFileFormat PROPERTIES
     PREFIX "lib"

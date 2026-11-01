@@ -5,7 +5,7 @@ or discussion.
 
 This project parses untrusted files, so crashes or memory errors on malformed
 input and reads outside an asset's permitted location are in scope. The
-[external buffer policy](docs/architecture/IMPORT_PIPELINE.md#external-buffer-policy)
+[external resource policy](docs/architecture/IMPORT_PIPELINE.md#external-resource-policy)
 describes the intended URI restrictions and their limits.
 
 ## Report privately

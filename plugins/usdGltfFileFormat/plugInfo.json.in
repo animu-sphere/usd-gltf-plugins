@@ -18,6 +18,10 @@
                         "supportsReading": true,
                         "supportsWriting": false,
                         "supportsEditing": false
+                    },
+                    "UsdGltfPackageResolver": {
+                        "bases": ["ArPackageResolver"],
+                        "extensions": ["gltf", "glb"]
                     }
                 }
             }

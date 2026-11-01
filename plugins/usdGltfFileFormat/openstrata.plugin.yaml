@@ -11,6 +11,8 @@ runtime:
 provides:
   - usd-fileformat:gltf
   - usd-fileformat:glb
+  - usd-package-resolver:gltf
+  - usd-package-resolver:glb
 requires:
   capabilities: [usd-stage-read]
 usd:

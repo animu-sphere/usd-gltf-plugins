@@ -21,6 +21,10 @@ struct AccessorData
 using BufferLoader =
     std::function<bool(const fastgltf::Buffer&, std::span<const std::byte>&, std::string&)>;
 
+[[nodiscard]] bool GetBufferViewBytes(const fastgltf::Asset& asset, std::size_t index,
+                                      std::span<const std::byte>& result, std::string& error,
+                                      const BufferLoader& loadBuffer = {});
+
 [[nodiscard]] bool GetAccessorData(const fastgltf::Asset& asset, std::size_t index,
                                    fastgltf::AccessorType type,
                                    fastgltf::ComponentType componentType, std::size_t elementSize,

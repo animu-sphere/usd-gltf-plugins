@@ -8,11 +8,15 @@
 
 #include <fastgltf/types.hpp>
 
+#include <string>
+
 namespace gltfUsd
 {
 
 // loadBuffer is invoked synchronously on the conversion worker thread.
+// sourcePath is the resolved source file, which image paths are relative to.
 [[nodiscard]] pxr::SdfLayerRefPtr ConvertScene(const fastgltf::Asset& asset,
+                                               const std::string& sourcePath,
                                                const gltfCore::BufferLoader& loadBuffer);
 
 } // namespace gltfUsd

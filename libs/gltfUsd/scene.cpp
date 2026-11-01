@@ -78,8 +78,8 @@ nodeMatrix(const fastgltf::Node& node, GfMatrix4d& result)
 }
 
 SdfLayerRefPtr
-authorScene(const fastgltf::Asset& asset, const gltfCore::BufferLoader& loadBuffer,
-            std::size_t selectedIndex)
+authorScene(const fastgltf::Asset& asset, const std::string& sourcePath,
+            const gltfCore::BufferLoader& loadBuffer, std::size_t selectedIndex)
 {
     TfErrorMark mark;
     auto layer = SdfLayer::CreateAnonymous("gltf-conversion.usda");
@@ -115,7 +115,7 @@ authorScene(const fastgltf::Asset& asset, const gltfCore::BufferLoader& loadBuff
         return {};
     }
 
-    MaterialAuthor materials(asset, stage, mtl.GetPath());
+    MaterialAuthor materials(asset, sourcePath, loadBuffer, stage, mtl.GetPath());
     std::vector<bool> visited(asset.nodes.size(), false);
     std::vector<std::pair<std::size_t, UsdPrim>> pending;
     const auto& roots = asset.scenes[selectedIndex].nodeIndices;
@@ -182,7 +182,8 @@ authorScene(const fastgltf::Asset& asset, const gltfCore::BufferLoader& loadBuff
 } // namespace
 
 pxr::SdfLayerRefPtr
-ConvertScene(const fastgltf::Asset& asset, const gltfCore::BufferLoader& loadBuffer)
+ConvertScene(const fastgltf::Asset& asset, const std::string& sourcePath,
+             const gltfCore::BufferLoader& loadBuffer)
 {
     using namespace pxr;
     const auto selection = gltfCore::SelectScene(asset);
@@ -215,22 +216,23 @@ ConvertScene(const fastgltf::Asset& asset, const gltfCore::BufferLoader& loadBuf
     SdfLayerRefPtr result;
     try
     {
-        auto task = std::async(std::launch::async,
-                               [&]()
-                               {
-                                   TfErrorMark mark;
-                                   SdfLayerRefPtr staged;
-                                   try
-                                   {
-                                       staged = authorScene(asset, loadBuffer, selected->index);
-                                   }
-                                   catch (const std::exception& e)
-                                   {
-                                       TF_RUNTIME_ERROR("glTF authoring failed: %s", e.what());
-                                   }
-                                   mark.TransportTo(errors);
-                                   return staged;
-                               });
+        auto task =
+            std::async(std::launch::async,
+                       [&]()
+                       {
+                           TfErrorMark mark;
+                           SdfLayerRefPtr staged;
+                           try
+                           {
+                               staged = authorScene(asset, sourcePath, loadBuffer, selected->index);
+                           }
+                           catch (const std::exception& e)
+                           {
+                               TF_RUNTIME_ERROR("glTF authoring failed: %s", e.what());
+                           }
+                           mark.TransportTo(errors);
+                           return staged;
+                       });
         result = task.get();
     }
     catch (const std::exception& e)

@@ -7,34 +7,16 @@ namespace gltfCore
 {
 
 bool
-GetAccessorData(const fastgltf::Asset& asset, std::size_t index, fastgltf::AccessorType type,
-                fastgltf::ComponentType componentType, std::size_t elementSize, bool vertex,
-                AccessorData& result, std::string& error, const BufferLoader& loadBuffer,
-                bool normalized)
+GetBufferViewBytes(const fastgltf::Asset& asset, std::size_t index,
+                   std::span<const std::byte>& result, std::string& error,
+                   const BufferLoader& loadBuffer)
 {
-    if (index >= asset.accessors.size())
-    {
-        error = "accessor index is out of range";
-        return false;
-    }
-    const auto& accessor = asset.accessors[index];
-    if (accessor.type != type || accessor.componentType != componentType ||
-        accessor.normalized != normalized || accessor.count == 0)
-    {
-        error = "accessor has an invalid type, component type, normalization, or count";
-        return false;
-    }
-    if (accessor.sparse || !accessor.bufferViewIndex)
-    {
-        error = "sparse or missing bufferView accessors are not supported";
-        return false;
-    }
-    if (*accessor.bufferViewIndex >= asset.bufferViews.size())
+    if (index >= asset.bufferViews.size())
     {
         error = "bufferView index is out of range";
         return false;
     }
-    const auto& view = asset.bufferViews[*accessor.bufferViewIndex];
+    const auto& view = asset.bufferViews[index];
     if (view.bufferIndex >= asset.buffers.size())
     {
         error = "buffer index is out of range";
@@ -72,6 +54,39 @@ GetAccessorData(const fastgltf::Asset& asset, std::size_t index, fastgltf::Acces
         error = "bufferView exceeds its buffer";
         return false;
     }
+    result = bytes.subspan(view.byteOffset, view.byteLength);
+    return true;
+}
+
+bool
+GetAccessorData(const fastgltf::Asset& asset, std::size_t index, fastgltf::AccessorType type,
+                fastgltf::ComponentType componentType, std::size_t elementSize, bool vertex,
+                AccessorData& result, std::string& error, const BufferLoader& loadBuffer,
+                bool normalized)
+{
+    if (index >= asset.accessors.size())
+    {
+        error = "accessor index is out of range";
+        return false;
+    }
+    const auto& accessor = asset.accessors[index];
+    if (accessor.type != type || accessor.componentType != componentType ||
+        accessor.normalized != normalized || accessor.count == 0)
+    {
+        error = "accessor has an invalid type, component type, normalization, or count";
+        return false;
+    }
+    if (accessor.sparse || !accessor.bufferViewIndex)
+    {
+        error = "sparse or missing bufferView accessors are not supported";
+        return false;
+    }
+    std::span<const std::byte> bytes;
+    if (!GetBufferViewBytes(asset, *accessor.bufferViewIndex, bytes, error, loadBuffer))
+    {
+        return false;
+    }
+    const auto& view = asset.bufferViews[*accessor.bufferViewIndex];
     const auto componentSize = fastgltf::getComponentByteSize(componentType);
     if (componentSize == 0 || accessor.byteOffset % componentSize != 0 ||
         (view.byteOffset % componentSize + accessor.byteOffset % componentSize) % componentSize !=
@@ -92,7 +107,7 @@ GetAccessorData(const fastgltf::Asset& asset, std::size_t index, fastgltf::Acces
         error = "accessor exceeds its bufferView or has an invalid stride";
         return false;
     }
-    result = {bytes.subspan(view.byteOffset + accessor.byteOffset), accessor.count, stride};
+    result = {bytes.subspan(accessor.byteOffset), accessor.count, stride};
     return true;
 }
 
