@@ -175,7 +175,23 @@ bool readColors(const fastgltf::Asset& asset, std::size_t index, VtVec3fArray& c
     return true;
 }
 
+bool validateIndexCount(std::size_t count, fastgltf::PrimitiveType type, std::string& error)
+{
+    const auto limit = std::size_t(std::numeric_limits<int>::max());
+    if (type == fastgltf::PrimitiveType::Triangles) {
+        if (count < 3 || count > limit || count % 3 != 0) {
+            error = "triangle index count is invalid";
+            return false;
+        }
+    } else if (count < 3 || count - 2 > limit / 3) {
+        error = "triangle strip or fan index count is invalid";
+        return false;
+    }
+    return true;
+}
+
 bool readIndices(const fastgltf::Asset& asset, std::size_t index, std::size_t pointCount,
+                 fastgltf::PrimitiveType type,
                  VtIntArray& values, std::string& error, const gltfCore::BufferLoader& loadBuffer)
 {
     if (index >= asset.accessors.size()) {
@@ -197,8 +213,7 @@ bool readIndices(const fastgltf::Asset& asset, std::size_t index, std::size_t po
                                    componentType, size, false, data, error, loadBuffer)) {
         return false;
     }
-    if (data.count > std::size_t(std::numeric_limits<int>::max()) || data.count % 3 != 0) {
-        error = "triangle index count is invalid";
+    if (!validateIndexCount(data.count, type, error)) {
         return false;
     }
     values.resize(data.count);
@@ -226,7 +241,9 @@ bool authorPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& pr
                      const SdfPrimSpecHandle& parent, std::size_t index, std::string& error,
                      const gltfCore::BufferLoader& loadBuffer)
 {
-    if (primitive.type != fastgltf::PrimitiveType::Triangles || primitive.materialIndex ||
+    if ((primitive.type != fastgltf::PrimitiveType::Triangles &&
+         primitive.type != fastgltf::PrimitiveType::TriangleStrip &&
+         primitive.type != fastgltf::PrimitiveType::TriangleFan) || primitive.materialIndex ||
         !primitive.targets.empty() || primitive.dracoCompression || !primitive.mappings.empty()) {
         error = "primitive mode, material, morph targets, or compression is not supported";
         return false;
@@ -302,18 +319,33 @@ bool authorPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& pr
     }
     VtIntArray indices;
     if (primitive.indicesAccessor) {
-        if (!readIndices(asset, *primitive.indicesAccessor, points.size(), indices, error, loadBuffer)) {
+        if (!readIndices(asset, *primitive.indicesAccessor, points.size(), primitive.type,
+                         indices, error, loadBuffer)) {
             return false;
         }
     } else {
-        if (points.size() % 3 != 0) {
-            error = "non-indexed triangle vertex count is invalid";
+        if (!validateIndexCount(points.size(), primitive.type, error)) {
             return false;
         }
         indices.resize(points.size());
         for (std::size_t i = 0; i < points.size(); ++i) {
             indices[i] = static_cast<int>(i);
         }
+    }
+    if (primitive.type != fastgltf::PrimitiveType::Triangles) {
+        VtIntArray triangles((indices.size() - 2) * 3);
+        for (std::size_t i = 0; i + 2 < indices.size(); ++i) {
+            if (primitive.type == fastgltf::PrimitiveType::TriangleFan) {
+                triangles[i * 3] = indices[0];
+                triangles[i * 3 + 1] = indices[i + 1];
+            } else {
+                // Alternate strip winding, including across degenerate triangles.
+                triangles[i * 3] = indices[i + (i % 2)];
+                triangles[i * 3 + 1] = indices[i + 1 - (i % 2)];
+            }
+            triangles[i * 3 + 2] = indices[i + 2];
+        }
+        indices = std::move(triangles);
     }
     if (!normal) {
         normals.resize(indices.size() / 3);

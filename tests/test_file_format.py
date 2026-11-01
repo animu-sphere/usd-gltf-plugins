@@ -140,6 +140,50 @@ def color_document(extension, component_type, components, external=False):
     return document, binary
 
 
+def topology_document(extension, mode, indices, external=False, normal=False, index_type=5123):
+    vertices = (
+        (0, 0, 0), (1, 0, 0), (0, 1, 0), (1, 1, 0), (0, 2, 0),
+    )
+    binary = b"".join(struct.pack("<3f3f2f3f", *point, 0, 0, 1, 0.25, 0.75, 1, 0, 0)
+                      for point in vertices)
+    vertex_size = len(binary)
+    if indices is not None:
+        fmt = {5121: "B", 5123: "H", 5125: "I"}[index_type]
+        binary += struct.pack("<" + fmt * len(indices), *indices)
+    buffer = {"byteLength": len(binary)}
+    if external:
+        buffer["uri"] = "topology.bin"
+    elif extension == "gltf":
+        buffer["uri"] = "data:application/octet-stream;base64," + base64.b64encode(binary).decode()
+    attributes = {"POSITION": 0, "TEXCOORD_0": 2, "COLOR_0": 3}
+    if normal:
+        attributes["NORMAL"] = 1
+    primitive = {"attributes": attributes, "mode": mode}
+    if indices is not None:
+        primitive["indices"] = 4
+    document = {
+        "asset": {"version": "2.0"}, "scene": 0, "scenes": [{"nodes": [0]}],
+        "nodes": [{"mesh": 0}], "meshes": [{"primitives": [primitive]}],
+        "buffers": [buffer],
+        "bufferViews": [{"buffer": 0, "byteOffset": 0, "byteLength": vertex_size, "byteStride": 44}],
+        "accessors": [
+            {"bufferView": 0, "componentType": 5126, "count": 5, "type": "VEC3",
+             "min": [0, 0, 0], "max": [1, 2, 0]},
+            {"bufferView": 0, "byteOffset": 12, "componentType": 5126, "count": 5, "type": "VEC3"},
+            {"bufferView": 0, "byteOffset": 24, "componentType": 5126, "count": 5, "type": "VEC2"},
+            {"bufferView": 0, "byteOffset": 32, "componentType": 5126, "count": 5, "type": "VEC3"},
+        ],
+    }
+    if indices is not None:
+        document["bufferViews"].append({
+            "buffer": 0, "byteOffset": vertex_size, "byteLength": len(binary) - vertex_size,
+        })
+        document["accessors"].append({
+            "bufferView": 1, "componentType": index_type, "count": len(indices), "type": "SCALAR",
+        })
+    return document, binary
+
+
 class FileFormatTest(unittest.TestCase):
     def test_registration_and_capabilities(self):
         for extension in ("gltf", "glb"):
@@ -286,6 +330,116 @@ class FileFormatTest(unittest.TestCase):
                         first = stage.GetPrimAtPath("/Asset/geo/Node_0/Mesh_0/Primitive_0")
                         self.assertEqual(UsdGeom.XformCache().GetLocalToWorldTransform(first).Transform(
                             Gf.Vec3d(0, 0, 0)), Gf.Vec3d(2, 0, 0))
+
+    def test_triangle_strips_and_fans(self):
+        cases = (
+            (5, None, [0, 1, 2, 2, 1, 3, 2, 3, 4]),
+            (6, None, [0, 1, 2, 0, 2, 3, 0, 3, 4]),
+            (5, [1, 0, 3, 2, 4], [1, 0, 3, 3, 0, 2, 3, 2, 4]),
+            (6, [1, 0, 3, 2, 4], [1, 0, 3, 1, 3, 2, 1, 2, 4]),
+            (5, [0, 1, 2], [0, 1, 2]),
+            (6, [0, 1, 2], [0, 1, 2]),
+            (5, [0, 1, 2, 3], [0, 1, 2, 2, 1, 3]),
+            (6, [0, 1, 2, 3], [0, 1, 2, 0, 2, 3]),
+            (5, [0, 1, 2, 2, 3, 4], [0, 1, 2, 2, 1, 2, 2, 2, 3, 3, 2, 4]),
+            (6, [0, 1, 2, 2, 3, 4], [0, 1, 2, 0, 2, 2, 0, 2, 3, 0, 3, 4]),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            for extension in ("gltf", "glb"):
+                for external in (False, True):
+                    for case, (mode, indices, expected) in enumerate(cases):
+                        for normal in (False, True):
+                            with self.subTest(extension=extension, external=external, case=case, normal=normal):
+                                path = root / f"topology_{external}_{case}_{normal}.{extension}"
+                                document, binary = topology_document(extension, mode, indices, external, normal)
+                                if external:
+                                    (root / "topology.bin").write_bytes(binary)
+                                write_asset(path, document, binary if extension == "glb" and not external else None)
+                                stage = Usd.Stage.Open(str(path))
+                                mesh = UsdGeom.Mesh.Get(stage, "/Asset/geo/Node_0/Mesh_0/Primitive_0")
+                                self.assertEqual(list(mesh.GetFaceVertexIndicesAttr().Get()), expected)
+                                self.assertEqual(list(mesh.GetFaceVertexCountsAttr().Get()), [3] * (len(expected) // 3))
+                                self.assertEqual(mesh.GetOrientationAttr().Get(), UsdGeom.Tokens.rightHanded)
+                                self.assertEqual(mesh.GetSubdivisionSchemeAttr().Get(), UsdGeom.Tokens.none)
+                                points = mesh.GetPointsAttr().Get()
+                                if normal:
+                                    self.assertEqual(list(mesh.GetNormalsAttr().Get()), [Gf.Vec3f(0, 0, 1)] * 5)
+                                    self.assertEqual(mesh.GetNormalsInterpolation(), UsdGeom.Tokens.vertex)
+                                else:
+                                    expected_normals = []
+                                    for i in range(0, len(expected), 3):
+                                        a, b, c = (points[index] for index in expected[i:i + 3])
+                                        cross = Gf.Cross(b - a, c - a)
+                                        expected_normals.append(cross.GetNormalized() if cross.GetLength() else Gf.Vec3f(0))
+                                    self.assertEqual(list(mesh.GetNormalsAttr().Get()), expected_normals)
+                                    self.assertEqual(mesh.GetNormalsInterpolation(), UsdGeom.Tokens.uniform)
+                                primvars = UsdGeom.PrimvarsAPI(mesh)
+                                self.assertEqual(list(primvars.GetPrimvar("st").Get()), [Gf.Vec2f(0.25, 0.25)] * 5)
+                                self.assertEqual(list(primvars.GetPrimvar("displayColor").Get()),
+                                                 [Gf.Vec3f(1, 0, 0)] * 5)
+
+    def test_triangle_strip_and_fan_index_types_and_nonindexed_counts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            for extension in ("gltf", "glb"):
+                for mode in (5, 6):
+                    for index_type in (None, 5121, 5123, 5125):
+                        for count in (3, 4):
+                            with self.subTest(extension=extension, mode=mode, index_type=index_type, count=count):
+                                path = root / f"topology_{mode}_{index_type}_{count}.{extension}"
+                                indices = None if index_type is None else list(range(count))
+                                document, binary = topology_document(
+                                    extension, mode, indices, index_type=index_type or 5123)
+                                if indices is None:
+                                    for accessor in document["accessors"]:
+                                        accessor["count"] = count
+                                write_asset(path, document, binary if extension == "glb" else None)
+                                stage = Usd.Stage.Open(str(path))
+                                mesh = UsdGeom.Mesh.Get(stage, "/Asset/geo/Node_0/Mesh_0/Primitive_0")
+                                expected = [0, 1, 2]
+                                if count == 4:
+                                    expected += [2, 1, 3] if mode == 5 else [0, 2, 3]
+                                self.assertEqual(list(mesh.GetFaceVertexIndicesAttr().Get()), expected)
+
+    def test_triangle_strip_and_fan_failures_preserve_layer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            for extension in ("gltf", "glb"):
+                for mode in (5, 6):
+                    path = root / f"topology_{mode}.{extension}"
+                    document, binary = topology_document(extension, mode, [0, 1, 2, 3, 4], external=True)
+                    buffer_path = root / "topology.bin"
+                    buffer_path.write_bytes(binary)
+                    write_asset(path, document)
+                    stage = Usd.Stage.Open(str(path))
+                    layer = stage.GetRootLayer()
+                    before = layer.ExportToString()
+                    for case in ("short indexed", "short nonindexed", "out of range", "reserved"):
+                        with self.subTest(extension=extension, mode=mode, case=case):
+                            invalid, invalid_binary = topology_document(
+                                extension, mode, [0, 1, 2, 3, 4], external=True)
+                            if case == "short indexed":
+                                invalid["accessors"][4]["count"] = 2
+                            elif case == "short nonindexed":
+                                del invalid["meshes"][0]["primitives"][0]["indices"]
+                                for accessor in invalid["accessors"][:4]:
+                                    accessor["count"] = 2
+                            else:
+                                invalid_binary = invalid_binary[:220] + struct.pack(
+                                    "<5H", 0, 1, 2, 3, 5 if case == "out of range" else 65535)
+                            buffer_path.write_bytes(invalid_binary)
+                            write_asset(path, invalid)
+                            message = "index count is invalid" if case.startswith("short") else "index is out of range"
+                            with self.assertRaisesRegex(Tf.ErrorException, message):
+                                layer.Reload(True)
+                            self.assertEqual(layer.ExportToString(), before)
+                    document, binary = topology_document(extension, mode, [4, 3, 2], external=True)
+                    buffer_path.write_bytes(binary)
+                    write_asset(path, document)
+                    self.assertTrue(layer.Reload(True))
+                    mesh = UsdGeom.Mesh.Get(stage, "/Asset/geo/Node_0/Mesh_0/Primitive_0")
+                    self.assertEqual(list(mesh.GetFaceVertexIndicesAttr().Get()), [4, 3, 2])
 
     def test_texture_coordinates(self):
         expected = (

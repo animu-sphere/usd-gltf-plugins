@@ -1,7 +1,7 @@
 # Scene conventions
 
 Status: **partially implemented** for selected scenes, nodes, transforms and
-a triangle-mesh subset including UVs and vertex colors with embedded or local
+a triangle-based mesh subset including UVs and vertex colors with embedded or local
 external buffers. Skin, camera and animation are not supported.
 
 ## Structure and names
@@ -30,13 +30,16 @@ retain original names as display names or equivalent metadata. Test name
 stability. Do not prescribe `/Asset/rig` or `/Asset/anim` as mandatory:
 their placement must be decided when UsdSkel and animation are designed.
 
-The implemented mesh subset accepts indexed or non-indexed triangle
-primitives with float POSITION, optional float NORMAL, optional TEXCOORD_n
-and optional COLOR_0 accessors in embedded or local external buffers.
+The implemented mesh subset accepts indexed or non-indexed TRIANGLES,
+TRIANGLE_STRIP and TRIANGLE_FAN primitives with float POSITION, optional
+float NORMAL, optional TEXCOORD_n and optional COLOR_0 accessors in embedded
+or local external buffers.
 Accessors may be interleaved but not sparse. Indexed data uses glTF unsigned
 byte, unsigned short or unsigned int indices. USD subdivision is disabled and
-winding remains right-handed; absent normals are generated per face for flat shading.
-Unsupported attributes, materials, other primitive modes, morphs and
+winding remains right-handed; strips and fans are expanded into triangles,
+including degenerate triangles, with alternating strip winding. Absent normals
+are generated per face for flat shading. Unsupported attributes, materials,
+point and line primitive modes, morphs and
 compression fail with a diagnostic. External buffer URI restrictions are
 described in the [import pipeline](../architecture/IMPORT_PIPELINE.md).
 Material binding and a general mesh sharing policy remain open.

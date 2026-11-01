@@ -1,7 +1,7 @@
 # Import pipeline
 
 Status: **early implementation**. The importer opens selected nodes, transforms
-and a limited triangle-mesh subset including UVs and vertex colors with
+and a limited triangle-based mesh subset including UVs and vertex colors with
 embedded or local external buffers; other asset content is not implemented.
 
 ```text
@@ -33,8 +33,8 @@ or unsafe data must produce explicit diagnostics and failure rather than a
 success result containing an unintentionally incomplete stage.
 
 Scene selection is defined in [SCENE_CONVENTIONS](../design/SCENE_CONVENTIONS.md).
-The importer currently supports triangle meshes as described in
-[scene conventions](../design/SCENE_CONVENTIONS.md). It rejects unsupported
+The importer currently supports triangles, triangle strips and triangle fans as
+described in [scene conventions](../design/SCENE_CONVENTIONS.md). It rejects unsupported
 mesh content, skins, cameras, lights, morph data and animations rather than
 silently dropping them. Unsupported optional extensions are reported as
 warnings; required extensions are rejected by fastgltf. Images are not yet
