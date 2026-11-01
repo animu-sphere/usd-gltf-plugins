@@ -6,12 +6,17 @@ Windows with OpenUSD 26.08 when the decision was made. The
 
 ## Decision
 
-Build the converted scene directly as `Sdf` specs on an anonymous, temporary
-layer. Only after conversion succeeds, transfer its contents to the layer
-provided to the file-format `Read` method. On conversion failure, discard the
-temporary layer, emit a diagnostic and return failure without transferring
-partial results. The conversion library, not the plugin entry point, owns
-scene authoring.
+Build the converted scene on an anonymous, temporary layer on a separate
+worker thread. Geometry is authored as `Sdf` specs; material networks and
+bindings use `UsdShade` on a stage opened over that layer. The worker must not
+be inside the caller's `SdfChangeBlock`. Transport its `Tf` errors back to the
+calling thread before returning. The buffer-loader callback executes on that
+worker thread and must not rely on the caller's thread-local state. Only after
+conversion succeeds, transfer the layer's contents to the layer provided to
+the file-format `Read` method. On conversion failure, discard the temporary
+layer, emit a diagnostic and return failure without transferring partial
+results. The conversion library, not the plugin entry point, owns scene
+authoring.
 
 This is a publication boundary, not a general transaction guarantee:
 conversion must check all failures before transfer, and a failure during
@@ -35,10 +40,14 @@ The first C++ integration revealed that a file-format `Read` during layer
 reload can execute inside an `SdfChangeBlock`: defining prims on the temporary
 stage failed. OpenUSD documents that using `Usd` or other downstream APIs
 inside a change block is unsafe because their change notifications are
-deferred. Direct `Sdf` authoring avoids relying on downstream composition
-during `Read`, at the cost of explicitly maintaining schema-compatible specs,
-attribute types, defaults and metadata.
+deferred. Initially, direct `Sdf` authoring avoided relying on downstream
+composition during `Read`. To use schema APIs safely, authoring now runs on
+another thread, outside the reload thread's change block, following the
+approach used by usd-vrm-plugins. Its stage and temporary layer are not exposed
+until the worker finishes, and the calling thread retains responsibility for
+publication and diagnostics.
 
 The end-to-end plugin tests exercise both formats, failed reload without
-publication, and successful reload on an existing stage. They do not prove
-recovery from every USD error.
+publication, successful reload on an existing stage, and material reload
+inside an explicit change block. They do not prove recovery from every USD
+error.

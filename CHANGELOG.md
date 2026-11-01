@@ -10,11 +10,17 @@ here.
 
 ### Added
 
+- Default and initial opaque factor-only metallic-roughness material networks
+  and bindings.
 - Apache-2.0 license, installed with the plugin, and community health files.
 - Install smoke test and documentation consistency test.
 - clang-format configuration, applied to the project's C++ sources.
 
 ### Changed
 
+- Organize material networks in render-context NodeGraphs and use MaterialX
+  `gltf_pbr` for the MaterialX surface.
+- Author material networks and bindings with UsdShade on a worker-thread
+  temporary stage, preserving reload and diagnostic behavior.
 - Split CMake responsibilities into `cmake/`, `libs/*`, `plugins/*` and `tests/`.
 - Gave each documented fact one owning document, and versioned the roadmap.

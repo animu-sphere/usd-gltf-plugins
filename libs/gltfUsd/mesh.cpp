@@ -2,6 +2,7 @@
 #include "mesh.h"
 
 #include "accessor.h"
+#include "material.h"
 
 #include "pxr/base/gf/vec2f.h"
 #include "pxr/base/gf/vec3f.h"
@@ -305,15 +306,14 @@ setAttribute(const SdfPrimSpecHandle& prim, const char* name, const SdfValueType
 bool
 authorPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& primitive,
                 const SdfPrimSpecHandle& parent, std::size_t index, std::string& error,
-                const gltfCore::BufferLoader& loadBuffer)
+                const gltfCore::BufferLoader& loadBuffer, MaterialAuthor& materials)
 {
     if ((primitive.type != fastgltf::PrimitiveType::Triangles &&
          primitive.type != fastgltf::PrimitiveType::TriangleStrip &&
          primitive.type != fastgltf::PrimitiveType::TriangleFan) ||
-        primitive.materialIndex || !primitive.targets.empty() || primitive.dracoCompression ||
-        !primitive.mappings.empty())
+        !primitive.targets.empty() || primitive.dracoCompression || !primitive.mappings.empty())
     {
-        error = "primitive mode, material, morph targets, or compression is not supported";
+        error = "primitive mode, morph targets, or compression is not supported";
         return false;
     }
     const fastgltf::Attribute* position = nullptr;
@@ -479,6 +479,15 @@ authorPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& primiti
         error = "could not author USD mesh";
         return false;
     }
+    if (primitive.materialIndex &&
+        !materials.Bind(*primitive.materialIndex, color != nullptr, mesh, error))
+    {
+        return false;
+    }
+    if (!primitive.materialIndex && !materials.BindDefault(color != nullptr, mesh, error))
+    {
+        return false;
+    }
     const auto attr = SdfAttributeSpec::New(mesh, "normals", SdfValueTypeNames->Normal3fArray);
     if (!attr || !attr->SetDefaultValue(VtValue(normals)))
     {
@@ -526,7 +535,8 @@ authorPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& primiti
 
 bool
 AuthorMesh(const fastgltf::Asset& asset, std::size_t meshIndex,
-           const pxr::SdfPrimSpecHandle& parent, const gltfCore::BufferLoader& loadBuffer)
+           const pxr::SdfPrimSpecHandle& parent, const gltfCore::BufferLoader& loadBuffer,
+           MaterialAuthor& materials)
 {
     if (meshIndex >= asset.meshes.size())
     {
@@ -554,7 +564,7 @@ AuthorMesh(const fastgltf::Asset& asset, std::size_t meshIndex,
     for (std::size_t i = 0; i < source.primitives.size(); ++i)
     {
         std::string error;
-        if (!authorPrimitive(asset, source.primitives[i], group, i, error, loadBuffer))
+        if (!authorPrimitive(asset, source.primitives[i], group, i, error, loadBuffer, materials))
         {
             TF_RUNTIME_ERROR("glTF mesh %zu primitive %zu: %s", meshIndex, i, error.c_str());
             return false;

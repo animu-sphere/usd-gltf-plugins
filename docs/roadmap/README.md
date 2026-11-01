@@ -18,7 +18,7 @@ without dates. The current state is in the
    mode and cutoff, and `doubleSided`. Define the multiplication with vertex
    colors and the handling of alpha. Fix any inexact approximation in documents
    and tests.
-4. Generate both MaterialX `standard_surface`-based and UsdPreviewSurface
+4. Generate both MaterialX `gltf_pbr`-based and UsdPreviewSurface
    networks, and verify render-context outputs and fallback. A network's
    existence alone does not establish display.
 5. Handle PNG and JPEG from bufferViews, data URIs and permitted external URIs.

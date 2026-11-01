@@ -1,11 +1,14 @@
 # Material design
 
 Each glTF material maps to one `UsdShadeMaterial` under `/Asset/mtl` with
-both a MaterialX `standard_surface`-based path and a UsdPreviewSurface
+both a MaterialX `gltf_pbr`-based path and a UsdPreviewSurface
 fallback. Use render-context-specific surface outputs as appropriate; verify
 the actual output names and connections against the targeted OpenUSD and
 MaterialX versions. Standard schemas and shaders must suffice: no custom
 schema, shader, or imaging plugin is required.
+
+The initial factor-only mapping and its current limitations are recorded in
+the [material factor decision](../architecture/MATERIAL_FACTORS.md).
 
 Share image data and conversion parameters where possible, but use separate
 nodes where the two paths require incompatible node interfaces. The
@@ -37,7 +40,7 @@ Distinguish color data (base color and emissive) from non-color data
 (metallic, roughness, normal and occlusion). Texture readers consume the
 primvar's [converted coordinates](SCENE_CONVENTIONS.md#texture-coordinates)
 without another flip. Apply `KHR_texture_transform` to UVs. Document
-approximations: glTF and MaterialX BRDFs do not match exactly.
+observed differences from glTF shading and renderer-specific limitations.
 
 Each extension, including clearcoat, transmission, ior, sheen, specular and
 unlit, requires its own explicit capability entry and tests. Do not silently

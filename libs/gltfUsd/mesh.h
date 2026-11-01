@@ -11,8 +11,10 @@
 namespace gltfUsd
 {
 
+class MaterialAuthor;
+
 [[nodiscard]] bool AuthorMesh(const fastgltf::Asset& asset, std::size_t meshIndex,
                               const pxr::SdfPrimSpecHandle& parent,
-                              const gltfCore::BufferLoader& loadBuffer);
+                              const gltfCore::BufferLoader& loadBuffer, MaterialAuthor& materials);
 
 } // namespace gltfUsd

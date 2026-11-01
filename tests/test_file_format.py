@@ -9,7 +9,7 @@ import tempfile
 import unittest
 import urllib.parse
 
-from pxr import Gf, Sdf, Tf, Usd, UsdGeom
+from pxr import Gf, Sdf, Sdr, Tf, Usd, UsdGeom, UsdShade
 
 
 def write_asset(path, document, binary=None):
@@ -249,6 +249,30 @@ def topology_document(extension, mode, indices, external=False, normal=False, in
 
 
 class FileFormatTest(unittest.TestCase):
+    def assert_material_nodegraphs(self, material, preview, mtlx):
+        stage = material.GetPrim().GetStage()
+        material_path = material.GetPath()
+        self.assertEqual(
+            {prim.GetName() for prim in material.GetPrim().GetChildren()}, {"preview", "mtlx"})
+        for context, graph_name, shader, shader_output in (
+            ("", "preview", preview, "surface"),
+            ("mtlx", "mtlx", mtlx, "out"),
+        ):
+            graph = UsdShade.NodeGraph.Get(stage, material_path.AppendChild(graph_name))
+            self.assertTrue(graph)
+            self.assertEqual(shader.GetPath(), graph.GetPath().AppendChild("surface"))
+            output = graph.GetOutput("surface")
+            self.assertTrue(output)
+            self.assertEqual(material.GetSurfaceOutput(context).GetAttr().GetConnections(), [
+                output.GetAttr().GetPath(),
+            ])
+            self.assertEqual(output.GetAttr().GetConnections(), [
+                shader.GetPath().AppendProperty("outputs:" + shader_output),
+            ])
+            resolved, name, kind = material.ComputeSurfaceSource(context)
+            self.assertEqual((resolved.GetPath(), name, kind),
+                             (shader.GetPath(), shader_output, UsdShade.AttributeType.Output))
+
     def test_registration_and_capabilities(self):
         for extension in ("gltf", "glb"):
             with self.subTest(extension=extension):
@@ -761,7 +785,7 @@ class FileFormatTest(unittest.TestCase):
                 document["bufferViews"][0]["byteStride"] = 8
             elif name == "material":
                 primitive["material"] = 0
-                document["materials"] = [{}]
+                document["materials"] = [{"alphaMode": "BLEND"}]
             elif name == "attribute":
                 primitive["attributes"]["COLOR_1"] = 0
             elif name == "mode":
@@ -814,6 +838,271 @@ class FileFormatTest(unittest.TestCase):
                 self.assertEqual(layer.ExportToString(), before)
                 write_asset(path, document, binary)
                 self.assertTrue(layer.Reload(True))
+
+    def test_factor_materials_and_bindings(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for extension in ("gltf", "glb"):
+                with self.subTest(extension=extension):
+                    path = pathlib.Path(directory) / ("materials." + extension)
+                    document, binary = mesh_document(extension)
+                    document["meshes"][0]["primitives"][0]["material"] = 0
+                    document["meshes"][0]["primitives"][1]["material"] = 1
+                    document["materials"] = [
+                        {
+                            "name": "PBR / material",
+                            "pbrMetallicRoughness": {
+                                "baseColorFactor": [0.2, 0.4, 0.6, 0.25],
+                                "metallicFactor": 0.3,
+                                "roughnessFactor": 0.7,
+                            },
+                            "emissiveFactor": [0.1, 0.2, 0.3],
+                            "doubleSided": True,
+                        },
+                        {},
+                    ]
+                    write_asset(path, document, binary)
+                    stage = Usd.Stage.Open(str(path))
+                    layer = stage.GetRootLayer()
+                    material = UsdShade.Material.Get(stage, "/Asset/mtl/Material_0")
+                    self.assertTrue(material)
+                    self.assertEqual(material.GetPrim().GetDisplayName(), "PBR / material")
+                    preview = UsdShade.Shader.Get(stage, "/Asset/mtl/Material_0/preview/surface")
+                    mtlx = UsdShade.Shader.Get(stage, "/Asset/mtl/Material_0/mtlx/surface")
+                    self.assert_material_nodegraphs(material, preview, mtlx)
+                    self.assertEqual(preview.GetIdAttr().Get(), "UsdPreviewSurface")
+                    self.assertEqual(mtlx.GetIdAttr().Get(), "ND_gltf_pbr_surfaceshader")
+                    for context, shader, output in (
+                        ("", preview, "surface"), ("mtlx", mtlx, "out"),
+                        ("unavailable", preview, "surface"),
+                    ):
+                        resolved, name, kind = material.ComputeSurfaceSource(context)
+                        self.assertEqual((resolved.GetPath(), name, kind),
+                                         (shader.GetPath(), output, UsdShade.AttributeType.Output))
+                    registry = Sdr.Registry()
+                    for shader, inputs, output in (
+                        (preview, ("diffuseColor", "metallic", "roughness", "emissiveColor"), "surface"),
+                        (mtlx, ("base_color", "metallic", "roughness", "emissive",
+                                "alpha", "alpha_mode"), "out"),
+                    ):
+                        node = registry.GetShaderNodeByIdentifier(shader.GetIdAttr().Get())
+                        self.assertTrue(node)
+                        self.assertIn(output, node.GetShaderOutputNames())
+                        for name in inputs:
+                            self.assertIsNotNone(node.GetShaderInput(name))
+                    preview_node = registry.GetShaderNodeByIdentifier("UsdPreviewSurface")
+                    mtlx_node = registry.GetShaderNodeByIdentifier("ND_gltf_pbr_surfaceshader")
+                    self.assertEqual(preview_node.GetShaderInput("useSpecularWorkflow").GetDefaultValue(), 0)
+                    self.assertEqual(preview_node.GetShaderInput("opacity").GetDefaultValue(), 1)
+                    self.assertEqual(mtlx_node.GetShaderInput("alpha").GetDefaultValue(), 1)
+                    self.assertEqual(mtlx_node.GetShaderInput("alpha_mode").GetDefaultValue(), 0)
+                    self.assertEqual(mtlx_node.GetShaderInput("emissive_strength").GetDefaultValue(), 1)
+                    for shader, color, metallic, roughness, emission in (
+                        (preview, "diffuseColor", "metallic", "roughness", "emissiveColor"),
+                        (mtlx, "base_color", "metallic", "roughness", "emissive"),
+                    ):
+                        self.assertTrue(Gf.IsClose(shader.GetInput(color).Get(),
+                                                   Gf.Vec3f(0.2, 0.4, 0.6), 1e-6))
+                        self.assertAlmostEqual(shader.GetInput(metallic).Get(), 0.3, places=6)
+                        self.assertAlmostEqual(shader.GetInput(roughness).Get(), 0.7, places=6)
+                        self.assertTrue(Gf.IsClose(shader.GetInput(emission).Get(),
+                                                   Gf.Vec3f(0.1, 0.2, 0.3), 1e-6))
+                    self.assertEqual(mtlx.GetInput("alpha_mode").Get(), 0)
+                    self.assertFalse(preview.GetInput("opacity"))
+                    self.assertFalse(mtlx.GetInput("alpha"))
+                    for node in (0, 1):
+                        for primitive in (0, 1):
+                            mesh = UsdGeom.Mesh.Get(
+                                stage, f"/Asset/geo/Node_{node}/Mesh_0/Primitive_{primitive}")
+                            bound, _ = UsdShade.MaterialBindingAPI(mesh).ComputeBoundMaterial()
+                            self.assertEqual(bound.GetPath(), Sdf.Path(f"/Asset/mtl/Material_{primitive}"))
+                            self.assertEqual(mesh.GetDoubleSidedAttr().Get(), primitive == 0)
+                    host = Usd.Stage.CreateInMemory()
+                    host.DefinePrim("/Model").GetReferences().AddReference(str(path))
+                    referenced = host.GetPrimAtPath("/Model/geo/Node_0/Mesh_0/Primitive_0")
+                    bound, _ = UsdShade.MaterialBindingAPI(referenced).ComputeBoundMaterial()
+                    self.assertEqual(bound.GetPath(), Sdf.Path("/Model/mtl/Material_0"))
+                    host_preview = UsdShade.Shader.Get(host, "/Model/mtl/Material_0/preview/surface")
+                    host_mtlx = UsdShade.Shader.Get(host, "/Model/mtl/Material_0/mtlx/surface")
+                    self.assert_material_nodegraphs(bound, host_preview, host_mtlx)
+                    default = UsdShade.Shader.Get(stage, "/Asset/mtl/Material_1/preview/surface")
+                    self.assertEqual(default.GetInput("diffuseColor").Get(), Gf.Vec3f(1))
+                    self.assertEqual(default.GetInput("metallic").Get(), 1)
+                    self.assertEqual(default.GetInput("roughness").Get(), 1)
+                    document["materials"][0]["pbrMetallicRoughness"]["roughnessFactor"] = 0.9
+                    write_asset(path, document, binary)
+                    self.assertTrue(layer.Reload(True))
+                    self.assert_material_nodegraphs(material, preview, mtlx)
+                    self.assertAlmostEqual(preview.GetInput("roughness").Get(), 0.9, places=6)
+                    bound, _ = UsdShade.MaterialBindingAPI(
+                        stage.GetPrimAtPath("/Asset/geo/Node_0/Mesh_0/Primitive_0")
+                    ).ComputeBoundMaterial()
+                    self.assertEqual(bound.GetPath(), material.GetPath())
+
+    def test_unselected_materials_are_not_authored(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for extension in ("gltf", "glb"):
+                with self.subTest(extension=extension):
+                    path = pathlib.Path(directory) / ("selection." + extension)
+                    document, binary = mesh_document(extension)
+                    document["scenes"][0]["nodes"] = [0]
+                    document["scenes"].append({"nodes": [1]})
+                    document["nodes"][1]["mesh"] = 1
+                    document["meshes"].append({"primitives": [{
+                        "attributes": {"POSITION": 0}, "material": 1,
+                    }]})
+                    document["meshes"][0]["primitives"][0]["material"] = 0
+                    document["materials"] = [{}, {"alphaMode": "BLEND"}]
+                    write_asset(path, document, binary)
+                    stage = Usd.Stage.Open(str(path))
+                    self.assertTrue(UsdShade.Material.Get(stage, "/Asset/mtl/Material_0"))
+                    self.assertFalse(stage.GetPrimAtPath("/Asset/mtl/Material_1"))
+                    self.assertFalse(stage.GetPrimAtPath("/Asset/geo/Node_1"))
+
+    def test_material_reload_inside_change_block_preserves_diagnostics(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for extension in ("gltf", "glb"):
+                with self.subTest(extension=extension):
+                    path = pathlib.Path(directory) / ("materials." + extension)
+                    document, binary = mesh_document(extension)
+                    document["meshes"][0]["primitives"][0]["material"] = 0
+                    document["materials"] = [{"pbrMetallicRoughness": {"roughnessFactor": 0.3}}]
+                    write_asset(path, document, binary)
+                    stage = Usd.Stage.Open(str(path))
+                    layer = stage.GetRootLayer()
+                    document["materials"][0]["pbrMetallicRoughness"]["roughnessFactor"] = 0.7
+                    write_asset(path, document, binary)
+                    with Sdf.ChangeBlock():
+                        self.assertTrue(layer.Reload(True))
+                    shader = UsdShade.Shader.Get(stage, "/Asset/mtl/Material_0/preview/surface")
+                    self.assertAlmostEqual(shader.GetInput("roughness").Get(), 0.7, places=6)
+                    before = layer.ExportToString()
+                    document["meshes"][0]["primitives"][0]["material"] = 5
+                    write_asset(path, document, binary)
+                    with self.assertRaisesRegex(Tf.ErrorException, "material index is out of range"):
+                        with Sdf.ChangeBlock():
+                            layer.Reload(True)
+                    self.assertEqual(layer.ExportToString(), before)
+                    self.assertAlmostEqual(shader.GetInput("roughness").Get(), 0.7, places=6)
+
+    def test_default_material_with_and_without_vertex_color(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for extension in ("gltf", "glb"):
+                for component_type, components in ((5126, 3), (5126, 4), (5121, 4), (5123, 4)):
+                    with self.subTest(extension=extension, component_type=component_type,
+                                      components=components):
+                        path = pathlib.Path(directory) / ("default." + extension)
+                        document, binary = color_document(extension, component_type, components)
+                        del document["meshes"][0]["primitives"][1]["attributes"]["COLOR_0"]
+                        write_asset(path, document, binary)
+                        stage = Usd.Stage.Open(str(path))
+                        for node in (0, 1):
+                            for primitive, name in ((0, "DefaultVertexColor"), (1, "Default")):
+                                mesh = UsdGeom.Mesh.Get(
+                                    stage, f"/Asset/geo/Node_{node}/Mesh_0/Primitive_{primitive}")
+                                material, _ = UsdShade.MaterialBindingAPI(mesh).ComputeBoundMaterial()
+                                self.assertEqual(material.GetPath(), Sdf.Path("/Asset/mtl/" + name))
+                                self.assertFalse(mesh.GetDoubleSidedAttr().Get())
+                        for name in ("Default", "DefaultVertexColor"):
+                            material = UsdShade.Material.Get(stage, "/Asset/mtl/" + name)
+                            preview, _, _ = material.ComputeSurfaceSource()
+                            mtlx, _, _ = material.ComputeSurfaceSource("mtlx")
+                            self.assert_material_nodegraphs(material, preview, mtlx)
+                            self.assertEqual(preview.GetInput("diffuseColor").Get(), Gf.Vec3f(1))
+                            self.assertEqual(preview.GetInput("metallic").Get(), 1)
+                            self.assertEqual(preview.GetInput("roughness").Get(), 1)
+                            self.assertFalse(preview.GetInput("opacity"))
+                            self.assertEqual(mtlx.GetIdAttr().Get(), "ND_gltf_pbr_surfaceshader")
+                            self.assertEqual(mtlx.GetInput("metallic").Get(), 1)
+                            self.assertEqual(mtlx.GetInput("roughness").Get(), 1)
+                            self.assertEqual(mtlx.GetInput("alpha_mode").Get(), 0)
+                            self.assertFalse(mtlx.GetInput("alpha"))
+                            if name == "Default":
+                                self.assertFalse(preview.GetInput("diffuseColor").HasConnectedSource())
+                                self.assertFalse(mtlx.GetInput("base_color").HasConnectedSource())
+                                continue
+                            for shader, input_name, reader_name, node_id, output, property_name in (
+                                (preview, "diffuseColor", "displayColorReader",
+                                 "UsdPrimvarReader_float3", "result", "varname"),
+                                (mtlx, "base_color", "displayColorReader",
+                                 "ND_geompropvalue_color3", "out", "geomprop"),
+                            ):
+                                graph_path = shader.GetPrim().GetParent().GetPath()
+                                reader = UsdShade.Shader.Get(stage, graph_path.AppendChild(reader_name))
+                                self.assertEqual(reader.GetIdAttr().Get(), node_id)
+                                self.assertEqual(reader.GetInput(property_name).Get(), "displayColor")
+                                self.assertEqual(shader.GetInput(input_name).GetAttr().GetConnections(), [
+                                    reader.GetPath().AppendProperty("outputs:" + output),
+                                ])
+                                node = Sdr.Registry().GetShaderNodeByIdentifier(node_id)
+                                self.assertIsNotNone(node)
+                                self.assertIsNotNone(node.GetShaderInput(property_name))
+                                self.assertIn(output, node.GetShaderOutputNames())
+                        layer = stage.GetRootLayer()
+                        self.assertTrue(layer.Reload(True))
+                        mesh = stage.GetPrimAtPath("/Asset/geo/Node_0/Mesh_0/Primitive_0")
+                        bound, _ = UsdShade.MaterialBindingAPI(mesh).ComputeBoundMaterial()
+                        self.assertEqual(bound.GetPath(), Sdf.Path("/Asset/mtl/DefaultVertexColor"))
+
+    def test_material_failures_preserve_layer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for extension in ("gltf", "glb"):
+                path = pathlib.Path(directory) / ("materials." + extension)
+                document, binary = mesh_document(extension)
+                document["materials"] = [{}]
+                document["meshes"][0]["primitives"][0]["material"] = 0
+                write_asset(path, document, binary)
+                stage = Usd.Stage.Open(str(path))
+                layer = stage.GetRootLayer()
+                before = layer.ExportToString()
+                for case in ("index", "base color", "metallic", "roughness", "emissive",
+                             "MASK", "BLEND", "base texture", "metallic texture",
+                             "normal texture", "occlusion texture", "emissive texture", "color"):
+                    with self.subTest(extension=extension, case=case):
+                        invalid, invalid_binary = mesh_document(extension)
+                        primitive = invalid["meshes"][0]["primitives"][0]
+                        primitive["material"] = 0
+                        material = {}
+                        invalid["materials"] = [material]
+                        if case == "index":
+                            primitive["material"] = 5
+                        elif case in ("base color", "metallic", "roughness"):
+                            values = {
+                                "base color": {"baseColorFactor": [1.1, 1, 1, 1]},
+                                "metallic": {"metallicFactor": -0.1},
+                                "roughness": {"roughnessFactor": 1.1},
+                            }
+                            material["pbrMetallicRoughness"] = values[case]
+                        elif case == "emissive":
+                            material["emissiveFactor"] = [0, -0.1, 0]
+                        elif case in ("MASK", "BLEND"):
+                            material["alphaMode"] = case
+                        elif case == "color":
+                            invalid, invalid_binary = color_document(extension, 5126, 4)
+                            invalid["materials"] = [{}]
+                            invalid["meshes"][0]["primitives"][0]["material"] = 0
+                        else:
+                            invalid["images"] = [{"uri": "data:image/png;base64,AA=="}]
+                            invalid["textures"] = [{"source": 0}]
+                            info = {"index": 0}
+                            if case == "base texture":
+                                material["pbrMetallicRoughness"] = {"baseColorTexture": info}
+                            elif case == "metallic texture":
+                                material["pbrMetallicRoughness"] = {"metallicRoughnessTexture": info}
+                            else:
+                                material[{"normal texture": "normalTexture",
+                                          "occlusion texture": "occlusionTexture",
+                                          "emissive texture": "emissiveTexture"}[case]] = info
+                        write_asset(path, invalid, invalid_binary)
+                        if case == "index":
+                            message = "material index is out of range"
+                        elif case in ("base color", "metallic", "roughness", "emissive"):
+                            message = "material .* factor is non-finite or out of range"
+                        else:
+                            message = "material textures, non-opaque alpha, or material with vertex colors"
+                        with self.assertRaisesRegex(Tf.ErrorException, message):
+                            layer.Reload(True)
+                        self.assertEqual(layer.ExportToString(), before)
+                        self.assertTrue(UsdShade.Material.Get(stage, "/Asset/mtl/Material_0"))
 
     def test_optional_lights_outside_selected_scene_and_required_lights(self):
         with tempfile.TemporaryDirectory() as directory:
