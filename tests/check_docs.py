@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Checks the documentation rules in docs/README.md that a machine can verify.
 
 This validates the links, states and evidence that the documents declare. It

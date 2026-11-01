@@ -37,8 +37,8 @@ without dates. The current state is in the
    environments. Add integration tests for glTF/GLB, embedded and external
    images, KTX2, bindings, MaterialX and Preview, alpha, UVs, reload and failure,
    plus a reproducible Storm display check.
-9. Provide usage and installation instructions, a project license, third-party
-   licenses, and the supported scope with its evidence.
+9. Provide usage and installation instructions, third-party licenses, and the
+   supported scope with its evidence.
 
 ### Implementation order
 

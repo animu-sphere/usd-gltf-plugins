@@ -11,6 +11,8 @@ than presenting planned behavior as implemented.
 | --- | --- | --- |
 | [Root README](../README.md) | Product description, quick start, build and test commands, links, licenses | Feature lists, test results, detailed design, progress |
 | This index | Table of contents and ownership rules | Implementation status |
+| [Contributing](../CONTRIBUTING.md), [Security](../SECURITY.md), [Code of Conduct](../CODE_OF_CONDUCT.md) | How to contribute, report vulnerabilities and behave in project spaces | Build commands, specifications |
+| [Changelog](../CHANGELOG.md) | Notable changes per release | Support tables, plans |
 | [Implementation policy](design/IMPLEMENTATION_POLICY.md) | Stable principles, non-goals, design constraints | Version plans, achievement status |
 | [Workspace](architecture/WORKSPACE.md) | Component responsibilities, dependency direction, workspace structure | Build procedures, progress |
 | [Import pipeline](architecture/IMPORT_PIPELINE.md) | Parse, resolve, convert and publish flow; failure and URI policy | Material graphs, support tables |

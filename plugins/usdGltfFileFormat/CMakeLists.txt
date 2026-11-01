@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 cmake_minimum_required(VERSION 3.22)
 
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
@@ -46,5 +47,7 @@ install(FILES
     "${USD_GLTF_OUTPUT_ROOT}/plugin/resources/usdGltfFileFormat/plugInfo.json"
     "${USD_GLTF_OUTPUT_ROOT}/plugin/resources/usdGltfFileFormat/NOTICES.txt"
     DESTINATION plugin/resources/usdGltfFileFormat)
-install(FILES "${USD_GLTF_REPOSITORY_ROOT}/third_party/NOTICES.txt"
+install(FILES
+    "${USD_GLTF_REPOSITORY_ROOT}/LICENSE"
+    "${USD_GLTF_REPOSITORY_ROOT}/third_party/NOTICES.txt"
     DESTINATION share/licenses/usd-gltf-plugins)

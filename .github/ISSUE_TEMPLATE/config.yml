@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/animu-sphere/usd-gltf-plugins/security/advisories/new
+    about: Please report security issues privately.
+  - name: Documentation and project guides
+    url: https://github.com/animu-sphere/usd-gltf-plugins/tree/main/docs
+    about: Browse the documentation before opening a question.

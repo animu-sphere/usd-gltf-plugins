@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 #include "sceneSelection.h"
 #include "gltf_test_data.h"
 
