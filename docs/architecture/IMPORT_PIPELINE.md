@@ -1,7 +1,8 @@
 # Import pipeline
 
 Status: **early implementation**. A file-format registration scaffold exists;
-the importer is not implemented and reads fail explicitly.
+fastgltf is linked as a build dependency and tested separately, but the
+importer is not implemented and reads fail explicitly.
 
 ```text
 .gltf / .glb

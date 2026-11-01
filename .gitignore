@@ -5,4 +5,5 @@
 /plugins/usdGltfFileFormat/build/
 /plugins/usdGltfFileFormat/lib/
 /plugins/usdGltfFileFormat/plugin/resources/usdGltfFileFormat/plugInfo.json
+/plugins/usdGltfFileFormat/plugin/resources/usdGltfFileFormat/NOTICES.txt
 CMakeUserPresets.json
