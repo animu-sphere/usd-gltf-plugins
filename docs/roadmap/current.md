@@ -9,7 +9,6 @@ implementation order.
 
 | Task | Done when |
 | --- | --- |
-| Image failure handling | Damaged image bodies and oversized images have a decided behavior and tests. See the [limits](../adr/0001-image-assets.md#limits) of the current signature check. |
 | Reproducible Storm display check | The manual renders in the [capability matrix](../reference/CAPABILITY_MATRIX.md#manual-visual-checks) can be repeated by a command that compares results, including the two shader paths. |
 
 ### Decisions to verify

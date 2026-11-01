@@ -33,6 +33,7 @@ available when the decision was made; they are not progress reports:
 - [0003: Metallic-roughness, occlusion and emissive texture networks](adr/0003-pbr-texture-networks.md)
 - [0004: Normal textures and tangents](adr/0004-normal-textures-and-tangents.md)
 - [0005: KTX2 decoder](adr/0005-ktx2-decoder.md)
+- [0006: Damaged and oversized images](adr/0006-image-failures.md)
 
 New decisions go in `docs/adr/NNNN-title.md`.
 

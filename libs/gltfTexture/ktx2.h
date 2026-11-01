@@ -23,4 +23,7 @@ namespace gltfTexture
 [[nodiscard]] std::vector<std::byte> EncodePng(std::uint32_t width, std::uint32_t height,
                                                std::span<const std::uint8_t> rgba);
 
+// The checksum of a PNG chunk.
+[[nodiscard]] std::uint32_t Crc32(std::span<const std::byte> bytes);
+
 } // namespace gltfTexture

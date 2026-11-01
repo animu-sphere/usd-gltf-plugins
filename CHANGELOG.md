@@ -37,3 +37,6 @@ here.
 - Split CMake responsibilities into `cmake/`, `libs/*`, `plugins/*` and `tests/`.
 - Gave each documented fact one owning document, and versioned the roadmap.
 - Split the roadmap into current and backlog plans; finished tasks are deleted.
+- Reject damaged PNG and JPEG images at import by checking their structure, because
+  OpenUSD's image loader can crash on them. Limit images to 16384 pixels per side and
+  external image files to 2 GiB. External images are now read during import.

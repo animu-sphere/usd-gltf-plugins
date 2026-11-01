@@ -66,6 +66,79 @@ checkKtx2Rejected(const std::vector<unsigned char>& bytes, const char* label)
     return true;
 }
 
+// Every shorter prefix of a valid image is a truncated file, and must not pass or read
+// out of bounds.
+bool
+checkPrefixesRejected(std::span<const std::byte> bytes, ImageFormat format, const char* label)
+{
+    std::string error;
+    if (!gltfTexture::CheckImage(bytes, format, error))
+    {
+        std::cerr << label << ": unexpected error: " << error << "\n";
+        return false;
+    }
+    for (std::size_t size = 0; size < bytes.size(); ++size)
+    {
+        if (gltfTexture::CheckImage(bytes.first(size), format, error))
+        {
+            std::cerr << label << ": a prefix of " << size << " bytes passed\n";
+            return false;
+        }
+    }
+    return true;
+}
+
+bool
+checkRejected(const std::vector<unsigned char>& bytes, ImageFormat format, const char* label)
+{
+    std::string error;
+    if (gltfTexture::CheckImage(std::as_bytes(std::span<const unsigned char>(bytes)), format,
+                                error) ||
+        error.empty())
+    {
+        std::cerr << label << ": expected an error\n";
+        return false;
+    }
+    return true;
+}
+
+bool
+checkStructure()
+{
+    const std::vector<std::uint8_t> rgba = {1, 2, 3, 4};
+    const auto png = gltfTexture::EncodePng(1, 1, rgba);
+    bool ok = checkPrefixesRejected(png, ImageFormat::Png, "PNG");
+
+    // A chunk that claims more than the file holds, where adding to the offset would wrap.
+    std::vector<unsigned char> huge = {0x89, 'P',  'N', 'G', '\r', '\n', 0x1A, '\n', 0xFF, 0xFF,
+                                       0xFF, 0xFF, 'I', 'H', 'D',  'R',  0,    0,    0,    0};
+    ok = checkRejected(huge, ImageFormat::Png, "PNG chunk length") && ok;
+
+    const std::vector<unsigned char> jpeg = {
+        0xFF, 0xD8,                                            // Start of image.
+        0xFF, 0xDB, 0,    3,    0,                             // Quantization table.
+        0xFF, 0xC0, 0,    11,   8, 0, 1, 0, 1,  1, 1, 0x11, 0, // Frame of 1 by 1.
+        0xFF, 0xC4, 0,    3,    0,                             // Huffman table.
+        0xFF, 0xDA, 0,    8,    1, 1, 0, 0, 63, 0,             // Scan header.
+        0x12, 0xFF, 0x00, 0x34,                                // Scan data.
+        0xFF, 0xD9};                                           // End of image.
+    ok = checkPrefixesRejected(std::as_bytes(std::span<const unsigned char>(jpeg)),
+                               ImageFormat::Jpeg, "JPEG") &&
+         ok;
+    for (const unsigned char length : {0, 1})
+    {
+        ok = checkRejected({0xFF, 0xD8, 0xFF, 0xE0, 0, length}, ImageFormat::Jpeg,
+                           "JPEG segment length") &&
+             ok;
+    }
+    ok = checkRejected({0xFF, 0xD8, 0xFF, 0xE0, 0xFF, 0xFF, 0}, ImageFormat::Jpeg,
+                       "JPEG segment past the end") &&
+         ok;
+    ok = checkRejected({0xFF, 0xD8, 0xFF, 0xC0, 0, 2}, ImageFormat::Jpeg, "JPEG empty frame") && ok;
+    ok = checkRejected({0xFF, 0xD8, 0xFF, 0xD9}, ImageFormat::Jpeg, "JPEG with no scan") && ok;
+    return ok;
+}
+
 // Two rows of two pixels fit a known layout: one stored block after the zlib header.
 bool
 checkPng()
@@ -138,5 +211,6 @@ main()
     ok = checkKtx2Rejected({}, "empty KTX2") && ok;
     ok = checkKtx2Rejected(kKtx2Signature, "KTX2 signature alone") && ok;
     ok = checkPng() && ok;
+    ok = checkStructure() && ok;
     return ok ? 0 : 1;
 }
