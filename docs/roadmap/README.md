@@ -55,12 +55,14 @@ The [scene selection decision](../architecture/SCENE_SELECTION.md) is recorded
 and is connected to the importer. End-to-end local Windows tests cover both
 formats, hierarchy, transforms, selection, triangle meshes, UV sets and
 vertex color data with embedded and restricted local external buffers, and
-failed/successful reload. Both formats also have local coordinate-system
+failed/successful reload. Local Windows tests also cover indexed and
+non-indexed triangle strips and fans, including winding, degenerate triangles
+and reload. Both formats also have local coordinate-system
 tests covering Y-up, meters, hierarchical transforms and reference
 composition into a stage with different metrics.
 The [layer authoring decision](../architecture/LAYER_AUTHORING.md) was revised
 to temporary `SdfLayer` authoring after reload exposed an unsafe change-block
-interaction. Mesh support is limited to triangle primitives with
+interaction. Mesh support is limited to triangles, triangle strips and fans with
 positions, optional normals, UV coordinate sets and COLOR_0; the remaining
 phase 1 work is not implemented. Vertex color alpha is retained as data, not
 applied as opacity; material and renderer behavior remains unverified.
