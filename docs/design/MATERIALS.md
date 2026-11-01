@@ -1,8 +1,5 @@
 # Material design
 
-Status: **adopted direction**, with node graphs and renderer compatibility
-still to be verified.
-
 Each glTF material maps to one `UsdShadeMaterial` under `/Asset/mtl` with
 both a MaterialX `standard_surface`-based path and a UsdPreviewSurface
 fallback. Use render-context-specific surface outputs as appropriate; verify
@@ -13,7 +10,12 @@ schema, shader, or imaging plugin is required.
 Share image data and conversion parameters where possible, but use separate
 nodes where the two paths require incompatible node interfaces. The
 existence of a node definition does not establish renderer support: verify
-rendering in each target renderer as well as network structure.
+rendering in each target renderer as well as network structure, and keep USD
+graph tests separate from rendering checks.
+
+Convert fastgltf materials to a small internal PBR representation, then branch
+to the MaterialX and UsdPreviewSurface networks, rather than copying the whole
+glTF data model.
 
 | glTF input | Intended mapping / consideration |
 | --- | --- |
@@ -32,12 +34,13 @@ for alpha, subject to the material's alpha mode. See
 [scene conventions](SCENE_CONVENTIONS.md#vertex-colors).
 
 Distinguish color data (base color and emissive) from non-color data
-(metallic, roughness, normal and occlusion). Apply `KHR_texture_transform`
-to UVs. Document approximations: glTF and MaterialX BRDFs do not match
-exactly.
+(metallic, roughness, normal and occlusion). Texture readers consume the
+primvar's [converted coordinates](SCENE_CONVENTIONS.md#texture-coordinates)
+without another flip. Apply `KHR_texture_transform` to UVs. Document
+approximations: glTF and MaterialX BRDFs do not match exactly.
 
-Extensions including clearcoat, transmission, ior, sheen, specular and
-unlit are later work, each requiring an explicit capability entry and tests.
-Do not silently claim complete support for unsupported features. Required
-extension handling is governed by the
+Each extension, including clearcoat, transmission, ior, sheen, specular and
+unlit, requires its own explicit capability entry and tests. Do not silently
+claim complete support for unsupported features. Required extension handling
+is governed by the
 [import pipeline](../architecture/IMPORT_PIPELINE.md).

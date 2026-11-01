@@ -1,21 +1,88 @@
 # Capability matrix
 
-This page records actual status, not roadmap commitments. The repository is
-at an early implementation stage; only a limited import subset is verified.
+This page is the only record of what is implemented and verified. It makes no
+future commitments; see the [roadmap](../roadmap/README.md) for those. A past
+result here is not a current guarantee: re-verify at each release.
 
-| Capability | Status | Intended direction |
+## States
+
+| State | Meaning |
+| --- | --- |
+| `Unsupported` | Not implemented. Selected content of this kind is rejected unless the row says otherwise. |
+| `Experimental` | Implemented or observed, but the evidence is too limited to rely on. |
+| `Verified (scope)` | Evidence exists within the stated scope only. |
+
+Scopes used below:
+
+- **USD data, CI:** tests assert the authored USD data in all
+  [CI environments](#tested-environments). This says nothing about how a
+  renderer displays the result.
+- **Local Windows:** run locally on Windows x86-64 with MSVC and OpenUSD 26.08;
+  not yet confirmed by CI.
+
+CI success is not evidence of display compatibility.
+
+## Capabilities
+
+| Capability | State | Supported subset and limitations | Evidence |
+| --- | --- | --- | --- |
+| `.gltf` / `.glb` registration and import | Verified (USD data, CI) | Read only; writing and editing are declared unsupported. Eager conversion on read. | `tests/test_file_format.py::test_registration_and_capabilities` |
+| Scene selection | Verified (USD data, CI) | Declared default scene, or scene 0 with a warning. No scenes or an invalid default fail. Scenes are never merged. | `tests/scene_selection.cpp`, `tests/test_file_format.py::test_first_scene_fallback_warns`, `tests/test_file_format.py::test_failures_report_diagnostics` |
+| Node hierarchy and transforms | Verified (USD data, CI) | TRS and matrix nodes. Invalid quaternions and perspective matrices fail. Multiply referenced meshes are duplicated, not shared. | `tests/test_file_format.py::test_scene_hierarchy_and_transforms`, `tests/test_file_format.py::test_node_order_and_optional_extension_warning` |
+| Triangle-based meshes | Verified (USD data, CI) | Indexed and non-indexed TRIANGLES, TRIANGLE_STRIP and TRIANGLE_FAN with float POSITION. Interleaved accessors are accepted. | `tests/test_file_format.py::test_triangle_meshes`, `tests/test_file_format.py::test_triangle_strips_and_fans`, `tests/test_file_format.py::test_triangle_strip_and_fan_index_types_and_nonindexed_counts` |
+| Normals | Verified (USD data, CI) | Supplied float NORMAL, or generated per face when absent. | `tests/test_file_format.py::test_flat_normals_and_negative_scale` |
+| Texture coordinate sets | Verified (USD data, CI) | Consecutive TEXCOORD_n. Authored values only: no texture has been sampled through them. | `tests/test_file_format.py::test_texture_coordinates`, `tests/test_file_format.py::test_texture_coordinate_failures_preserve_layer` |
+| Vertex colors | Verified (USD data, CI) | COLOR_0 only, as primvar data. Alpha is retained but not applied as opacity; no material consumes these values. | `tests/test_file_format.py::test_vertex_colors`, `tests/test_file_format.py::test_vertex_color_failures_preserve_layer` |
+| Embedded and local external buffers | Verified (USD data, CI) | Embedded and restricted local paths only; see the [external buffer policy](../architecture/IMPORT_PIPELINE.md#external-buffer-policy). The link-escape test skips where the host cannot create directory links. | `tests/test_file_format.py::test_external_buffers_and_reload`, `tests/test_file_format.py::test_external_buffer_uri_rejections`, `tests/test_file_format.py::test_external_buffers_with_unicode_and_mixed_glb_data`, `tests/test_file_format.py::test_unselected_external_buffer_is_not_loaded`, `tests/test_file_format.py::test_external_buffer_symlink_escape_is_rejected` |
+| Coordinate system and units | Verified (USD data, CI) | Y-up and meters authored on direct open and reload; referencing into a Z-up centimeter stage. Not every transform combination. | `tests/test_file_format.py::test_coordinate_system_and_reference_composition` |
+| Reflections, winding and normals | Verified (USD data, CI) | Indexed and non-indexed triangles with odd and even reflections in hierarchical transforms and a mirrored reference. | `tests/test_file_format.py::test_hierarchical_reflection_winding_and_normals`, `tests/test_file_format.py::test_reflection_view_fixture` |
+| Failure and reload behavior | Verified (USD data, CI) | Tested failures emit a diagnostic and do not publish a partial layer. Not proven for every USD error; [the transfer itself is not atomic](../architecture/LAYER_AUTHORING.md#decision). | `tests/test_file_format.py::test_failed_reload_does_not_publish_partial_stage`, `tests/test_file_format.py::test_mesh_failures_and_reload_preservation`, `tests/test_file_format.py::test_nonfinite_position_is_rejected` |
+| Extensions | Verified (USD data, CI) | Any required extension fails. Optional extensions warn and are ignored; no extension is implemented. | `tests/test_file_format.py::test_failures_report_diagnostics`, `tests/test_file_format.py::test_node_order_and_optional_extension_warning` |
+| usdview/Storm display | Experimental | One [manual check](#manual-visual-checks) of a simple fixture on Windows. Not general renderer support. | `tests/fixtures/reflections.gltf` |
+| OpenStrata workspace build and tests | Verified (Windows x86-64, Linux x86-64, macOS arm64; OpenUSD 26.08) | The environments listed under [tested environments](#tested-environments). | [CI run 41297241072](https://github.com/animu-sphere/usd-gltf-plugins/actions/runs/41297241072) |
+| Standalone OpenStrata bundle | Verified (Local Windows) | `ost plugin test --up-to 2` confirms discovery of the file format, not a successful import. | `plugins/usdGltfFileFormat/openstrata.plugin.yaml` |
+| Root CMake build, install and registration | Verified (Local Windows) | A separate process registers the installed plugin and opens a stage. | `tests/test_install_smoke.py::test_installed_plugin_registers_and_opens_a_stage` |
+| Materials and bindings | Unsupported | A primitive that assigns a material fails, so assets using materials do not open. Neither shading path is authored. | `tests/test_file_format.py::test_mesh_failures_and_reload_preservation` |
+| PNG and JPEG images | Unsupported | Images are not loaded or resolved. | |
+| KTX2 (`KHR_texture_basisu`) | Unsupported | No decoder or image cache exists. A required declaration fails. | |
+| Point and line primitives, other vertex attributes, sparse accessors | Unsupported | Rejected with a diagnostic. | `tests/test_file_format.py::test_mesh_failures_and_reload_preservation` |
+| Skins, cameras, lights and morphs | Unsupported | The importer rejects them on a selected node, but no automated test covers this yet. | |
+| Animation | Unsupported | The importer rejects any asset with animations, but no automated test covers this yet. | |
+| Export | Unsupported | Not implemented. | |
+| General renderer compatibility | Unsupported | No renderer, including Storm, has a general compatibility claim. | |
+
+## Tested environments
+
+There is no supported platform matrix yet. These are the environments where
+the evidence above was produced.
+
+| Environment | OpenUSD | Result |
 | --- | --- | --- |
-| `.gltf` / `.glb` file-format registration and import | Node and triangle-based mesh subsets open and reload in local Windows tests; unsupported selected content fails explicitly | [Import pipeline](../architecture/IMPORT_PIPELINE.md) |
-| Scene, nodes, transforms, meshes and vertex attributes | Scene selection, hierarchy, transforms, indexed/non-indexed triangles, strips and fans, positions, normals, UV sets and COLOR_0 data implemented for embedded and restricted local external buffers; points, lines and other attributes are not | [Scene conventions](../design/SCENE_CONVENTIONS.md) |
-| Coordinate system and units | Direct imports author Y-up and meters; hierarchical transforms and composition into a differently configured stage tested locally on Windows | [Coordinate system and units](../design/SCENE_CONVENTIONS.md#coordinate-system-and-units) |
-| Reflections, winding and normals | Indexed and non-indexed triangles tested locally on Windows with hierarchical reflections, mirrored references and reload; usdview/Storm backface culling visually checked on a simple fixture | [Coordinate system and units](../design/SCENE_CONVENTIONS.md#coordinate-system-and-units) |
-| MaterialX and UsdPreviewSurface PBR and bindings | Not implemented | [Materials](../design/MATERIALS.md) |
-| PNG/JPEG, KTX2, image resolution and cache | Not implemented | [Textures](../design/TEXTURES.md) |
-| Animation, skinning, morphs, cameras and lights | Not implemented | Later phase |
-| glTF material extensions and export | Not implemented | Later phase |
-| OpenStrata workspace and CI | Workspace build and registration test passed on Windows, Linux and macOS with OpenUSD 26.08 in [PR CI](https://github.com/animu-sphere/usd-gltf-plugins/actions/runs/41289600882); standalone bundle discovery verified locally on Windows | [Workspace](../architecture/WORKSPACE.md) |
-| fastgltf dependency | 1.0.0 built with pinned simdjson and simdutf; glTF/GLB parsing smoke test passed on all three earlier PR CI platforms; used by the importer | [Import pipeline](../architecture/IMPORT_PIPELINE.md) |
-| Platform, OpenUSD and renderer compatibility | No supported matrix; only a limited Windows usdview/Storm reflection check, not general renderer support | [Open decisions](../roadmap/README.md#decisions-to-verify) |
+| Windows x86-64 (`windows-2022`), Python 3.13 | 26.08, OpenStrata cy2026 `usd` | All 5 CTest tests passed at `0420cbd` in [CI run 41297241072](https://github.com/animu-sphere/usd-gltf-plugins/actions/runs/41297241072) |
+| Linux x86-64 (`ubuntu-24.04`), Python 3.13 | 26.08, OpenStrata cy2026 `usd` | Same run |
+| macOS arm64 (`macos-15`), Python 3.13 | 26.08, OpenStrata cy2026 `usd` | Same run |
 
-Update entries with evidence as features land. Do not equate node definitions
-or successful builds with verified rendering support.
+The `install_smoke` and `docs_consistency` tests were added after this run.
+The CI configuration is pinned in [openstrata.ci.yaml](../../openstrata.ci.yaml).
+
+## Manual visual checks
+
+On Windows with OpenUSD 26.08 and the OpenStrata lookdev runtime, usdview's
+Storm renderer with OpenGL and backface culling was used to view the
+[reflection fixture](../../tests/fixtures/reflections.gltf). It shows four
+front-facing triangles: no reflection, a reflected parent, a reflected child,
+and two reflections. The first two use supplied normals and the next two use
+generated normals. All four were visible with culling enabled; a fifth,
+deliberately reversed triangle disappeared. With culling disabled all five were
+visible. This checks a simple front view and default lighting, not general
+shading correctness, other camera angles, materials or other renderers.
+
+To repeat the check after building the plugin bundle and installing the lookdev
+runtime (the `usd` profile alone does not provide usdview):
+
+```powershell
+ost plugin view --profile lookdev plugins\usdGltfFileFormat (Join-Path $PWD 'tests\fixtures\reflections.gltf')
+```
+
+In usdview, use **Viewer > Cull Backfaces (GL)** to toggle culling. With the
+default front view, the rightmost triangle is the reversed control.

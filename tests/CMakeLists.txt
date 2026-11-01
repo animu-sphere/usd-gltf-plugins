@@ -29,3 +29,5 @@ add_test(NAME install_smoke
         "USD_GLTF_TEST_CONFIG=$<CONFIG>"
         "${Python3_EXECUTABLE}"
         "${CMAKE_CURRENT_SOURCE_DIR}/test_install_smoke.py")
+add_test(NAME docs_consistency
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/check_docs.py")

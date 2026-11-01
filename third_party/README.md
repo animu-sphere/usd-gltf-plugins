@@ -10,7 +10,8 @@ sources, upstream README and license; its examples, tests and docs are omitted.
 | simdjson | 5.1.0 | [Release](https://github.com/simdjson/simdjson/releases/tag/v5.1.0), `simdjson.h` and `simdjson.cpp` amalgamations |
 | simdutf | 9.3.3 | [Release](https://github.com/simdutf/simdutf/releases/tag/v9.3.3), `simdutf.h` and `simdutf.cpp` amalgamations |
 
-The amalgamations match the SHA-256 hashes in fastgltf 1.0.0's
+A KTX decoder is added here only after its ADR and a build check on each target
+OS. The amalgamations match the SHA-256 hashes in fastgltf 1.0.0's
 `cmake/dependencies.cmake`. When upgrading, update the source files, versions,
 licenses, notices and build configuration together, and run the parser and
 plugin tests. The combined [notices](NOTICES.txt) are included in installed
