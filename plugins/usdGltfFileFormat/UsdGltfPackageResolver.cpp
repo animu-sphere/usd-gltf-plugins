@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "externalBuffer.h"
 #include "image.h"
+#include "ktx2.h"
 #include "parse.h"
 
 #include "pxr/pxr.h"
+#include "pxr/base/tf/diagnostic.h"
 #include "pxr/base/tf/registryManager.h"
 #include "pxr/base/tf/type.h"
 #include "pxr/usd/ar/asset.h"
@@ -20,6 +22,8 @@
 #include <span>
 #include <string>
 #include <unordered_map>
+#include <utility>
+#include <vector>
 
 PXR_NAMESPACE_OPEN_SCOPE
 
@@ -29,10 +33,11 @@ namespace
 // Keeps the asset and its loaded buffers alive for the image bytes they own.
 struct Package
 {
-    explicit Package(const std::string& path) : loader(path)
+    explicit Package(const std::string& sourcePath) : path(sourcePath), loader(sourcePath)
     {
     }
 
+    std::string path;
     ExternalBufferLoader loader;
     std::optional<fastgltf::Asset> asset;
 };
@@ -57,40 +62,49 @@ openPackage(const std::string& resolvedPackagePath)
     return package;
 }
 
-std::span<const std::byte>
-findImage(const std::shared_ptr<Package>& package, const std::string& entry)
+// `bytes` refers to the package, or to `owned` for a KTX2 file.
+struct PackagedImage
+{
+    std::vector<std::byte> owned;
+    std::span<const std::byte> bytes;
+    gltfTexture::ImageFormat format;
+};
+
+bool
+findImage(const std::shared_ptr<Package>& package, const std::string& entry, PackagedImage& image)
 {
     std::size_t index;
     gltfTexture::ImageFormat requested;
-    gltfTexture::ImageFormat actual;
-    std::span<const std::byte> bytes;
     std::string error;
     auto* loader = package ? &package->loader : nullptr;
-    if (!package || !gltfTexture::ParsePackageEntry(entry, index, requested) ||
-        !gltfTexture::GetEmbeddedImage(
-            *package->asset, index,
-            [loader](const fastgltf::Buffer& buffer, std::span<const std::byte>& data,
-                     std::string& loadError) { return loader->Load(buffer, data, loadError); },
-            bytes, actual, error) ||
-        requested != actual)
-    {
-        return {};
-    }
-    return bytes;
+    return package && gltfTexture::ParsePackageEntry(entry, index, requested) &&
+           gltfTexture::GetPackagedImage(
+               *package->asset, index, package->path,
+               [loader](const fastgltf::Buffer& buffer, std::span<const std::byte>& data,
+                        std::string& loadError) { return loader->Load(buffer, data, loadError); },
+               image.owned, image.bytes, image.format, error) &&
+           requested == gltfTexture::ServedFormat(image.format);
 }
 
 } // namespace
 
-// Serves embedded images from the source file, so an imported stage needs no
-// extracted files. See docs/adr/0001-image-assets.md.
+// Serves embedded images from the source file, and KTX2 images converted to PNG, so
+// an imported stage needs no extracted files. See docs/adr/0001-image-assets.md.
 class UsdGltfPackageResolver final : public ArPackageResolver
 {
   public:
     std::string
     Resolve(const std::string& resolvedPackagePath, const std::string& packagedPath) override
     {
-        return findImage(findPackage(resolvedPackagePath), packagedPath).empty() ? std::string()
-                                                                                 : packagedPath;
+        PackagedImage image;
+        std::string error;
+        if (!findImage(findPackage(resolvedPackagePath), packagedPath, image) ||
+            (image.format == gltfTexture::ImageFormat::Ktx2 &&
+             !gltfTexture::CheckKtx2(image.bytes, error)))
+        {
+            return {};
+        }
+        return packagedPath;
     }
 
     std::shared_ptr<ArAsset>
@@ -98,14 +112,29 @@ class UsdGltfPackageResolver final : public ArPackageResolver
               const std::string& resolvedPackagedPath) override
     {
         const auto package = findPackage(resolvedPackagePath);
-        const auto image = findImage(package, resolvedPackagedPath);
-        if (image.empty())
+        PackagedImage image;
+        if (!findImage(package, resolvedPackagedPath, image))
         {
             return nullptr;
         }
-        return ArInMemoryAsset::FromBuffer(
-            std::shared_ptr<const char>(package, reinterpret_cast<const char*>(image.data())),
-            image.size());
+        if (image.format != gltfTexture::ImageFormat::Ktx2)
+        {
+            return ArInMemoryAsset::FromBuffer(
+                std::shared_ptr<const char>(package,
+                                            reinterpret_cast<const char*>(image.bytes.data())),
+                image.bytes.size());
+        }
+        auto png = std::make_shared<std::vector<std::byte>>();
+        std::string error;
+        if (!gltfTexture::DecodeKtx2ToPng(image.bytes, *png, error))
+        {
+            TF_WARN("Cannot read '%s' in '%s': %s", resolvedPackagedPath.c_str(),
+                    resolvedPackagePath.c_str(), error.c_str());
+            return nullptr;
+        }
+        const auto* data = reinterpret_cast<const char*>(png->data());
+        const auto size = png->size();
+        return ArInMemoryAsset::FromBuffer(std::shared_ptr<const char>(std::move(png), data), size);
     }
 
     void

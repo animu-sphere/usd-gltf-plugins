@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "image.h"
 
+#include "ktx2.h"
 #include "localFile.h"
 
 #include <algorithm>
@@ -9,6 +10,8 @@
 #include <charconv>
 #include <filesystem>
 #include <fstream>
+#include <new>
+#include <system_error>
 #include <variant>
 
 namespace gltfTexture
@@ -17,15 +20,46 @@ namespace
 {
 
 constexpr std::string_view kEntryPrefix = "images/";
+// The longest signature, which is KTX2's.
+constexpr std::size_t kSignatureSize = 12;
 
 const char*
 extensionOf(ImageFormat format)
 {
-    return format == ImageFormat::Png ? ".png" : ".jpg";
+    return ServedFormat(format) == ImageFormat::Png ? ".png" : ".jpg";
 }
 
 bool
-locateExternalImage(const fastgltf::URI& uri, const std::string& sourcePath,
+readFile(const std::filesystem::path& target, std::vector<std::byte>& bytes, std::string& error)
+{
+    std::error_code ec;
+    const auto size = std::filesystem::file_size(target, ec);
+    std::ifstream input(target, std::ios::binary);
+    if (ec || !input)
+    {
+        error = "cannot read external image";
+        return false;
+    }
+    try
+    {
+        bytes.resize(std::size_t(size));
+    }
+    catch (const std::bad_alloc&)
+    {
+        error = "not enough memory to read external image";
+        return false;
+    }
+    input.read(reinterpret_cast<char*>(bytes.data()), std::streamsize(bytes.size()));
+    if (std::size_t(input.gcount()) != bytes.size())
+    {
+        error = "cannot read external image";
+        return false;
+    }
+    return true;
+}
+
+bool
+locateExternalImage(const fastgltf::URI& uri, std::size_t imageIndex, const std::string& sourcePath,
                     ImageLocation& location, std::string& error)
 {
     std::filesystem::path target;
@@ -34,15 +68,27 @@ locateExternalImage(const fastgltf::URI& uri, const std::string& sourcePath,
     {
         return false;
     }
-    std::array<char, 8> header{};
+    std::array<char, kSignatureSize> header{};
     std::ifstream input(target, std::ios::binary);
     input.read(header.data(), header.size());
     ImageFormat format;
     if (!DetectImageFormat(std::as_bytes(std::span(header).first(std::size_t(input.gcount()))),
                            format))
     {
-        error = "external image is not PNG or JPEG";
+        error = "external image is not PNG, JPEG or KTX2";
         return false;
+    }
+    location.format = format;
+    if (format == ImageFormat::Ktx2)
+    {
+        std::vector<std::byte> bytes;
+        if (!readFile(target, bytes, error) || !CheckKtx2(bytes, error))
+        {
+            return false;
+        }
+        location.path = MakePackageEntry(imageIndex, format);
+        location.packaged = true;
+        return true;
     }
     auto extension = target.extension().string();
     std::transform(extension.begin(), extension.end(), extension.begin(),
@@ -53,11 +99,17 @@ locateExternalImage(const fastgltf::URI& uri, const std::string& sourcePath,
         error = "external image file extension does not match its PNG or JPEG content";
         return false;
     }
-    location.embedded = false;
+    location.packaged = false;
     return true;
 }
 
 } // namespace
+
+ImageFormat
+ServedFormat(ImageFormat format)
+{
+    return format == ImageFormat::Ktx2 ? ImageFormat::Png : format;
+}
 
 bool
 DetectImageFormat(std::span<const std::byte> bytes, ImageFormat& format)
@@ -65,6 +117,8 @@ DetectImageFormat(std::span<const std::byte> bytes, ImageFormat& format)
     static constexpr std::array<unsigned char, 8> png = {0x89, 'P',  'N',  'G',
                                                          '\r', '\n', 0x1A, '\n'};
     static constexpr std::array<unsigned char, 3> jpeg = {0xFF, 0xD8, 0xFF};
+    static constexpr std::array<unsigned char, kSignatureSize> ktx2 = {
+        0xAB, 'K', 'T', 'X', ' ', '2', '0', 0xBB, '\r', '\n', 0x1A, '\n'};
     const auto startsWith = [bytes](const auto& signature)
     {
         return bytes.size() >= signature.size() &&
@@ -80,6 +134,11 @@ DetectImageFormat(std::span<const std::byte> bytes, ImageFormat& format)
     if (startsWith(jpeg))
     {
         format = ImageFormat::Jpeg;
+        return true;
+    }
+    if (startsWith(ktx2))
+    {
+        format = ImageFormat::Ktx2;
         return true;
     }
     return false;
@@ -120,8 +179,9 @@ ParsePackageEntry(std::string_view entry, std::size_t& imageIndex, ImageFormat& 
 }
 
 bool
-GetEmbeddedImage(const fastgltf::Asset& asset, std::size_t imageIndex,
-                 const gltfCore::BufferLoader& loadBuffer, std::span<const std::byte>& bytes,
+GetPackagedImage(const fastgltf::Asset& asset, std::size_t imageIndex,
+                 const std::string& sourcePath, const gltfCore::BufferLoader& loadBuffer,
+                 std::vector<std::byte>& owned, std::span<const std::byte>& bytes,
                  ImageFormat& format, std::string& error)
 {
     if (imageIndex >= asset.images.size())
@@ -145,14 +205,32 @@ GetEmbeddedImage(const fastgltf::Asset& asset, std::size_t imageIndex,
     {
         bytes = {vector->bytes.data(), vector->bytes.size()};
     }
+    else if (const auto* uri = std::get_if<fastgltf::sources::URI>(&data))
+    {
+        std::filesystem::path target;
+        std::string relative;
+        if (!gltfCore::ResolveLocalFile(*uri->uri, sourcePath, "external image", target, relative,
+                                        error) ||
+            !readFile(target, owned, error))
+        {
+            return false;
+        }
+        bytes = owned;
+        if (!DetectImageFormat(bytes, format) || format != ImageFormat::Ktx2)
+        {
+            error = "external image is read directly, not through the package";
+            return false;
+        }
+        return true;
+    }
     else
     {
-        error = "image is not embedded";
+        error = "image has no data";
         return false;
     }
     if (!DetectImageFormat(bytes, format))
     {
-        error = "embedded image is not PNG or JPEG";
+        error = "embedded image is not PNG, JPEG or KTX2";
         return false;
     }
     return true;
@@ -169,16 +247,19 @@ LocateImage(const fastgltf::Asset& asset, std::size_t imageIndex, const std::str
     }
     if (const auto* uri = std::get_if<fastgltf::sources::URI>(&asset.images[imageIndex].data))
     {
-        return locateExternalImage(*uri->uri, sourcePath, location, error);
+        return locateExternalImage(*uri->uri, imageIndex, sourcePath, location, error);
     }
+    std::vector<std::byte> owned;
     std::span<const std::byte> bytes;
     ImageFormat format;
-    if (!GetEmbeddedImage(asset, imageIndex, loadBuffer, bytes, format, error))
+    if (!GetPackagedImage(asset, imageIndex, sourcePath, loadBuffer, owned, bytes, format, error) ||
+        (format == ImageFormat::Ktx2 && !CheckKtx2(bytes, error)))
     {
         return false;
     }
     location.path = MakePackageEntry(imageIndex, format);
-    location.embedded = true;
+    location.packaged = true;
+    location.format = format;
     return true;
 }
 

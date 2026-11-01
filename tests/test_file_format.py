@@ -167,6 +167,98 @@ def textured_document(extension, image, data):
     return document, binary
 
 
+def ktx2_fixture(name):
+    return (pathlib.Path(__file__).parent / "fixtures" / "textures" / (name + ".ktx2")).read_bytes()
+
+
+def ktx2_document(extension, image, data):
+    """A textured_document whose texture requires KHR_texture_basisu."""
+    document, binary = textured_document(extension, image, data)
+    if image is None:
+        document["images"][0]["mimeType"] = "image/ktx2"
+    document["textures"] = [{"extensions": {"KHR_texture_basisu": {"source": 0}}}]
+    document["extensionsUsed"] = ["KHR_texture_basisu"]
+    document["extensionsRequired"] = ["KHR_texture_basisu"]
+    return document, binary
+
+
+def patch_ktx2_header(data, offset, value):
+    return data[:offset] + struct.pack("<I", value) + data[offset + 4:]
+
+
+def oversized_ktx2():
+    """A consistent uncompressed UASTC file wider than the transcoder's limit."""
+    data = bytearray(ktx2_fixture("uastc_alpha"))
+    level_offset = struct.unpack_from("<Q", data, 80)[0]
+    # One row of 4100 blocks of 16 bytes each.
+    level_length = 4100 * 16
+    struct.pack_into("<II", data, 20, 16400, 4)
+    struct.pack_into("<QQQ", data, 80, level_offset, level_length, level_length)
+    return bytes(data[:level_offset]) + bytes(level_length)
+
+
+def ktx2_with_orientation(data, orientation):
+    """Inserts a KTXorientation entry, which sorts before the encoder's own keys."""
+    entry = b"KTXorientation\0" + orientation + b"\0"
+    entry = struct.pack("<I", len(entry)) + entry
+    entry += b"\0" * (-len(entry) % 8)
+    kvd_offset, kvd_length, sgd_offset, sgd_length = struct.unpack_from("<IIQQ", data, 56)
+    level_count = struct.unpack_from("<I", data, 40)[0]
+    result = bytearray(data[:kvd_offset] + entry + data[kvd_offset:])
+    struct.pack_into("<IIQ", result, 60 - 4, kvd_offset, kvd_length + len(entry),
+                     sgd_offset + len(entry) if sgd_length else 0)
+    for level in range(max(level_count, 1)):
+        offset = 80 + level * 24
+        struct.pack_into("<Q", result, offset,
+                         struct.unpack_from("<Q", result, offset)[0] + len(entry))
+    return bytes(result)
+
+
+def read_png(data):
+    """Returns the width, height and RGBA rows of a PNG without row filters."""
+    width = height = None
+    compressed = b""
+    offset = 8
+    while offset < len(data):
+        length, kind = struct.unpack_from(">I4s", data, offset)
+        chunk = data[offset + 8:offset + 8 + length]
+        crc = struct.unpack_from(">I", data, offset + 8 + length)[0]
+        if crc != zlib.crc32(kind + chunk):
+            raise ValueError("bad PNG chunk checksum")
+        if kind == b"IHDR":
+            width, height, depth, color = struct.unpack_from(">IIBB", chunk)
+            if (depth, color) != (8, 6):
+                raise ValueError("PNG is not 8-bit RGBA")
+        elif kind == b"IDAT":
+            compressed += chunk
+        offset += 12 + length
+    raw = zlib.decompress(compressed)
+    stride = width * 4 + 1
+    if len(raw) != stride * height:
+        raise ValueError("PNG has the wrong amount of data")
+    rows = []
+    for y in range(height):
+        row = raw[y * stride:(y + 1) * stride]
+        if row[0] != 0:
+            raise ValueError("PNG row is filtered")
+        rows.append([tuple(row[1 + x * 4:5 + x * 4]) for x in range(width)])
+    return width, height, rows
+
+
+def base_color_file(stage):
+    """The base color image of a textured_document's material, which must be the same in both paths."""
+    mesh = stage.GetPrimAtPath("/Asset/geo/Node_0/Mesh_0/Primitive_0")
+    material, _ = UsdShade.MaterialBindingAPI(mesh).ComputeBoundMaterial()
+    preview = UsdShade.Shader.Get(
+        stage, material.GetPath().AppendPath(Sdf.Path("preview/baseColorTexture")))
+    mtlx = UsdShade.Shader.Get(
+        stage, material.GetPath().AppendPath(Sdf.Path("mtlx/baseColorImage")))
+    asset = preview.GetInput("file").Get()
+    if asset.path != mtlx.GetInput("file").Get().path:
+        raise ValueError("the shading paths use different images")
+    return asset
+
+
 def color_document(extension, component_type, components, external=False):
     document, binary = mesh_document("glb")
     binary += b"\0" * (-len(binary) % 4)
@@ -1701,7 +1793,7 @@ class FileFormatTest(unittest.TestCase):
                     name = slots(pbr_document()[0]["materials"][0])[index][0]
                     for case, change, message in (
                         ("uv set", {"texCoord": 3}, "texture coordinate set the primitive does not have"),
-                        ("corrupt image", {"index": 1}, "embedded image is not PNG or JPEG"),
+                        ("corrupt image", {"index": 1}, "embedded image is not PNG, JPEG or KTX2"),
                     ):
                         with self.subTest(extension=extension, slot=name, case=case):
                             invalid, invalid_binary = pbr_document()
@@ -1908,6 +2000,152 @@ class FileFormatTest(unittest.TestCase):
                 self.assertTrue(asset.resolvedPath, asset.path)
                 self.assertTrue(asset_bytes(asset.resolvedPath))
 
+    def test_ktx2_textures_view_fixture(self):
+        path = pathlib.Path(__file__).parent / "fixtures" / "ktx2_textures.gltf"
+        stage = Usd.Stage.Open(str(path))
+        for primitive in range(6):
+            mesh = stage.GetPrimAtPath(f"/Asset/geo/Node_0/Mesh_0/Primitive_{primitive}")
+            material, _ = UsdShade.MaterialBindingAPI(mesh).ComputeBoundMaterial()
+            texture = UsdShade.Shader.Get(
+                stage, material.GetPath().AppendPath(Sdf.Path("preview/baseColorTexture")))
+            asset = texture.GetInput("file").Get()
+            self.assertTrue(asset.resolvedPath, asset.path)
+            self.assertTrue(asset_bytes(asset.resolvedPath))
+
+    def test_ktx2_images_are_served_as_png(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            for name, alpha in (("etc1s", False), ("etc1s_alpha", True), ("etc1s_mips", False),
+                                ("uastc_zstd", False), ("uastc_alpha", True)):
+                data = ktx2_fixture(name)
+                (root / (name + ".ktx2")).write_bytes(data)
+                encoded = base64.b64encode(data).decode()
+                for extension in ("gltf", "glb"):
+                    for source, image in (
+                        ("bufferView", None),
+                        ("data URI", {"uri": "data:image/ktx2;base64," + encoded}),
+                        ("file", {"uri": name + ".ktx2", "mimeType": "image/ktx2"}),
+                    ):
+                        with self.subTest(name=name, extension=extension, source=source):
+                            path = root / f"{name}_{source[0]}.{extension}"
+                            document, binary = ktx2_document(extension, image, data)
+                            write_asset(path, document, binary)
+                            stage = Usd.Stage.Open(str(path))
+                            asset = base_color_file(stage)
+                            self.assertEqual(asset.path, f"./{path.name}[images/0.png]")
+                            self.assert_quadrants(asset_bytes(asset.resolvedPath), alpha)
+
+    def assert_quadrants(self, png, alpha):
+        width, height, pixels = read_png(png)
+        self.assertEqual((width, height), (16, 16))
+        low_alpha = 64 if alpha else 255
+        for (x, y), expected in (((4, 4), (255, 0, 0, 255)), ((12, 4), (0, 255, 0, 255)),
+                                 ((4, 12), (0, 0, 255, low_alpha)),
+                                 ((12, 12), (255, 255, 255, low_alpha))):
+            actual = pixels[y][x]
+            for channel in range(4):
+                self.assertAlmostEqual(actual[channel], expected[channel], delta=16,
+                                       msg=f"pixel {x}, {y}: {actual}")
+
+    def test_ktx2_is_preferred_over_its_fallback_and_does_not_warn(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            for extension in ("gltf", "glb"):
+                with self.subTest(extension=extension):
+                    path = root / ("asset." + extension)
+                    document, binary = ktx2_document(extension, None, ktx2_fixture("etc1s"))
+                    # Optional, with a plain source for clients without the extension.
+                    del document["extensionsRequired"]
+                    document["images"].append({"uri": "data:image/png;base64,"
+                                               + base64.b64encode(PNG).decode()})
+                    document["textures"][0]["source"] = 1
+                    write_asset(path, document, binary)
+                    stage = Usd.Stage.Open(str(path))
+                    self.assertEqual(base_color_file(stage).path, f"./{path.name}[images/0.png]")
+                    result = subprocess.run(
+                        [sys.executable, "-c",
+                         "import sys\nfrom pxr import Usd\nUsd.Stage.Open(sys.argv[1])",
+                         str(path)],
+                        capture_output=True, text=True, check=False,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertNotIn("KHR_texture_basisu", result.stderr)
+
+    def test_ktx2_file_resolves_after_moving_and_on_reload(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            source = root / "source"
+            source.mkdir()
+            (source / "image.ktx2").write_bytes(ktx2_fixture("etc1s"))
+            document, binary = ktx2_document("gltf", {"uri": "image.ktx2"}, b"")
+            write_asset(source / "asset.gltf", document, binary)
+            moved = root / "moved"
+            source.rename(moved)
+            stage = Usd.Stage.Open(str(moved / "asset.gltf"))
+            asset = base_color_file(stage)
+            self.assert_quadrants(asset_bytes(asset.resolvedPath), False)
+
+            # The same request is answered from the file's current content.
+            (moved / "image.ktx2").write_bytes(ktx2_fixture("uastc_alpha"))
+            self.assert_quadrants(asset_bytes(asset.resolvedPath), True)
+
+    def test_ktx2_failures_preserve_layer(self):
+        valid = ktx2_fixture("etc1s")
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            for extension in ("gltf", "glb"):
+                path = root / ("asset." + extension)
+                document, binary = ktx2_document(extension, None, valid)
+                write_asset(path, document, binary)
+                stage = Usd.Stage.Open(str(path))
+                layer = stage.GetRootLayer()
+                before = layer_text(layer)
+                for case, data, message in (
+                    ("signature only", b"\xabKTX 20\xbb\r\n\x1a\n", "KTX2 image is damaged"),
+                    ("truncated", valid[:len(valid) // 2], "KTX2 image is damaged"),
+                    ("other codec", ktx2_fixture("xuastc"), "KTX2 image is not ETC1S or UASTC"),
+                    ("cubemap", patch_ktx2_header(valid, 36, 6), "not a single 2D image"),
+                    ("array", patch_ktx2_header(valid, 32, 2), "not a single 2D image"),
+                    ("volume", patch_ktx2_header(valid, 28, 2), "KTX2 image is damaged"),
+                    ("inconsistent size", patch_ktx2_header(valid, 20, 20000), "KTX2 image is damaged"),
+                    ("too wide", oversized_ktx2(), "KTX2 image is damaged"),
+                    ("orientation", ktx2_with_orientation(valid, b"ru"), "orientation is not supported"),
+                ):
+                    with self.subTest(extension=extension, case=case):
+                        invalid, invalid_binary = ktx2_document(extension, None, data)
+                        write_asset(path, invalid, invalid_binary)
+                        with self.assertRaisesRegex(Tf.ErrorException, message):
+                            layer.Reload(True)
+                        self.assertEqual(layer_text(layer), before)
+                with self.subTest(extension=extension, case="plain source"):
+                    invalid, invalid_binary = ktx2_document(extension, None, valid)
+                    invalid["textures"][0] = {"source": 0}
+                    write_asset(path, invalid, invalid_binary)
+                    with self.assertRaisesRegex(Tf.ErrorException, "requires KHR_texture_basisu"):
+                        layer.Reload(True)
+                    self.assertEqual(layer_text(layer), before)
+
+    def test_ktx2_orientation_required_by_the_extension_is_accepted(self):
+        data = ktx2_with_orientation(ktx2_fixture("etc1s"), b"rd")
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "asset.glb"
+            document, binary = ktx2_document("glb", None, data)
+            write_asset(path, document, binary)
+            asset = base_color_file(Usd.Stage.Open(str(path)))
+            self.assert_quadrants(asset_bytes(asset.resolvedPath), False)
+
+    def test_damaged_ktx2_body_fails_when_read(self):
+        # The header is valid, so import succeeds and the image's reader reports it.
+        valid = ktx2_fixture("uastc_zstd")
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "asset.glb"
+            data = bytearray(valid)
+            data[-8:] = b"\xff" * 8
+            document, binary = ktx2_document("glb", None, bytes(data))
+            write_asset(path, document, binary)
+            asset = base_color_file(Usd.Stage.Open(str(path)))
+            self.assertIsNone(Ar.GetResolver().OpenAsset(Ar.ResolvedPath(asset.resolvedPath)))
+
     def test_texture_failures_preserve_layer(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
@@ -1928,9 +2166,9 @@ class FileFormatTest(unittest.TestCase):
                 before = layer_text(layer)
                 for case, change, message in (
                     ("corrupt embedded", lambda d: d["images"].__setitem__(0, {
-                        "uri": "data:image/png;base64,AAAAAAAAAAAA"}), "embedded image is not PNG or JPEG"),
+                        "uri": "data:image/png;base64,AAAAAAAAAAAA"}), "embedded image is not PNG, JPEG or KTX2"),
                     ("webp data", lambda d: d["images"].__setitem__(0, {
-                        "uri": "data:image/webp;base64,UklGRg=="}), "embedded image is not PNG or JPEG"),
+                        "uri": "data:image/webp;base64,UklGRg=="}), "embedded image is not PNG, JPEG or KTX2"),
                     ("missing file", lambda d: d["images"].__setitem__(0, {"uri": "absent.png"}),
                      "cannot resolve external image"),
                     ("parent path", lambda d: d["images"].__setitem__(0, {"uri": "../outside.png"}),
@@ -1940,9 +2178,11 @@ class FileFormatTest(unittest.TestCase):
                     ("remote", lambda d: d["images"].__setitem__(0, {"uri": "https://example.com/a.png"}),
                      "unsafe or unsupported external image URI"),
                     ("not an image", lambda d: d["images"].__setitem__(0, {"uri": "not-image.png"}),
-                     "external image is not PNG or JPEG"),
-                    ("ktx2 file", lambda d: d["images"].__setitem__(0, {"uri": "image.ktx2"}),
-                     "external image is not PNG or JPEG"),
+                     "external image is not PNG, JPEG or KTX2"),
+                    ("damaged ktx2 file", lambda d: d["images"].__setitem__(0, {"uri": "image.ktx2"}),
+                     "KTX2 image is damaged"),
+                    ("basisu png", lambda d: d["textures"][0].__setitem__("extensions", {
+                        "KHR_texture_basisu": {"source": 0}}), "KHR_texture_basisu image is not KTX2"),
                     ("wrong content", lambda d: d["images"].__setitem__(0, {"uri": "mismatch.png"}),
                      "file extension does not match"),
                     ("wrong extension", lambda d: d["images"].__setitem__(0, {"uri": "image.bmp"}),
@@ -1950,7 +2190,7 @@ class FileFormatTest(unittest.TestCase):
                     ("image index", lambda d: d["textures"][0].__setitem__("source", 9),
                      "image index is out of range|cannot parse"),
                     ("no source", lambda d: d["textures"][0].pop("source"),
-                     "no PNG or JPEG image source|cannot parse"),
+                     "texture has no image source|cannot parse"),
                     ("texture index", lambda d: d["materials"][0]["pbrMetallicRoughness"]["baseColorTexture"]
                      .__setitem__("index", 9), "texture index is out of range|cannot parse"),
                     ("sampler index", lambda d: d["textures"][0].__setitem__("sampler", 9),

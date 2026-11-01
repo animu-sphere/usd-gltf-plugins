@@ -674,9 +674,12 @@ resolveTexture(const fastgltf::Asset& asset, const fastgltf::TextureInfo& info,
         return false;
     }
     const auto& texture = asset.textures[info.textureIndex];
-    if (!texture.imageIndex)
+    // The plain source is the fallback for clients without the extension.
+    const auto imageIndex =
+        texture.basisuImageIndex ? texture.basisuImageIndex : texture.imageIndex;
+    if (!imageIndex)
     {
-        error = "texture has no PNG or JPEG image source";
+        error = "texture has no image source";
         return false;
     }
     fastgltf::Sampler sampler{};
@@ -691,12 +694,21 @@ resolveTexture(const fastgltf::Asset& asset, const fastgltf::TextureInfo& info,
         sampler.wrapT = asset.samplers[*texture.samplerIndex].wrapT;
     }
     gltfTexture::ImageLocation location;
-    if (!gltfTexture::LocateImage(asset, *texture.imageIndex, sourcePath, loadBuffer, location,
-                                  error))
+    if (!gltfTexture::LocateImage(asset, *imageIndex, sourcePath, loadBuffer, location, error))
     {
         return false;
     }
-    result.file = location.embedded
+    if (texture.basisuImageIndex && location.format != gltfTexture::ImageFormat::Ktx2)
+    {
+        error = "KHR_texture_basisu image is not KTX2";
+        return false;
+    }
+    if (!texture.basisuImageIndex && location.format == gltfTexture::ImageFormat::Ktx2)
+    {
+        error = "KTX2 image requires KHR_texture_basisu";
+        return false;
+    }
+    result.file = location.packaged
                       ? ArJoinPackageRelativePath("./" + TfGetBaseName(sourcePath), location.path)
                       : "./" + location.path;
     result.primvar = info.texCoordIndex == 0 ? "st" : "st" + std::to_string(info.texCoordIndex);

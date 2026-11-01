@@ -18,10 +18,13 @@
 #include "pxr/usd/usdGeom/tokens.h"
 #include "pxr/usd/usdGeom/xform.h"
 
+#include <fastgltf/core.hpp>
+
 #include <cmath>
 #include <exception>
 #include <future>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -208,7 +211,10 @@ ConvertScene(const fastgltf::Asset& asset, const std::string& sourcePath,
     }
     for (const auto& extension : asset.extensionsUsed)
     {
-        TF_WARN("glTF optional extension '%s' is not supported", extension.c_str());
+        if (std::string_view(extension) != fastgltf::extensions::KHR_texture_basisu)
+        {
+            TF_WARN("glTF optional extension '%s' is not supported", extension.c_str());
+        }
     }
 
     // Reload can hold a change block on this thread; author the stage on another thread.
