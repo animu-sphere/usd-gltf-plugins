@@ -1,7 +1,8 @@
 # Workspace architecture
 
-Status: **partially started**. A file-format registration scaffold exists;
-the remaining components and dependency directions are planned.
+Status: **partially started**. The registration scaffold is an OpenStrata
+workspace member and supports both a root CMake build and a standalone bundle
+build. The remaining components and dependency directions are planned.
 
 ## Proposed layout
 
@@ -25,9 +26,10 @@ usd-gltf-plugins/
   third_party/             only if needed
 ```
 
-The root is expected eventually to contain CMake configuration and presets,
-OpenStrata workspace and CI configuration, and a version file. Their actual
-contents and schemas have not been established.
+The root contains CMake and OpenStrata workspace configuration, a CI matrix
+and a generated GitHub Actions workflow. CI has not yet been verified.
+CMake presets and the remaining project and dependency configuration are
+still to be established.
 
 | Component | Responsibility | Boundary |
 | --- | --- | --- |

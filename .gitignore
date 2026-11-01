@@ -1,1 +1,8 @@
 /build/
+/.strata/
+/strata.lock
+/plugins/usdGltfFileFormat/.strata/
+/plugins/usdGltfFileFormat/build/
+/plugins/usdGltfFileFormat/lib/
+/plugins/usdGltfFileFormat/plugin/resources/usdGltfFileFormat/plugInfo.json
+CMakeUserPresets.json
