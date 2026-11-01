@@ -16,9 +16,8 @@ selected OpenUSD version.
 
 Scenes are authored on a temporary `SdfLayer`, and its content is transferred
 only after successful conversion. See the
-[layer authoring decision](LAYER_AUTHORING.md). Image assets may require
-deliberate persistent storage; see [TEXTURES](../design/TEXTURES.md) for their
-lifecycle and portability requirements.
+[layer authoring decision](LAYER_AUTHORING.md). Import writes no image files:
+see [TEXTURES](../design/TEXTURES.md) for their lifecycle and portability.
 
 ## Failure policy
 
@@ -32,23 +31,26 @@ than a success result containing an unintentionally incomplete stage. Scene
 selection is defined in
 [SCENE_CONVENTIONS](../design/SCENE_CONVENTIONS.md#scene-selection).
 
-## External buffer policy
+## External resource policy
 
-For buffers used by the selected scene, `.gltf` and `.glb` imports accept
-relative, UTF-8 filesystem paths beneath the source file's directory. URI
+For buffers and images used by the selected scene, `.gltf` and `.glb` imports
+accept relative, UTF-8 filesystem paths beneath the source file's directory. URI
 percent escapes are decoded once and must be valid; decoded parent-directory
 components, absolute paths, backslashes, colons, control characters, schemes,
 authorities, queries and fragments are rejected. The source directory and
 target are canonicalized, and links whose target escapes the source directory
-are rejected. The target must be a regular file at least as long as its
-declared `byteLength`. Only that many bytes are read and cached for the
-duration of conversion; failed reads prevent layer publication. Unused
-buffers in other scenes are not loaded.
+are rejected. The target must be a regular file. Failed checks prevent layer
+publication, and unused resources in other scenes are not read.
 
-External buffer resolution requires a local source and filesystem; it does not
-use USD's asset resolver to open the buffer. This deliberately excludes remote
-assets, resolver-managed resources and shared buffers in parent directories.
+An external buffer must be at least as long as its declared `byteLength`. Only
+that many bytes are read and cached for the duration of conversion. An external
+image must have a PNG or JPEG signature and the matching file extension, because
+the image loader chooses a decoder from the extension. Its bytes are not read
+during import; see [ADR 0001](../adr/0001-image-assets.md).
+
+Resolution requires a local source and filesystem; it does not use USD's asset
+resolver to find the resource. This deliberately excludes remote assets,
+resolver-managed resources and shared files in parent directories.
 Canonicalization and file opening are separate operations: the check is not a
 security sandbox against concurrent changes to the filesystem. Assets must not
-be imported from directories writable by an untrusted concurrent actor. Image
-URI policy is a [separate decision](../roadmap/README.md#decisions-to-verify).
+be imported from directories writable by an untrusted concurrent actor.

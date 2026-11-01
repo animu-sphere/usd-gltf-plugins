@@ -66,7 +66,7 @@ class UsdGltfFileFormat : public SdfFileFormat
         }
         ExternalBufferLoader loader(path);
         auto converted = gltfUsd::ConvertScene(
-            asset.get(),
+            asset.get(), path,
             [&loader](const fastgltf::Buffer& buffer, std::span<const std::byte>& data,
                       std::string& error) { return loader.Load(buffer, data, error); });
         if (!converted)

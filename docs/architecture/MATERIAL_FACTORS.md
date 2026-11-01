@@ -43,13 +43,15 @@ has no multiply node, so `preview` reads per-mesh product primvars instead. The
 alternatives were rejecting tinted vertex colors, which loses valid assets, or
 ignoring the factor in Preview, which is wrong; baking is exact for factors and
 costs a second vertex array only when the factor is not 1. It cannot extend to a
-texture multiplied by COLOR_0, which needs its own decision. Vertex alpha is read
+texture multiplied by COLOR_0, which [has its own decision](../adr/0002-base-color-texture-networks.md).
+Vertex alpha is read
 only for MASK and BLEND, and a primitive without it falls back to the factor
 alpha in Preview and 1 before the multiply in MaterialX.
 
-Reject texture references; they require image handling and additional graph
-work. Required extensions remain rejected, while optional extensions are warned
-about and ignored under the existing import policy.
+This decision rejected texture references, as they require image handling and
+additional graph work; later decisions cover them. Required extensions remain
+rejected, while optional extensions are warned about and ignored under the
+existing import policy.
 
 Material networks and bindings use `UsdShade` on the temporary authoring stage.
 The conversion runs on a

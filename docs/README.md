@@ -20,13 +20,16 @@ than presenting planned behavior as implemented.
 | [Materials](design/MATERIALS.md) | PBR, shader graph, channel and approximation specification | Material progress |
 | [Textures](design/TEXTURES.md) | URI, image conversion, cache and path lifetime specification | Texture support status |
 | [Capability matrix](reference/CAPABILITY_MATRIX.md) | **The only record of what is implemented and verified:** scope, limitations, evidence, environments | Future commitments, release plans |
-| [Roadmap](roadmap/README.md) | **The only version plan:** scope, completion criteria, open decisions | Test history, long design rationale |
+| [Roadmap](roadmap/README.md), [current](roadmap/current.md), [backlog](roadmap/backlog.md) | **The only version plan:** unfinished scope, completion criteria, open decisions, task lifecycle | Finished work, test history, long design rationale |
 
 Decision records keep the options considered, the reasoning and the evidence
 available when the decision was made; they are not progress reports:
 
 - [Layer authoring](architecture/LAYER_AUTHORING.md)
 - [Scene selection](architecture/SCENE_SELECTION.md)
+- [Factor-only materials](architecture/MATERIAL_FACTORS.md)
+- [0001: Image asset paths and lifetime](adr/0001-image-assets.md)
+- [0002: Base color texture networks](adr/0002-base-color-texture-networks.md)
 
 New decisions go in `docs/adr/NNNN-title.md`.
 
@@ -37,6 +40,8 @@ New decisions go in `docs/adr/NNNN-title.md`.
 - A specification change updates only the owning design or architecture
   document.
 - A plan change updates only the roadmap.
+- A pull request that finishes a task deletes it from the
+  [current plan](roadmap/current.md).
 
 The `docs_consistency` test ([check_docs.py](../tests/check_docs.py)) checks
 relative links, matrix states and evidence paths, and misplaced status lines,

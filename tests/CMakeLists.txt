@@ -13,6 +13,10 @@ add_executable(accessor_test accessor.cpp)
 target_link_libraries(accessor_test PRIVATE usd_gltf_core)
 add_test(NAME accessor COMMAND accessor_test)
 
+add_executable(image_test image.cpp)
+target_link_libraries(image_test PRIVATE usd_gltf_texture)
+add_test(NAME image COMMAND image_test)
+
 add_test(NAME file_format_registration
     COMMAND "${CMAKE_COMMAND}" -E env
         "PXR_PLUGINPATH_NAME=${USD_GLTF_OUTPUT_ROOT}/plugin/resources/usdGltfFileFormat"

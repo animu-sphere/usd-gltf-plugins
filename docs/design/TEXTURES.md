@@ -16,17 +16,16 @@
 
 ## Cache and asset lifetime
 
-Cache keys must include image content, conversion settings, and the
-decoder/conversion implementation version, avoiding collisions and stale
-results. The cache's lifetime and location, concurrent behavior, and asset
-path strategy must be decided in an ADR before a decoder is implemented. In
-particular, converted images must remain resolvable when a persistent stage is
-moved; a reference to a temporary file alone is not a portable persistent
-result, so avoid an API that only returns a temporary path, and make storage
-duration and ownership explicit.
+Embedded images are served from the source file through a package resolver, and
+external images use layer-relative paths: see
+[ADR 0001](../adr/0001-image-assets.md). Import writes no image files, and converted
+images use the same package paths, so results resolve after an asset moves with its
+images.
 
-The design must specify how source-relative, embedded and converted images
-are represented and retained across stage and cache lifetimes. Avoid
-claiming portability until a strategy and its tests exist. Failure handling for
-generated files must be designed separately, because they are
+Any cache added later must key on image content, conversion settings, and the
+decoder/conversion implementation version, avoiding collisions and stale results.
+A reference to a temporary file alone is not a portable persistent result, so
+avoid an API that only returns a temporary path, and make storage duration and
+ownership explicit. Failure handling for generated files must be designed
+separately, because they are
 [outside the layer's publication boundary](../architecture/LAYER_AUTHORING.md#decision).

@@ -8,7 +8,8 @@ MaterialX versions. Standard schemas and shaders must suffice: no custom
 schema, shader, or imaging plugin is required.
 
 The initial factor-only mapping and its current limitations are recorded in
-the [material factor decision](../architecture/MATERIAL_FACTORS.md).
+the [material factor decision](../architecture/MATERIAL_FACTORS.md), and textures
+in the [base color texture decision](../adr/0002-base-color-texture-networks.md).
 
 Share image data and conversion parameters where possible, but use separate
 nodes where the two paths require incompatible node interfaces. The
@@ -38,7 +39,9 @@ graph. UsdPreviewSurface has no multiply node and reads the per-mesh products
 described in the [scene conventions](SCENE_CONVENTIONS.md#vertex-colors), which
 are exact because scaling by a constant does not change linear interpolation.
 A material used with and without COLOR_0 needs two graphs and so two `Material`
-prims.
+prims. A texture multiplied by COLOR_0 cannot be baked this way: MaterialX
+multiplies it exactly, and Preview omits COLOR_0 with a warning. See
+[ADR 0002](../adr/0002-base-color-texture-networks.md).
 
 Distinguish color data (base color and emissive) from non-color data
 (metallic, roughness, normal and occlusion). Texture readers consume the

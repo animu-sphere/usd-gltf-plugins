@@ -474,8 +474,8 @@ authorPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& primiti
         error = "could not author USD mesh";
         return false;
     }
-    if (primitive.materialIndex &&
-        !materials.Bind(*primitive.materialIndex, color ? &colors : nullptr, alpha, mesh, error))
+    if (primitive.materialIndex && !materials.Bind(*primitive.materialIndex, uvSets.size(),
+                                                   color ? &colors : nullptr, alpha, mesh, error))
     {
         return false;
     }

@@ -15,7 +15,7 @@ Each fact has one owning document; see `docs/README.md`.
 
 - [ ] Implementation changes update `docs/reference/CAPABILITY_MATRIX.md` with evidence.
 - [ ] Specification changes update only the owning design or architecture document.
-- [ ] Plan changes update only `docs/roadmap/README.md`.
+- [ ] Plan changes update only `docs/roadmap/`, and finished tasks are deleted from `current.md`.
 - [ ] Renderer compatibility is claimed only with a renderer check, not from CI success.
 
 ## Notes for reviewers
