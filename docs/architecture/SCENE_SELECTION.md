@@ -1,7 +1,7 @@
 # Scene selection decision
 
-Status: adopted for the initial importer; selection helper implemented, but
-not yet connected to the file-format plugin.
+Status: adopted and connected to the file-format importer for the current
+node-only subset.
 
 glTF can contain multiple scenes and can omit the default scene. The importer
 must choose one scene rather than combine scenes, which could change the
@@ -16,10 +16,9 @@ range, it emits an error and fails. These choices do not imply that glTF
 assets without scenes are invalid; they define the initial importer's scope.
 
 The `gltfCore` selection result distinguishes a declared selection, a fallback
-and the two failure cases. Its caller must produce the diagnostics before
-returning a stage or failure. Tests exercise selection from both JSON glTF and
-GLB input. The plugin still rejects every import until translation and
-diagnostic propagation are implemented.
+and the two failure cases. The converter produces the diagnostics before
+returning a layer or failure. Unit and plugin tests exercise selection from
+both JSON glTF and GLB input.
 
 References: [glTF 2.0 specification](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html),
 the vendored fastgltf `Asset` definition and parser, and the scene selection

@@ -47,6 +47,7 @@ endfunction()
 usd_gltf_add_fastgltf()
 
 add_library(usd_gltf_core STATIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../libs/gltfCore/parse.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/../../libs/gltfCore/sceneSelection.cpp")
 target_compile_features(usd_gltf_core PUBLIC cxx_std_20)
 target_include_directories(usd_gltf_core PUBLIC
@@ -54,19 +55,26 @@ target_include_directories(usd_gltf_core PUBLIC
 target_link_libraries(usd_gltf_core PUBLIC fastgltf::fastgltf)
 set_target_properties(usd_gltf_core PROPERTIES POSITION_INDEPENDENT_CODE ON CXX_EXTENSIONS OFF)
 
+add_library(usd_gltf_usd STATIC "${CMAKE_CURRENT_SOURCE_DIR}/../../libs/gltfUsd/scene.cpp")
+target_compile_features(usd_gltf_usd PUBLIC cxx_std_20)
+target_include_directories(usd_gltf_usd PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../libs/gltfUsd" ${PXR_INCLUDE_DIRS})
+target_link_libraries(usd_gltf_usd PUBLIC usd_gltf_core)
+set_target_properties(usd_gltf_usd PROPERTIES POSITION_INDEPENDENT_CODE ON CXX_EXTENSIONS OFF)
+
 add_library(UsdGltfFileFormat SHARED UsdGltfFileFormat.cpp)
 target_compile_features(UsdGltfFileFormat PRIVATE cxx_std_20)
 set_target_properties(UsdGltfFileFormat PROPERTIES CXX_EXTENSIONS OFF)
 target_include_directories(UsdGltfFileFormat PRIVATE ${PXR_INCLUDE_DIRS})
-target_link_libraries(UsdGltfFileFormat PRIVATE usd_gltf_core)
+target_link_libraries(UsdGltfFileFormat PRIVATE usd_gltf_usd)
 if(TARGET usd_ms)
-    target_link_libraries(UsdGltfFileFormat PRIVATE usd_ms)
-elseif(TARGET sdf AND TARGET tf)
-    target_link_libraries(UsdGltfFileFormat PRIVATE sdf tf)
-elseif(TARGET pxr::sdf AND TARGET pxr::tf)
-    target_link_libraries(UsdGltfFileFormat PRIVATE pxr::sdf pxr::tf)
+    target_link_libraries(usd_gltf_usd PUBLIC usd_ms)
+elseif(TARGET usdGeom AND TARGET usd AND TARGET sdf AND TARGET ar AND TARGET tf)
+    target_link_libraries(usd_gltf_usd PUBLIC usdGeom usd sdf ar tf)
+elseif(TARGET pxr::usdGeom AND TARGET pxr::usd AND TARGET pxr::sdf AND TARGET pxr::ar AND TARGET pxr::tf)
+    target_link_libraries(usd_gltf_usd PUBLIC pxr::usdGeom pxr::usd pxr::sdf pxr::ar pxr::tf)
 else()
-    message(FATAL_ERROR "OpenUSD must provide usd_ms or the sdf and tf targets.")
+    message(FATAL_ERROR "OpenUSD must provide usd_ms or the usdGeom, usd, sdf, ar and tf targets.")
 endif()
 
 set_target_properties(UsdGltfFileFormat PROPERTIES

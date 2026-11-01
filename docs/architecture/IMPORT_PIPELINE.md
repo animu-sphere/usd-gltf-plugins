@@ -1,8 +1,7 @@
 # Import pipeline
 
-Status: **early implementation**. A file-format registration scaffold exists;
-fastgltf is linked as a build dependency and tested separately, but the
-importer is not implemented and reads fail explicitly.
+Status: **early implementation**. The importer opens a limited node-only
+scene subset; mesh conversion and other asset content are not implemented.
 
 ```text
 .gltf / .glb
@@ -18,8 +17,8 @@ loading. Keep the plugin thin and the translator reusable. The import-only
 plugin registration must explicitly declare writing unsupported, using the
 metadata supported by the selected OpenUSD version.
 
-The selected approach is to author on a temporary `UsdStage` and transfer
-the resulting layer only after successful conversion. See the
+The selected approach is to author on a temporary `SdfLayer` and transfer
+its content only after successful conversion. See the
 [layer authoring decision](LAYER_AUTHORING.md) for experiments and remaining
 integration tests. Image assets may require deliberate persistent storage;
 their lifecycle and portability are separate unresolved requirements in
@@ -32,6 +31,10 @@ define the diagnostic policy for unsupported optional extensions. Malformed
 or unsafe data must produce explicit diagnostics and failure rather than a
 success result containing an unintentionally incomplete stage.
 
-Scene selection is defined in [SCENE_CONVENTIONS](../design/SCENE_CONVENTIONS.md);
-the helper is not yet connected to the file-format importer. See also the
+Scene selection is defined in [SCENE_CONVENTIONS](../design/SCENE_CONVENTIONS.md).
+The importer currently rejects selected nodes referencing meshes, skins,
+cameras or morph data and rejects animations, rather than silently dropping
+them. Unsupported optional extensions are reported as warnings; required
+extensions are rejected by fastgltf. External buffers and images are not yet
+loaded or resolved. See also the
 [open decisions](../roadmap/README.md#decisions-to-verify).
