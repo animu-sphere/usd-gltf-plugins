@@ -1,0 +1,30 @@
+{
+  "asset": {"version": "2.0"},
+  "scene": 0,
+  "scenes": [{"nodes": [0, 1, 2, 3, 6]}],
+  "nodes": [
+    {"name": "No reflection", "translation": [-4.5, 0, 0], "mesh": 0},
+    {"name": "Parent reflection", "translation": [-1.5, 0, 0], "scale": [-1, 1, 1], "mesh": 0},
+    {"name": "Child reflection", "translation": [1.5, 0, 0], "children": [4]},
+    {"name": "Two reflections", "translation": [4.5, 0, 0], "scale": [-1, 1, 1], "children": [5]},
+    {"name": "Reflected child", "scale": [1, -1, 1], "mesh": 1},
+    {"name": "Second reflected child", "scale": [1, -1, 1], "mesh": 1},
+    {"name": "Backface control", "translation": [7.5, 0, 0], "mesh": 2}
+  ],
+  "meshes": [
+    {"primitives": [{"attributes": {"POSITION": 0, "NORMAL": 1}}]},
+    {"primitives": [{"attributes": {"POSITION": 0}}]},
+    {"primitives": [{"attributes": {"POSITION": 0, "NORMAL": 1}, "indices": 2}]}
+  ],
+  "buffers": [{"byteLength": 78, "uri": "data:application/octet-stream;base64,AACAvwAAQL8AAAAAAACAPwAAQL8AAAAAAAAAvwAAQD8AAAAAAAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAACAAEA"}],
+  "bufferViews": [
+    {"buffer": 0, "byteOffset": 0, "byteLength": 36},
+    {"buffer": 0, "byteOffset": 36, "byteLength": 36},
+    {"buffer": 0, "byteOffset": 72, "byteLength": 6}
+  ],
+  "accessors": [
+    {"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3", "min": [-1, -0.75, 0], "max": [1, 0.75, 0]},
+    {"bufferView": 1, "componentType": 5126, "count": 3, "type": "VEC3"},
+    {"bufferView": 2, "componentType": 5123, "count": 3, "type": "SCALAR"}
+  ]
+}

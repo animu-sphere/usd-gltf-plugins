@@ -67,6 +67,35 @@ hierarchical TRS/matrix transforms, reload, and referencing into a Z-up
 centimeter stage with and without that corrective transform. These tests do
 not verify renderer behavior or all transform combinations.
 
+For indexed and non-indexed triangles, local Windows tests also cover odd and
+even reflections in a rotated, non-uniformly scaled TRS parent and matrix child,
+including an additional mirrored reference and reload. The tests verify
+right-handed local topology, supplied and generated normals, world-space
+positions, transform determinant parity, and inverse-transpose normal
+transformation. A world-space triangle cross product changes sign relative to
+the transformed normal under odd reflection. Renderer culling and shading
+are not covered by those automated tests.
+
+On Windows with OpenUSD 26.08 and the OpenStrata lookdev runtime, a separate
+visual check used usdview's Storm renderer with OpenGL and backface culling.
+The [reflection fixture](../../tests/fixtures/reflections.gltf) shows four
+front-facing triangles: no reflection, a reflected parent, a reflected child,
+and two reflections. The first two use supplied normals and the next two use
+generated normals. All four were visible with culling enabled; a fifth,
+deliberately reversed triangle disappeared. With culling disabled all five
+were visible. This checks a simple front view and default lighting, not general
+shading correctness, other camera angles, materials, or other renderers.
+
+To repeat the visual check on Windows after building the plugin bundle and
+installing the lookdev runtime:
+
+```powershell
+ost plugin view --profile lookdev plugins\usdGltfFileFormat (Join-Path $PWD 'tests\fixtures\reflections.gltf')
+```
+
+In usdview, use **Viewer > Cull Backfaces (GL)** to toggle culling. With the
+default front view, the rightmost triangle is the reversed control.
+
 ## Texture coordinates
 
 Each TEXCOORD_n must use VEC2 floats, normalized unsigned bytes or normalized
@@ -107,7 +136,6 @@ behavior are not yet verified.
   is invalid, report an error and fail. Never merge scenes. The selection
   helper is connected to the file-format importer; see the
   [decision record](../architecture/SCENE_SELECTION.md).
-- Test negative scales, transform parity, triangle winding and normals.
 - Define mesh sharing and placement of animated nodes as part of later work.
 - Define behavior for unsupported extensions, particularly required ones,
   as described in the [import pipeline](../architecture/IMPORT_PIPELINE.md).
