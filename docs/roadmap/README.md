@@ -51,9 +51,11 @@ The [main-branch run for the merge](https://github.com/animu-sphere/usd-gltf-plu
 also passed on all three platforms. These results predate the scene-selection
 test and do not verify importing or establish a general compatibility matrix.
 The [scene selection decision](../architecture/SCENE_SELECTION.md) is recorded
-and is connected to a node-only importer. End-to-end local Windows tests cover
-both formats, hierarchy, transforms, selection and failed/successful reload.
+and is connected to the importer. End-to-end local Windows tests cover both
+formats, hierarchy, transforms, selection, embedded triangle meshes and
+failed/successful reload.
 The [layer authoring decision](../architecture/LAYER_AUTHORING.md) was revised
 to temporary `SdfLayer` authoring after reload exposed an unsafe change-block
-interaction. Meshes and the remaining phase 1 work are not implemented; these
-new tests have not yet been verified in the other CI cells.
+interaction. Mesh support is limited to embedded triangle primitives with
+positions and optional normals; the remaining phase 1 work is not implemented.
+These newer tests have not yet been verified in the other CI cells.

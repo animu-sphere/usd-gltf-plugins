@@ -1,7 +1,7 @@
 # Import pipeline
 
-Status: **early implementation**. The importer opens a limited node-only
-scene subset; mesh conversion and other asset content are not implemented.
+Status: **early implementation**. The importer opens selected nodes, transforms
+and a limited embedded triangle-mesh subset; other asset content is not implemented.
 
 ```text
 .gltf / .glb
@@ -32,9 +32,10 @@ or unsafe data must produce explicit diagnostics and failure rather than a
 success result containing an unintentionally incomplete stage.
 
 Scene selection is defined in [SCENE_CONVENTIONS](../design/SCENE_CONVENTIONS.md).
-The importer currently rejects selected nodes referencing meshes, skins,
-cameras or morph data and rejects animations, rather than silently dropping
-them. Unsupported optional extensions are reported as warnings; required
-extensions are rejected by fastgltf. External buffers and images are not yet
-loaded or resolved. See also the
+The importer currently supports embedded triangle meshes as described in
+[scene conventions](../design/SCENE_CONVENTIONS.md). It rejects unsupported
+mesh content, skins, cameras, lights, morph data and animations rather than
+silently dropping them. Unsupported optional extensions are reported as
+warnings; required extensions are rejected by fastgltf. External buffers and
+images are not yet loaded or resolved. See also the
 [open decisions](../roadmap/README.md#decisions-to-verify).

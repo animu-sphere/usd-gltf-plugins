@@ -47,6 +47,7 @@ endfunction()
 usd_gltf_add_fastgltf()
 
 add_library(usd_gltf_core STATIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../libs/gltfCore/accessor.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/../../libs/gltfCore/parse.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/../../libs/gltfCore/sceneSelection.cpp")
 target_compile_features(usd_gltf_core PUBLIC cxx_std_20)
@@ -55,7 +56,9 @@ target_include_directories(usd_gltf_core PUBLIC
 target_link_libraries(usd_gltf_core PUBLIC fastgltf::fastgltf)
 set_target_properties(usd_gltf_core PROPERTIES POSITION_INDEPENDENT_CODE ON CXX_EXTENSIONS OFF)
 
-add_library(usd_gltf_usd STATIC "${CMAKE_CURRENT_SOURCE_DIR}/../../libs/gltfUsd/scene.cpp")
+add_library(usd_gltf_usd STATIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../libs/gltfUsd/mesh.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../libs/gltfUsd/scene.cpp")
 target_compile_features(usd_gltf_usd PUBLIC cxx_std_20)
 target_include_directories(usd_gltf_usd PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/../../libs/gltfUsd" ${PXR_INCLUDE_DIRS})
@@ -113,6 +116,9 @@ if(BUILD_TESTING)
     add_executable(scene_selection_test "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/scene_selection.cpp")
     target_link_libraries(scene_selection_test PRIVATE usd_gltf_core)
     add_test(NAME scene_selection COMMAND scene_selection_test)
+    add_executable(accessor_test "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/accessor.cpp")
+    target_link_libraries(accessor_test PRIVATE usd_gltf_core)
+    add_test(NAME accessor COMMAND accessor_test)
     add_test(NAME file_format_registration
         COMMAND "${CMAKE_COMMAND}" -E env
             "PXR_PLUGINPATH_NAME=${USD_GLTF_OUTPUT_ROOT}/plugin/resources/usdGltfFileFormat"

@@ -1,7 +1,7 @@
 # Scene selection decision
 
 Status: adopted and connected to the file-format importer for the current
-node-only subset.
+node and embedded triangle-mesh subset.
 
 glTF can contain multiple scenes and can omit the default scene. The importer
 must choose one scene rather than combine scenes, which could change the

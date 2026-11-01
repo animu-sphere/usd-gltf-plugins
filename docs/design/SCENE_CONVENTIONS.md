@@ -1,7 +1,7 @@
 # Scene conventions
 
-Status: **partially implemented** for selected scenes with nodes and transforms
-but no mesh, skin, camera or animation. The structure below is the target.
+Status: **partially implemented** for selected scenes, nodes, transforms and
+an embedded triangle-mesh subset. Skin, camera and animation are not supported.
 
 ## Structure and names
 
@@ -9,7 +9,8 @@ but no mesh, skin, camera or animation. The structure below is the target.
 /Asset                         Xform, defaultPrim
   /geo                         Scope
     /Node_0                    Xform
-      /Mesh_0                  Mesh
+      /Mesh_0                  Xform
+        /Primitive_0           Mesh
   /mtl                         Scope
     /Material_0                Material
 ```
@@ -19,11 +20,23 @@ Preserve the glTF node hierarchy below `/Asset/geo`; collect materials under
 concepts. Initial duplication of a multiply referenced mesh is permitted,
 but must not preclude a future shared USD representation.
 
-Use stable index-based prim names such as `Node_12`, `Mesh_3`, and
+Each mesh is an Xform below its node, containing one USD Mesh per glTF
+primitive. This retains the primitive boundaries needed for future material
+bindings. Shared mesh references are currently duplicated under each node.
+Use stable index-based prim names such as `Node_12`, `Mesh_3`, `Primitive_0`, and
 `Material_2`. glTF names can be empty, repeated, or invalid in a USD path;
 retain original names as display names or equivalent metadata. Test name
 stability. Do not prescribe `/Asset/rig` or `/Asset/anim` as mandatory:
 their placement must be decided when UsdSkel and animation are designed.
+
+The implemented mesh subset accepts indexed or non-indexed triangle
+primitives with float POSITION and optional float NORMAL accessors in embedded
+buffers. Accessors may be interleaved but not sparse. Indexed data uses glTF
+unsigned byte, unsigned short or unsigned int indices. USD subdivision is
+disabled and winding remains right-handed; absent normals are generated per
+face for flat shading. Unsupported attributes, materials, other primitive
+modes, morphs, compression and external buffers fail with a diagnostic.
+UV conversion, material binding and a general mesh sharing policy remain open.
 
 ## Semantic differences requiring validation
 
