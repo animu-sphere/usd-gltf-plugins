@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "image.h"
+#include "ktx2.h"
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
+#include <cstring>
 #include <iostream>
 #include <limits>
 #include <span>
@@ -14,6 +17,9 @@ namespace
 {
 
 using gltfTexture::ImageFormat;
+
+const std::vector<unsigned char> kKtx2Signature = {0xAB, 'K',  'T',  'X',  ' ',  '2',
+                                                   '0',  0xBB, '\r', '\n', 0x1A, '\n'};
 
 bool
 checkDetect(std::vector<unsigned char> bytes, bool expected, ImageFormat expectedFormat,
@@ -45,6 +51,43 @@ checkEntry(const std::string& entry, bool expected, std::size_t expectedIndex = 
     return true;
 }
 
+bool
+checkKtx2Rejected(const std::vector<unsigned char>& bytes, const char* label)
+{
+    std::string error;
+    std::vector<std::byte> png;
+    const auto span = std::as_bytes(std::span<const unsigned char>(bytes));
+    if (gltfTexture::CheckKtx2(span, error) || error.empty() ||
+        gltfTexture::DecodeKtx2ToPng(span, png, error))
+    {
+        std::cerr << label << ": expected an error\n";
+        return false;
+    }
+    return true;
+}
+
+// Two rows of two pixels fit a known layout: one stored block after the zlib header.
+bool
+checkPng()
+{
+    const std::vector<std::uint8_t> rgba = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
+    const auto png = gltfTexture::EncodePng(2, 2, rgba);
+    ImageFormat format = ImageFormat::Jpeg;
+    constexpr std::size_t kData = 8 + 25 + 8 + 2 + 5;
+    bool ok = gltfTexture::DetectImageFormat(png, format) && format == ImageFormat::Png &&
+              png.size() == kData + 18 + 4 + 4 + 12;
+    for (std::size_t i = 0; ok && i < 2; ++i)
+    {
+        ok = std::to_integer<int>(png[kData + i * 9]) == 0 &&
+             std::memcmp(&png[kData + i * 9 + 1], &rgba[i * 8], 8) == 0;
+    }
+    if (!ok)
+    {
+        std::cerr << "unexpected PNG layout\n";
+    }
+    return ok;
+}
+
 } // namespace
 
 int
@@ -57,8 +100,18 @@ main()
     ok = checkDetect({0xFF, 0xD8}, false, ImageFormat::Jpeg, "short JPEG") && ok;
     ok = checkDetect({}, false, ImageFormat::Png, "empty") && ok;
     ok = checkDetect({'R', 'I', 'F', 'F'}, false, ImageFormat::Png, "WebP") && ok;
+    ok = checkDetect(kKtx2Signature, true, ImageFormat::Ktx2, "KTX2") && ok;
+    ok = checkDetect({0xAB, 'K', 'T', 'X', ' ', '2', '0', 0xBB}, false, ImageFormat::Png,
+                     "short KTX2") &&
+         ok;
+    ok = checkDetect({0xAB, 'K', 'T', 'X', ' ', '1', '1', 0xBB, '\r', '\n', 0x1A, '\n'}, false,
+                     ImageFormat::Png, "KTX1") &&
+         ok;
 
     ok = checkEntry(gltfTexture::MakePackageEntry(0, ImageFormat::Png), true, 0) && ok;
+    // KTX2 is served as PNG.
+    ok = checkEntry(gltfTexture::MakePackageEntry(3, ImageFormat::Ktx2), true, 3) && ok;
+    ok = checkEntry("images/3.ktx2", false) && ok;
     ok = checkEntry(gltfTexture::MakePackageEntry(12, ImageFormat::Jpeg), true, 12,
                     ImageFormat::Jpeg) &&
          ok;
@@ -71,13 +124,19 @@ main()
     }
 
     fastgltf::Asset asset;
+    std::vector<std::byte> owned;
     std::span<const std::byte> bytes;
     ImageFormat format;
     std::string error;
-    if (gltfTexture::GetEmbeddedImage(asset, 0, {}, bytes, format, error) || error.empty())
+    if (gltfTexture::GetPackagedImage(asset, 0, "", {}, owned, bytes, format, error) ||
+        error.empty())
     {
         std::cerr << "out-of-range image: expected an error\n";
         ok = false;
     }
+
+    ok = checkKtx2Rejected({}, "empty KTX2") && ok;
+    ok = checkKtx2Rejected(kKtx2Signature, "KTX2 signature alone") && ok;
+    ok = checkPng() && ok;
     return ok ? 0 : 1;
 }

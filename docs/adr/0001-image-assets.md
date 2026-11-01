@@ -32,6 +32,7 @@ Use the package resolver. Images are never written to disk during import.
 | --- | --- | --- |
 | bufferView or data URI | `./<source name>[images/<image index>.<png or jpg>]` | `UsdGltfPackageResolver`, from the source file |
 | Relative local URI | `./<decoded URI path>` | The active asset resolver |
+| KTX2, from any of these | `./<source name>[images/<image index>.png]` | `UsdGltfPackageResolver`, converted on request |
 
 Paths are relative, so they are anchored to the layer and resolve after the asset
 moves with its images. The entry name uses the image index, like other stable
@@ -61,15 +62,16 @@ layer publication. Remote and resolver-managed images are excluded, as for buffe
 
 KTX2 follows this contract: `KHR_texture_basisu` images get a `.png` entry, and the
 resolver decodes them to PNG on request. This means no decoded image cache is
-needed for correctness. Decoder selection and its build check still need their own
-ADR, and this path is not implemented.
+needed for correctness. [ADR 0005](0005-ktx2-decoder.md) selects the decoder and
+states which images are accepted.
 
 ## Limits
 
 - Only the signature is checked at import. Decoding every image during open would
   be slow, so a damaged image body is reported by the renderer's image loader when
   it is read, and the layer has already been published.
-- There is no limit on image dimensions or size of our own.
+- There is no limit on image dimensions or size of our own, except for
+  [KTX2 dimensions](0005-ktx2-decoder.md#which-images-are-accepted).
 - A layer exported from an imported stage still points into the source for embedded
   images, and needs the plugin and source. Explicit packaging is planned in the
   [backlog](../roadmap/backlog.md).

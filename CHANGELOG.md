@@ -18,6 +18,8 @@ here.
   images read distinctly.
 - Normal textures. Assets with TANGENT now import, retaining it as the
   `gltf_tangent` primvar; renderers derive the tangent frame.
+- KTX2 images through `KHR_texture_basisu`, served to consumers as PNG, using the
+  Basis Universal transcoder.
 - Apache-2.0 license, installed with the plugin, and community health files.
 - Install smoke test and documentation consistency test.
 - clang-format configuration, applied to the project's C++ sources.

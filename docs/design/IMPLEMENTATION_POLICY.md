@@ -45,8 +45,7 @@ and failure policy. Scene, material, and texture details belong to
   Verify the current schema before creating configuration. CMake presets do not
   replace OpenStrata and must not pin environment-specific absolute paths.
 - Make versions of fastgltf, the KTX decoder/transcoder, and test dependencies
-  pinnable using a method consistent with OpenStrata. KTX-Software is a
-  candidate, not a selected dependency.
+  pinnable using a method consistent with OpenStrata.
 - Target Linux, Windows, and macOS; determine the CI matrix, supported OpenUSD
   versions, compilers, runtime and ABI compatibility through validation.
 - Cover accessor and buffer bounds, naming, UVs, color spaces and texture
@@ -61,6 +60,6 @@ and failure policy. Scene, material, and texture details belong to
 - [glTF 2.0 specification](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html)
 - [fastgltf](https://github.com/spnda/fastgltf)
 - [OpenUSD file format plugins](https://openusd.org/release/api/_sdf__page__file_format_plugin.html)
-- [KTX-Software](https://github.com/KhronosGroup/KTX-Software)
+- [Basis Universal](https://github.com/BinomialLLC/basis_universal)
 - [KHR_texture_basisu](https://github.com/KhronosGroup/glTF/tree/main/extensions/2.0/Khronos/KHR_texture_basisu)
 - [usd-vrm-plugins](https://github.com/animu-sphere/usd-vrm-plugins)

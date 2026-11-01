@@ -2,9 +2,7 @@
 
 - Treat PNG and JPEG as image assets accessible to USD consumers.
 - For `KHR_texture_basisu`, provide a standard path from KTX2 through decoded
-  RGBA to a common image format such as PNG, then to texture nodes.
-  KTX-Software is a candidate decoder/transcoder; its selection and version
-  require validation.
+  RGBA to PNG, then to texture nodes. See [ADR 0005](../adr/0005-ktx2-decoder.md).
 - Avoid unnecessary degradation and incorrect color-space interpretation.
   Color and non-color inputs must be handled distinctly as described in
   [MATERIALS](MATERIALS.md).

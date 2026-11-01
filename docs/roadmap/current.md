@@ -9,7 +9,6 @@ implementation order.
 
 | Task | Done when |
 | --- | --- |
-| KTX2 through `KHR_texture_basisu` | An ADR selects the decoder after a build check on each target OS. ETC1S and UASTC, as handled by that library, reach consumers as standard images under the [image asset contract](../adr/0001-image-assets.md). Its license is in the third-party notices. |
 | Image failure handling | Damaged image bodies and oversized images have a decided behavior and tests. See the [limits](../adr/0001-image-assets.md#limits) of the current signature check. |
 | Reproducible Storm display check | The manual renders in the [capability matrix](../reference/CAPABILITY_MATRIX.md#manual-visual-checks) can be repeated by a command that compares results, including the two shader paths. |
 

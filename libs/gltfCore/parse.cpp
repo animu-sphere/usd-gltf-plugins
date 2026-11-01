@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "parse.h"
 
+#include <string_view>
+
 namespace gltfCore
 {
 
@@ -14,15 +16,19 @@ Parse(const std::byte* bytes, std::size_t size)
     }
     // Parse light references so the scene converter can reject selected lights.
     // Enabling parsing does not mean the extension is supported.
-    fastgltf::Parser parser(fastgltf::Extensions::KHR_lights_punctual);
+    fastgltf::Parser parser(fastgltf::Extensions::KHR_lights_punctual |
+                            fastgltf::Extensions::KHR_texture_basisu);
     auto asset = parser.loadGltf(data.get(), {}, fastgltf::Options::None);
     if (asset.error() != fastgltf::Error::None)
     {
         return asset.error();
     }
-    if (!asset->extensionsRequired.empty())
+    for (const auto& extension : asset->extensionsRequired)
     {
-        return fastgltf::Error::MissingExtensions;
+        if (std::string_view(extension) != fastgltf::extensions::KHR_texture_basisu)
+        {
+            return fastgltf::Error::MissingExtensions;
+        }
     }
     return asset;
 }

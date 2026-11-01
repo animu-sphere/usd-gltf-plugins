@@ -1,3 +1,5 @@
 third_party/fastgltf/** text eol=lf
 third_party/simdjson/** text eol=lf
 third_party/simdutf/** text eol=lf
+third_party/basis_universal/** text eol=lf
+*.ktx2 binary

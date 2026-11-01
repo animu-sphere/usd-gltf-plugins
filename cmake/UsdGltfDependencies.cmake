@@ -42,3 +42,31 @@ function(usd_gltf_add_fastgltf)
     set_target_properties(fastgltf PROPERTIES POSITION_INDEPENDENT_CODE ON)
 endfunction()
 usd_gltf_add_fastgltf()
+
+# The Zstandard decoder is C, and both entry points otherwise enable only C++.
+enable_language(C)
+
+function(usd_gltf_add_basisu)
+    set(basisu_dir "${USD_GLTF_REPOSITORY_ROOT}/third_party/basis_universal")
+    add_library(usd_gltf_basisu STATIC
+        "${basisu_dir}/transcoder/basisu_transcoder.cpp"
+        "${basisu_dir}/zstd/zstddeclib.c")
+    target_include_directories(usd_gltf_basisu PUBLIC "${basisu_dir}/transcoder")
+    target_compile_features(usd_gltf_basisu PUBLIC cxx_std_20)
+    target_compile_definitions(usd_gltf_basisu PUBLIC
+        BASISD_SUPPORT_KTX2=1
+        BASISD_SUPPORT_KTX2_ZSTD=1)
+    # A host process can load its own Zstandard, so these symbols must bind locally.
+    target_compile_definitions(usd_gltf_basisu PRIVATE
+        ZSTDLIB_VISIBLE=
+        ZSTDERRORLIB_VISIBLE=)
+    if(MSVC)
+        target_compile_options(usd_gltf_basisu PRIVATE /bigobj /utf-8)
+    endif()
+    set_target_properties(usd_gltf_basisu PROPERTIES
+        POSITION_INDEPENDENT_CODE ON
+        C_VISIBILITY_PRESET hidden
+        CXX_VISIBILITY_PRESET hidden
+        VISIBILITY_INLINES_HIDDEN ON)
+endfunction()
+usd_gltf_add_basisu()

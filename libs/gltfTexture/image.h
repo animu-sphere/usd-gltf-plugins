@@ -9,6 +9,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace gltfTexture
 {
@@ -16,33 +17,42 @@ namespace gltfTexture
 enum class ImageFormat
 {
     Png,
-    Jpeg
+    Jpeg,
+    Ktx2
 };
 
 // Checks the signature only; a damaged image body is found when it is decoded.
 [[nodiscard]] bool DetectImageFormat(std::span<const std::byte> bytes, ImageFormat& format);
 
-// Names an embedded image inside its .gltf or .glb package: images/<index>.<ext>.
+// The format consumers read: KTX2 is converted to PNG.
+[[nodiscard]] ImageFormat ServedFormat(ImageFormat format);
+
+// Names a packaged image inside its .gltf or .glb package: images/<index>.<ext>,
+// with the extension of its served format. Parsing returns that format.
 [[nodiscard]] std::string MakePackageEntry(std::size_t imageIndex, ImageFormat format);
 [[nodiscard]] bool ParsePackageEntry(std::string_view entry, std::size_t& imageIndex,
                                      ImageFormat& format);
 
-// Bytes of a bufferView or data URI image. They are owned by the asset or by
-// the buffer loader.
-[[nodiscard]] bool GetEmbeddedImage(const fastgltf::Asset& asset, std::size_t imageIndex,
+// Bytes of a bufferView or data URI image, or of a local KTX2 file. They are owned
+// by the asset, by the buffer loader or, for a file, by `owned`.
+[[nodiscard]] bool GetPackagedImage(const fastgltf::Asset& asset, std::size_t imageIndex,
+                                    const std::string& sourcePath,
                                     const gltfCore::BufferLoader& loadBuffer,
+                                    std::vector<std::byte>& owned,
                                     std::span<const std::byte>& bytes, ImageFormat& format,
                                     std::string& error);
 
 struct ImageLocation
 {
-    // A package entry when embedded, otherwise a path relative to the source.
+    // A package entry when packaged, otherwise a path relative to the source.
     std::string path;
-    bool embedded;
+    bool packaged;
+    ImageFormat format;
 };
 
-// Finds and checks an image without decoding it. External images follow the
-// local file policy and must have the file extension of their format.
+// Finds and checks an image without transcoding it. External images follow the
+// local file policy. Those read directly must have the file extension of their
+// format, and KTX2 files are served through the package.
 [[nodiscard]] bool LocateImage(const fastgltf::Asset& asset, std::size_t imageIndex,
                                const std::string& sourcePath,
                                const gltfCore::BufferLoader& loadBuffer, ImageLocation& location,

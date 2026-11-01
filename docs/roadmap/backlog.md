@@ -10,6 +10,9 @@ Later versions, in planned order. Nothing here has started; see the
   for ignoring, approximating or rejecting optional extensions.
 - `KHR_materials_unlit`, clearcoat, transmission, IOR and similar extensions,
   each as an individual unit of verification.
+- WebP images through `EXT_texture_webp`, reaching consumers as standard images under
+  the [image asset contract](../adr/0001-image-assets.md), with the decoder selected in
+  an ADR.
 - Cameras and `KHR_lights_punctual` through standard USD schemas.
 - Wider external resource resolution through `ArResolver`, as need and safety
   are verified.
@@ -46,6 +49,9 @@ exist, and optimizations are based on measurements.
 
 Prioritize extensions by actual asset demand. Begin USD-to-glTF export only after
 defining a separate specification and quality goals.
+
+- KTX 1.0 images, reaching consumers as standard images like KTX2. No glTF extension
+  references KTX 1.0, so this first needs a decision on how an asset would use them.
 
 ## v1.0.0 conditions
 
