@@ -36,7 +36,8 @@ decisions in implementation or support claims:
 - MaterialX and UsdPreviewSurface node graphs, render contexts and actual
   support in target renderers.
 - Texture storage, cache lifetime and portable persistent asset paths.
-- Mesh sharing, animated-node placement, units, up axis and UV orientation.
+- Mesh sharing, animated-node placement, and renderer compatibility with the
+  authored stage metrics and UV orientation.
 - Current OpenStrata configuration/CI schemas, dependency acquisition,
   supported platform matrix and test infrastructure.
 
@@ -54,7 +55,9 @@ The [scene selection decision](../architecture/SCENE_SELECTION.md) is recorded
 and is connected to the importer. End-to-end local Windows tests cover both
 formats, hierarchy, transforms, selection, triangle meshes, UV sets and
 vertex color data with embedded and restricted local external buffers, and
-failed/successful reload.
+failed/successful reload. Both formats also have local coordinate-system
+tests covering Y-up, meters, hierarchical transforms and reference
+composition into a stage with different metrics.
 The [layer authoring decision](../architecture/LAYER_AUTHORING.md) was revised
 to temporary `SdfLayer` authoring after reload exposed an unsafe change-block
 interaction. Mesh support is limited to triangle primitives with

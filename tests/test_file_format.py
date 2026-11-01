@@ -175,6 +175,82 @@ class FileFormatTest(unittest.TestCase):
                     point = world.Transform(Gf.Vec3d(0, 0, 0))
                     self.assertTrue(Gf.IsClose(point, Gf.Vec3d(1, 0, 3), 1e-5), str(point))
 
+    def test_coordinate_system_and_reference_composition(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for extension in ("gltf", "glb"):
+                with self.subTest(extension=extension):
+                    path = pathlib.Path(directory) / ("coordinates." + extension)
+                    document, binary = mesh_document(extension)
+                    document["scenes"][0]["nodes"] = [0]
+                    document["nodes"] = [
+                        {
+                            "translation": [1, 2, 3],
+                            "rotation": [0, 0, 0.7071067811865476, 0.7071067811865476],
+                            "scale": [2, 3, 4],
+                            "children": [1],
+                        },
+                        {"mesh": 0, "matrix": [
+                            1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 1, 1,
+                        ]},
+                    ]
+                    write_asset(path, document, binary)
+                    stage = Usd.Stage.Open(str(path))
+                    layer = stage.GetRootLayer()
+                    self.assertTrue(layer.pseudoRoot.HasInfo("upAxis"))
+                    self.assertTrue(layer.pseudoRoot.HasInfo("metersPerUnit"))
+                    self.assertEqual(UsdGeom.GetStageUpAxis(stage), UsdGeom.Tokens.y)
+                    self.assertEqual(UsdGeom.GetStageMetersPerUnit(stage), 1.0)
+
+                    mesh_path = "/Asset/geo/Node_0/Node_1/Mesh_0/Primitive_0"
+                    mesh = UsdGeom.Mesh.Get(stage, mesh_path)
+                    points = list(mesh.GetPointsAttr().Get())
+                    self.assertEqual(points, [
+                        Gf.Vec3f(0, 0, 0), Gf.Vec3f(1, 0, 0), Gf.Vec3f(0, 1, 0),
+                    ])
+                    self.assertEqual(mesh.GetOrientationAttr().Get(), UsdGeom.Tokens.rightHanded)
+                    transform = UsdGeom.XformCache().GetLocalToWorldTransform(mesh.GetPrim())
+                    expected = ((1, 2, 7), (1, 4, 7), (-2, 2, 7))
+                    for point, wanted in zip(points, expected):
+                        actual = transform.Transform(Gf.Vec3d(point))
+                        self.assertTrue(Gf.IsClose(actual, Gf.Vec3d(*wanted), 1e-5), str(actual))
+
+                    host = Usd.Stage.CreateInMemory()
+                    UsdGeom.SetStageUpAxis(host, UsdGeom.Tokens.z)
+                    UsdGeom.SetStageMetersPerUnit(host, 0.01)
+                    reference = host.DefinePrim("/Model", "Xform")
+                    self.assertTrue(reference.GetReferences().AddReference(str(path)))
+                    self.assertEqual(UsdGeom.GetStageUpAxis(host), UsdGeom.Tokens.z)
+                    self.assertEqual(UsdGeom.GetStageMetersPerUnit(host), 0.01)
+                    referenced = UsdGeom.Mesh.Get(host, mesh_path.replace("/Asset", "/Model", 1))
+                    self.assertTrue(referenced)
+                    self.assertEqual(list(referenced.GetPointsAttr().Get()), points)
+                    referenced_transform = UsdGeom.XformCache().GetLocalToWorldTransform(
+                        referenced.GetPrim())
+                    for point, wanted in zip(referenced.GetPointsAttr().Get(), expected):
+                        actual = referenced_transform.Transform(Gf.Vec3d(point))
+                        self.assertTrue(Gf.IsClose(actual, Gf.Vec3d(*wanted), 1e-5), str(actual))
+
+                    corrective = UsdGeom.Xformable(reference)
+                    corrective.AddRotateXOp().Set(90)
+                    corrective.AddScaleOp().Set(Gf.Vec3f(100))
+                    corrected_transform = UsdGeom.XformCache().GetLocalToWorldTransform(
+                        referenced.GetPrim())
+                    corrected = ((100, -700, 200), (100, -700, 400), (-200, -700, 200))
+                    for point, wanted in zip(referenced.GetPointsAttr().Get(), corrected):
+                        actual = corrected_transform.Transform(Gf.Vec3d(point))
+                        self.assertTrue(Gf.IsClose(actual, Gf.Vec3d(*wanted), 1e-3), str(actual))
+
+                    self.assertTrue(layer.Reload(True))
+                    self.assertTrue(layer.pseudoRoot.HasInfo("upAxis"))
+                    self.assertTrue(layer.pseudoRoot.HasInfo("metersPerUnit"))
+                    self.assertEqual(UsdGeom.GetStageUpAxis(stage), UsdGeom.Tokens.y)
+                    self.assertEqual(UsdGeom.GetStageMetersPerUnit(stage), 1.0)
+                    self.assertEqual(list(mesh.GetPointsAttr().Get()), points)
+                    transform = UsdGeom.XformCache().GetLocalToWorldTransform(mesh.GetPrim())
+                    for point, wanted in zip(points, expected):
+                        actual = transform.Transform(Gf.Vec3d(point))
+                        self.assertTrue(Gf.IsClose(actual, Gf.Vec3d(*wanted), 1e-5), str(actual))
+
     def test_triangle_meshes(self):
         with tempfile.TemporaryDirectory() as directory:
             for extension in ("gltf", "glb"):
