@@ -60,6 +60,11 @@ non-indexed triangle strips and fans, including winding, degenerate triangles
 and reload. Both formats also have local coordinate-system
 tests covering Y-up, meters, hierarchical transforms and reference
 composition into a stage with different metrics.
+Local Windows tests also cover negative-scale parity, winding and normals for
+indexed and non-indexed triangles under hierarchical transforms and mirrored
+references, including reload. A separate local Windows usdview/Storm visual
+check covers a limited reflection and backface-culling fixture; see
+[scene conventions](../design/SCENE_CONVENTIONS.md#coordinate-system-and-units).
 The [layer authoring decision](../architecture/LAYER_AUTHORING.md) was revised
 to temporary `SdfLayer` authoring after reload exposed an unsafe change-block
 interaction. Mesh support is limited to triangles, triangle strips and fans with

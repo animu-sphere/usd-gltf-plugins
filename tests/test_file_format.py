@@ -905,6 +905,101 @@ class FileFormatTest(unittest.TestCase):
                     transform = UsdGeom.XformCache().GetLocalToWorldTransform(mesh.GetPrim())
                     self.assertLess(transform.GetDeterminant(), 0)
 
+    def test_hierarchical_reflection_winding_and_normals(self):
+        cases = (
+            (2, 1, ((1, -2, 3), (3, -2, 3), (1, -2, 6)), 1),
+            (-2, 1, ((1, -2, 3), (-1, -2, 3), (1, -2, 6)), -1),
+            (2, -1, ((1, -2, 3), (3, -2, 3), (1, -2, 0)), -1),
+            (-2, -1, ((1, -2, 3), (-1, -2, 3), (1, -2, 0)), 1),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            for extension in ("gltf", "glb"):
+                for parent_x, child_y, expected_points, parity in cases:
+                    with self.subTest(extension=extension, parent_x=parent_x, child_y=child_y):
+                        path = pathlib.Path(directory) / f"reflection_{parent_x}_{child_y}.{extension}"
+                        document, binary = mesh_document(extension)
+                        document["scenes"][0]["nodes"] = [0]
+                        document["nodes"] = [
+                            {
+                                "translation": [1, 2, 3],
+                                "rotation": [0.7071067811865476, 0, 0, 0.7071067811865476],
+                                "scale": [parent_x, 3, 4],
+                                "children": [1],
+                            },
+                            {"mesh": 0, "matrix": [
+                                1, 0, 0, 0, 0, child_y, 0, 0, 0, 0, 1, 0, 0, 0, 1, 1,
+                            ]},
+                        ]
+                        write_asset(path, document, binary)
+                        stage = Usd.Stage.Open(str(path))
+                        mesh_prefix = "/Asset/geo/Node_0/Node_1/Mesh_0"
+
+                        host = Usd.Stage.CreateInMemory()
+                        reference = host.DefinePrim("/Model", "Xform")
+                        self.assertTrue(reference.GetReferences().AddReference(str(path)))
+                        UsdGeom.Xformable(reference).AddScaleOp().Set(Gf.Vec3f(-1, 1, 1))
+
+                        for reload in (False, True):
+                            if reload:
+                                self.assertTrue(stage.GetRootLayer().Reload(True))
+                            for target, prefix, reflected in (
+                                (stage, mesh_prefix, False),
+                                (host, mesh_prefix.replace("/Asset", "/Model", 1), True),
+                            ):
+                                for primitive, indices, interpolation in (
+                                    (0, [2, 0, 1], UsdGeom.Tokens.vertex),
+                                    (1, [0, 1, 2], UsdGeom.Tokens.uniform),
+                                ):
+                                    mesh = UsdGeom.Mesh.Get(target, f"{prefix}/Primitive_{primitive}")
+                                    self.assertTrue(mesh)
+                                    self.assertEqual(mesh.GetOrientationAttr().Get(), UsdGeom.Tokens.rightHanded)
+                                    self.assertEqual(list(mesh.GetFaceVertexCountsAttr().Get()), [3])
+                                    self.assertEqual(list(mesh.GetFaceVertexIndicesAttr().Get()), indices)
+                                    self.assertEqual(mesh.GetNormalsInterpolation(), interpolation)
+                                    normals = list(mesh.GetNormalsAttr().Get())
+                                    self.assertEqual(normals, [Gf.Vec3f(0, 0, 1)] *
+                                                     (3 if primitive == 0 else 1))
+
+                                    transform = UsdGeom.XformCache().GetLocalToWorldTransform(mesh.GetPrim())
+                                    world_parity = -parity if reflected else parity
+                                    self.assertEqual(1 if transform.GetDeterminant() > 0 else -1, world_parity)
+                                    points = [transform.Transform(Gf.Vec3d(p))
+                                              for p in mesh.GetPointsAttr().Get()]
+                                    self.assertEqual(len(points), 3)
+                                    for actual, expected in zip(points, expected_points):
+                                        wanted = Gf.Vec3d(-expected[0] if reflected else expected[0],
+                                                          expected[1], expected[2])
+                                        self.assertTrue(Gf.IsClose(actual, wanted, 1e-5), str(actual))
+
+                                    normal = transform.GetInverse().GetTranspose().TransformDir(
+                                        Gf.Vec3d(normals[0])).GetNormalized()
+                                    self.assertTrue(Gf.IsClose(normal, Gf.Vec3d(0, -1, 0), 1e-5), str(normal))
+                                    a, b, c = (points[index] for index in indices)
+                                    face_normal = Gf.Cross(b - a, c - a).GetNormalized()
+                                    self.assertTrue(Gf.IsClose(face_normal, world_parity * normal, 1e-5),
+                                                    str(face_normal))
+
+    def test_reflection_view_fixture(self):
+        path = pathlib.Path(__file__).parent / "fixtures" / "reflections.gltf"
+        stage = Usd.Stage.Open(str(path))
+        cases = (
+            ("Node_0/Mesh_0", 1, UsdGeom.Tokens.vertex, [0, 1, 2]),
+            ("Node_1/Mesh_0", -1, UsdGeom.Tokens.vertex, [0, 1, 2]),
+            ("Node_2/Node_4/Mesh_1", -1, UsdGeom.Tokens.uniform, [0, 1, 2]),
+            ("Node_3/Node_5/Mesh_1", 1, UsdGeom.Tokens.uniform, [0, 1, 2]),
+            ("Node_6/Mesh_2", 1, UsdGeom.Tokens.vertex, [0, 2, 1]),
+        )
+        for path, parity, interpolation, indices in cases:
+            with self.subTest(path=path):
+                mesh = UsdGeom.Mesh.Get(stage, f"/Asset/geo/{path}/Primitive_0")
+                self.assertTrue(mesh)
+                self.assertFalse(mesh.GetDoubleSidedAttr().Get())
+                self.assertEqual(mesh.GetOrientationAttr().Get(), UsdGeom.Tokens.rightHanded)
+                self.assertEqual(list(mesh.GetFaceVertexIndicesAttr().Get()), indices)
+                self.assertEqual(mesh.GetNormalsInterpolation(), interpolation)
+                transform = UsdGeom.XformCache().GetLocalToWorldTransform(mesh.GetPrim())
+                self.assertEqual(1 if transform.GetDeterminant() > 0 else -1, parity)
+
     def test_nonfinite_position_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             for extension in ("gltf", "glb"):
