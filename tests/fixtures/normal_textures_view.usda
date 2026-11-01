@@ -1,0 +1,12 @@
+#usda 1.0
+
+# A session layer for rendering normal_textures.gltf and its reference. The camera's
+# light is off-axis, so that opposite normal tilts differ in brightness.
+def Camera "Cam"
+{
+    float focalLength = 50
+    float horizontalAperture = 36
+    float verticalAperture = 12
+    matrix4d xformOp:transform = ( (0.894427190999916, 0, -0.447213595499958, 0), (-0.2706608351903853, 0.7960612799717215, -0.5413216703807706, 0), (0.3560094272544522, 0.6052160263325688, 0.7120188545089045, -0), (24.764414799195897, 27.12950515863303, 31.328829598391803, 1) )
+    uniform token[] xformOpOrder = ["xformOp:transform"]
+}

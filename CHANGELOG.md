@@ -16,6 +16,8 @@ here.
   files. A package resolver serves embedded images from the source file.
 - Metallic-roughness, occlusion and emissive textures, with color and non-color
   images read distinctly.
+- Normal textures. Assets with TANGENT now import, retaining it as the
+  `gltf_tangent` primvar; renderers derive the tangent frame.
 - Apache-2.0 license, installed with the plugin, and community health files.
 - Install smoke test and documentation consistency test.
 - clang-format configuration, applied to the project's C++ sources.

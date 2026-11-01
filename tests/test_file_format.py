@@ -863,7 +863,7 @@ class FileFormatTest(unittest.TestCase):
             "index count": "triangle index count",
             "normal count": "normal and position counts",
             "stride": "bufferView",
-            "material": "not supported",
+            "material": "texture coordinate set the primitive does not have",
             "attribute": "unsupported or repeated vertex attribute",
             "mode": "not supported",
         }
@@ -1678,6 +1678,7 @@ class FileFormatTest(unittest.TestCase):
                     document["textures"] = [{"source": 0}, {"source": 1}]
                     document["materials"] = [{
                         "pbrMetallicRoughness": {"metallicRoughnessTexture": {"index": 0}},
+                        "normalTexture": {"index": 0},
                         "occlusionTexture": {"index": 0},
                         "emissiveTexture": {"index": 0},
                     }]
@@ -1692,10 +1693,11 @@ class FileFormatTest(unittest.TestCase):
 
                 def slots(material):
                     return (("metallic", material["pbrMetallicRoughness"]["metallicRoughnessTexture"]),
+                            ("normal", material["normalTexture"]),
                             ("occlusion", material["occlusionTexture"]),
                             ("emissive", material["emissiveTexture"]))
 
-                for index in range(3):
+                for index in range(4):
                     name = slots(pbr_document()[0]["materials"][0])[index][0]
                     for case, change, message in (
                         ("uv set", {"texCoord": 3}, "texture coordinate set the primitive does not have"),
@@ -1715,6 +1717,162 @@ class FileFormatTest(unittest.TestCase):
                         invalid["materials"][0]["occlusionTexture"]["strength"] = strength
                         write_asset(path, invalid, invalid_binary)
                         with self.assertRaisesRegex(Tf.ErrorException, "occlusion strength"):
+                            layer.Reload(True)
+                        self.assertEqual(layer_text(layer), before)
+
+                with self.subTest(extension=extension, scale="overflow"):
+                    invalid, invalid_binary = pbr_document()
+                    invalid["materials"][0]["normalTexture"]["scale"] = 1e39
+                    write_asset(path, invalid, invalid_binary)
+                    with self.assertRaisesRegex(Tf.ErrorException, "normal scale is non-finite|cannot parse"):
+                        layer.Reload(True)
+                    self.assertEqual(layer_text(layer), before)
+
+    def test_normal_texture_networks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            for extension in ("gltf", "glb"):
+                with self.subTest(extension=extension):
+                    path = root / ("normal." + extension)
+                    document, binary = textured_document(extension, None, PNG)
+                    document["samplers"] = [{"wrapS": 33648, "wrapT": 33071}]
+                    document["textures"].append({"source": 0, "sampler": 0})
+                    document["materials"][0]["normalTexture"] = {"index": 1, "texCoord": 1, "scale": 0.5}
+                    document["materials"].append({"normalTexture": {"index": 0}})
+                    document["meshes"][0]["primitives"][1]["material"] = 1
+                    write_asset(path, document, binary)
+                    stage = Usd.Stage.Open(str(path))
+                    usd_material = UsdShade.Material.Get(stage, "/Asset/mtl/Material_0")
+
+                    def source_of(shader, name):
+                        source, output, _ = shader.GetInput(name).GetConnectedSource()
+                        return UsdShade.Shader(source.GetPrim()), output
+
+                    preview, _, _ = usd_material.ComputeSurfaceSource()
+                    self.assertEqual(preview.GetInput("normal").GetTypeName(), Sdf.ValueTypeNames.Normal3f)
+                    self.assertEqual(preview.GetInput("normal").Get(), Gf.Vec3f(0, 0, 1))
+                    texture, output = source_of(preview, "normal")
+                    self.assertEqual(texture.GetPath().name, "normalTexture")
+                    self.assertEqual(output, "rgb")
+                    self.assertEqual(texture.GetInput("sourceColorSpace").Get(), "raw")
+                    self.assertEqual(texture.GetInput("scale").Get(), Gf.Vec4f(1, 1, 2, 1))
+                    self.assertEqual(texture.GetInput("bias").Get(), Gf.Vec4f(-0.5, -0.5, -1, 0))
+                    self.assertEqual(texture.GetInput("wrapS").Get(), "mirror")
+                    self.assertEqual(texture.GetInput("wrapT").Get(), "clamp")
+                    self.assertEqual(source_of(texture, "st")[0].GetInput("varname").Get(), "st1")
+                    asset = texture.GetInput("file").Get()
+                    self.assertEqual(asset_bytes(asset.resolvedPath), PNG)
+
+                    mtlx, _, _ = usd_material.ComputeSurfaceSource("mtlx")
+                    self.assertEqual(mtlx.GetInput("normal").GetTypeName(), Sdf.ValueTypeNames.Vector3f)
+                    normal_map, _ = source_of(mtlx, "normal")
+                    self.assertEqual(normal_map.GetPath().name, "normalMap")
+                    self.assertEqual(normal_map.GetIdAttr().Get(), "ND_normalmap_float")
+                    self.assertAlmostEqual(normal_map.GetInput("scale").Get(), 0.5)
+                    xyz, _ = source_of(normal_map, "in")
+                    self.assertEqual(xyz.GetIdAttr().Get(), "ND_convert_vector4_vector3")
+                    image, _ = source_of(xyz, "in")
+                    self.assertEqual(image.GetPath().name, "normalImage")
+                    self.assertEqual(image.GetIdAttr().Get(), "ND_image_vector4")
+                    self.assertFalse(image.GetInput("file").GetAttr().HasColorSpace())
+                    self.assertEqual(image.GetInput("uaddressmode").Get(), "mirror")
+                    self.assertEqual(image.GetInput("vaddressmode").Get(), "clamp")
+                    self.assertEqual(source_of(image, "texcoord")[0].GetInput("geomprop").Get(), "st1")
+                    self.assertEqual(asset_bytes(image.GetInput("file").Get().resolvedPath), PNG)
+
+                    # The default scale needs no terms of its own.
+                    plain = UsdShade.Material.Get(stage, "/Asset/mtl/Material_1")
+                    plain_texture, _ = source_of(plain.ComputeSurfaceSource()[0], "normal")
+                    self.assertEqual(plain_texture.GetInput("scale").Get(), Gf.Vec4f(2, 2, 2, 1))
+                    self.assertEqual(plain_texture.GetInput("bias").Get(), Gf.Vec4f(-1, -1, -1, 0))
+                    plain_map, _ = source_of(plain.ComputeSurfaceSource("mtlx")[0], "normal")
+                    self.assertFalse(plain_map.GetInput("scale"))
+
+                    stage.GetRootLayer().Reload(True)
+                    self.assertEqual(asset_bytes(texture.GetInput("file").Get().resolvedPath), PNG)
+
+    def test_materials_without_a_normal_texture_author_no_normal(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "plain.gltf"
+            document, binary = textured_document("gltf", None, PNG)
+            write_asset(path, document, binary)
+            stage = Usd.Stage.Open(str(path))
+            material = UsdShade.Material.Get(stage, "/Asset/mtl/Material_0")
+            self.assertFalse(material.ComputeSurfaceSource()[0].GetInput("normal"))
+            self.assertFalse(material.ComputeSurfaceSource("mtlx")[0].GetInput("normal"))
+
+    def test_normal_textures_view_fixture(self):
+        fixtures = pathlib.Path(__file__).parent / "fixtures"
+        stage = Usd.Stage.Open(str(fixtures / "normal_textures.gltf"))
+        reference = Usd.Stage.Open(str(fixtures / "normal_textures_reference.gltf"))
+        count = len(stage.GetPrimAtPath("/Asset/mtl").GetChildren())
+        self.assertEqual(len(reference.GetPrimAtPath("/Asset/mtl").GetChildren()), count)
+        for index in range(count):
+            material = stage.GetPrimAtPath(f"/Asset/mtl/Material_{index}").GetPath()
+            texture = UsdShade.Shader.Get(stage, material.AppendPath(Sdf.Path("preview/normalTexture")))
+            image = UsdShade.Shader.Get(stage, material.AppendPath(Sdf.Path("mtlx/normalImage")))
+            for shader in (texture, image):
+                asset = shader.GetInput("file").Get()
+                self.assertTrue(asset.resolvedPath, asset.path)
+                self.assertTrue(asset_bytes(asset.resolvedPath))
+            self.assertFalse(reference.GetPrimAtPath(material.AppendPath(Sdf.Path("preview/normalTexture"))))
+
+    def test_tangents_are_retained(self):
+        values = ((1, 0, 0, 1), (0, 1, 0, -1), (0, 0, 1, 1))
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            for extension in ("gltf", "glb"):
+                with self.subTest(extension=extension):
+                    path = root / ("tangent." + extension)
+                    document, binary = uv_document(extension)
+                    binary = append_view(document, binary, extension,
+                                         struct.pack("<12f", *[c for v in values for c in v]))
+                    document["accessors"].append({"bufferView": len(document["bufferViews"]) - 1,
+                                                  "componentType": 5126, "count": 3, "type": "VEC4"})
+                    primitives = document["meshes"][0]["primitives"]
+                    primitives[0]["attributes"]["TANGENT"] = len(document["accessors"]) - 1
+                    write_asset(path, document, binary)
+                    stage = Usd.Stage.Open(str(path))
+                    mesh = stage.GetPrimAtPath("/Asset/geo/Node_0/Mesh_0/Primitive_0")
+                    primvar = UsdGeom.PrimvarsAPI(mesh).GetPrimvar("gltf_tangent")
+                    self.assertEqual(primvar.GetTypeName(), Sdf.ValueTypeNames.Float4Array)
+                    self.assertEqual(primvar.GetInterpolation(), UsdGeom.Tokens.vertex)
+                    self.assertEqual([tuple(v) for v in primvar.Get()], list(values))
+                    other = stage.GetPrimAtPath("/Asset/geo/Node_0/Mesh_0/Primitive_1")
+                    self.assertFalse(UsdGeom.PrimvarsAPI(other).GetPrimvar("gltf_tangent"))
+                    self.assertTrue(stage.GetRootLayer().Reload(True))
+                    self.assertEqual([tuple(v) for v in primvar.Get()], list(values))
+
+    def test_tangent_failures_preserve_layer(self):
+        good = struct.pack("<12f", *((1, 0, 0, 1) * 3))
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            for extension in ("gltf", "glb"):
+                path = root / ("tangent." + extension)
+
+                def tangent_document(data=good, **accessor):
+                    document, binary = uv_document(extension)
+                    binary = append_view(document, binary, extension, data)
+                    document["accessors"].append({"bufferView": len(document["bufferViews"]) - 1,
+                                                  "componentType": 5126, "count": 3, "type": "VEC4", **accessor})
+                    document["meshes"][0]["primitives"][0]["attributes"]["TANGENT"] = (
+                        len(document["accessors"]) - 1)
+                    return document, binary
+
+                write_asset(path, *tangent_document())
+                stage = Usd.Stage.Open(str(path))
+                layer = stage.GetRootLayer()
+                before = layer_text(layer)
+                for case, arguments, message in (
+                    ("type", {"type": "VEC3"}, "invalid type"),
+                    ("component", {"componentType": 5123}, "invalid type"),
+                    ("count", {"count": 2}, "tangent and position counts differ"),
+                    ("non-finite", {"data": struct.pack("<12f", *((1, 0, 0, 1) * 2), float("nan"), 0, 0, 1)},
+                     "tangent contains a non-finite value"),
+                ):
+                    with self.subTest(extension=extension, case=case):
+                        write_asset(path, *tangent_document(**arguments))
+                        with self.assertRaisesRegex(Tf.ErrorException, message):
                             layer.Reload(True)
                         self.assertEqual(layer_text(layer), before)
 
@@ -1868,8 +2026,6 @@ class FileFormatTest(unittest.TestCase):
                             message = "material .* factor is non-finite or out of range"
                         elif case == "alpha cutoff":
                             message = "material alpha cutoff is non-finite or negative"
-                        elif case == "normal texture":
-                            message = "material normal textures are not supported"
                         else:
                             message = "texture coordinate set the primitive does not have"
                         with self.assertRaisesRegex(Tf.ErrorException, message):

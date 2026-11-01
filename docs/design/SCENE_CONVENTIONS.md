@@ -29,8 +29,8 @@ retain original names as display names or equivalent metadata. Test name
 stability. Do not prescribe `/Asset/rig` or `/Asset/anim` as mandatory:
 their placement must be decided when UsdSkel and animation are designed.
 
-Mesh primitives use float POSITION and optional float NORMAL, TEXCOORD_n and
-COLOR_0 accessors. Accessors may be interleaved. Indices are glTF unsigned
+Mesh primitives use float POSITION and optional float NORMAL, TANGENT, TEXCOORD_n
+and COLOR_0 accessors. Accessors may be interleaved. Indices are glTF unsigned
 byte, unsigned short or unsigned int. USD subdivision is disabled and winding
 remains right-handed; strips and fans are expanded into triangles, including
 degenerate triangles, with alternating strip winding. Absent normals are
@@ -72,6 +72,13 @@ the [glTF specification](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.ht
 and the [UsdPreviewSurface specification](https://openusd.org/release/spec_usdpreviewsurface.html).
 Material and texture readers must consume these converted coordinates without
 another flip.
+
+## Tangents
+
+TANGENT must use VEC4 floats with the same count as POSITION, and finite values. It
+is authored unchanged as the vertex-interpolated `float4[]` primvar `gltf_tangent`:
+XYZ is the tangent and W the bitangent sign, as glTF defines them. Flipping V does
+not change these values. Material graphs [do not read this primvar](../adr/0004-normal-textures-and-tangents.md#tangents).
 
 ## Vertex colors
 
