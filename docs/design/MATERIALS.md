@@ -26,6 +26,11 @@ rendering in each target renderer as well as network structure.
 | Alpha mode and cutoff | Preserve OPAQUE, MASK and BLEND semantics where possible |
 | `doubleSided` | Keep UsdGeom sidedness and material behavior consistent |
 
+For vertex colors, multiply base color by the linear `displayColor` primvar
+and use the retained `gltf:colorAlpha` primvar when present (otherwise 1)
+for alpha, subject to the material's alpha mode. See
+[scene conventions](SCENE_CONVENTIONS.md#vertex-colors).
+
 Distinguish color data (base color and emissive) from non-color data
 (metallic, roughness, normal and occlusion). Apply `KHR_texture_transform`
 to UVs. Document approximations: glTF and MaterialX BRDFs do not match

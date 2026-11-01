@@ -6,7 +6,7 @@ at an early implementation stage; only a limited import subset is verified.
 | Capability | Status | Intended direction |
 | --- | --- | --- |
 | `.gltf` / `.glb` file-format registration and import | Node and triangle-mesh subsets open and reload in local Windows tests; unsupported selected content fails explicitly | [Import pipeline](../architecture/IMPORT_PIPELINE.md) |
-| Scene, nodes, transforms, meshes and vertex attributes | Scene selection, hierarchy, transforms, indexed/non-indexed triangles, positions, normals and UV sets implemented for embedded and restricted local external buffers; other topology and attributes are not | [Scene conventions](../design/SCENE_CONVENTIONS.md) |
+| Scene, nodes, transforms, meshes and vertex attributes | Scene selection, hierarchy, transforms, indexed/non-indexed triangles, positions, normals, UV sets and COLOR_0 data implemented for embedded and restricted local external buffers; other topology and attributes are not | [Scene conventions](../design/SCENE_CONVENTIONS.md) |
 | MaterialX and UsdPreviewSurface PBR and bindings | Not implemented | [Materials](../design/MATERIALS.md) |
 | PNG/JPEG, KTX2, image resolution and cache | Not implemented | [Textures](../design/TEXTURES.md) |
 | Animation, skinning, morphs, cameras and lights | Not implemented | Later phase |

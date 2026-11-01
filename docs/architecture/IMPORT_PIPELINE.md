@@ -1,8 +1,8 @@
 # Import pipeline
 
 Status: **early implementation**. The importer opens selected nodes, transforms
-and a limited triangle-mesh subset including UVs with embedded or local external buffers;
-other asset content is not implemented.
+and a limited triangle-mesh subset including UVs and vertex colors with
+embedded or local external buffers; other asset content is not implemented.
 
 ```text
 .gltf / .glb

@@ -109,6 +109,37 @@ def uv_document(extension, external=False):
     return document, binary
 
 
+def color_document(extension, component_type, components, external=False):
+    document, binary = mesh_document("glb")
+    binary += b"\0" * (-len(binary) % 4)
+    color_offset = len(binary)
+    fmt, maximum = {5126: ("f", 1), 5121: ("B", 255), 5123: ("H", 65535)}[component_type]
+    stride = (struct.calcsize(fmt) * components + 3) & ~3
+    raw_colors = ((0, maximum, 0, maximum),
+                  (maximum, 0, maximum, 0),
+                  (maximum // 2 if maximum > 1 else 0.5, maximum, 0,
+                   maximum // 2 if maximum > 1 else 0.5))
+    for color in raw_colors:
+        packed = struct.pack("<" + fmt * components, *color[:components])
+        binary += packed + b"\0" * (stride - len(packed))
+    document["buffers"][0]["byteLength"] = len(binary)
+    document["bufferViews"].append({
+        "buffer": 0, "byteOffset": color_offset, "byteLength": stride * 3, "byteStride": stride,
+    })
+    document["accessors"].append({
+        "bufferView": 2, "componentType": component_type, "count": 3,
+        "type": f"VEC{components}", "normalized": component_type != 5126,
+    })
+    document["meshes"][0]["primitives"][0]["attributes"]["COLOR_0"] = 3
+    document["meshes"][0]["primitives"][1]["attributes"]["COLOR_0"] = 3
+    if external:
+        document["buffers"][0]["uri"] = "mesh.bin"
+    elif extension == "gltf":
+        document["buffers"][0]["uri"] = "data:application/octet-stream;base64," + (
+            base64.b64encode(binary).decode())
+    return document, binary
+
+
 class FileFormatTest(unittest.TestCase):
     def test_registration_and_capabilities(self):
         for extension in ("gltf", "glb"):
@@ -164,6 +195,8 @@ class FileFormatTest(unittest.TestCase):
                             self.assertEqual(list(mesh.GetFaceVertexIndicesAttr().Get()), [2, 0, 1])
                             self.assertEqual(list(mesh.GetNormalsAttr().Get()), [Gf.Vec3f(0, 0, 1)] * 3)
                             self.assertEqual(mesh.GetNormalsInterpolation(), UsdGeom.Tokens.vertex)
+                            self.assertFalse(UsdGeom.PrimvarsAPI(mesh).GetPrimvar("displayColor").HasAuthoredValue())
+                            self.assertFalse(UsdGeom.PrimvarsAPI(mesh).GetPrimvar("gltf:colorAlpha"))
                             self.assertEqual(mesh.GetSubdivisionSchemeAttr().Get(), UsdGeom.Tokens.none)
                             self.assertEqual(mesh.GetOrientationAttr().Get(), UsdGeom.Tokens.rightHanded)
                             self.assertFalse(UsdGeom.PrimvarsAPI(mesh).GetPrimvar("st"))
@@ -288,6 +321,119 @@ class FileFormatTest(unittest.TestCase):
                 self.assertEqual(UsdGeom.PrimvarsAPI(mesh).GetPrimvar("st").Get()[0],
                                  Gf.Vec2f(0.75, 1.5))
 
+    def test_vertex_colors(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            for extension in ("gltf", "glb"):
+                for external in (False, True):
+                    for component_type in (5126, 5121, 5123):
+                        for components in (3, 4):
+                            with self.subTest(extension=extension, external=external,
+                                              component_type=component_type, components=components):
+                                path = root / f"color_{external}_{component_type}_{components}.{extension}"
+                                document, binary = color_document(extension, component_type, components, external)
+                                if external:
+                                    (root / "mesh.bin").write_bytes(binary)
+                                write_asset(path, document, binary if extension == "glb" and not external else None)
+                                stage = Usd.Stage.Open(str(path))
+                                half = {5126: 0.5, 5121: 127 / 255, 5123: 32767 / 65535}[component_type]
+                                expected = (Gf.Vec3f(0, 1, 0), Gf.Vec3f(1, 0, 1), Gf.Vec3f(half, 1, 0))
+                                for node in (0, 1):
+                                    for primitive in (0, 1):
+                                        mesh = UsdGeom.Mesh.Get(
+                                            stage, f"/Asset/geo/Node_{node}/Mesh_0/Primitive_{primitive}")
+                                        api = UsdGeom.PrimvarsAPI(mesh)
+                                        self.assertEqual(list(mesh.GetFaceVertexIndicesAttr().Get()),
+                                                         [2, 0, 1] if primitive == 0 else [0, 1, 2])
+                                        color = api.GetPrimvar("displayColor")
+                                        self.assertEqual(color.GetTypeName(), Sdf.ValueTypeNames.Color3fArray)
+                                        self.assertEqual(color.GetInterpolation(), UsdGeom.Tokens.vertex)
+                                        self.assertFalse(color.IsIndexed())
+                                        self.assertEqual(list(color.Get()), list(expected))
+                                        alpha = api.GetPrimvar("gltf:colorAlpha")
+                                        if components == 4:
+                                            self.assertEqual(alpha.GetTypeName(), Sdf.ValueTypeNames.FloatArray)
+                                            self.assertEqual(alpha.GetInterpolation(), UsdGeom.Tokens.vertex)
+                                            self.assertFalse(alpha.IsIndexed())
+                                            for actual, wanted in zip(alpha.Get(), (1, 0, half)):
+                                                self.assertAlmostEqual(actual, wanted, places=6)
+                                        else:
+                                            self.assertFalse(alpha)
+                                        self.assertFalse(api.GetPrimvar("displayOpacity").HasAuthoredValue())
+
+    def test_vertex_color_failures_preserve_layer(self):
+        def mutate(document, name):
+            accessor = document["accessors"][3]
+            if name == "count":
+                accessor["count"] = 2
+            elif name == "type":
+                accessor["type"] = "VEC2"
+            elif name == "normalized integer":
+                accessor["normalized"] = False
+            elif name == "component":
+                accessor["componentType"] = 5122
+            elif name == "accessor":
+                document["meshes"][0]["primitives"][0]["attributes"]["COLOR_0"] = 99
+            elif name == "bounds":
+                document["bufferViews"][2]["byteLength"] = 4
+            elif name == "sparse":
+                accessor["sparse"] = {
+                    "count": 1, "indices": {"bufferView": 1, "componentType": 5121},
+                    "values": {"bufferView": 2},
+                }
+
+        cases = {
+            "count": "vertex color and position counts differ",
+            "type": "vertex color accessor has an invalid type",
+            "normalized integer": "invalid type",
+            "component": "unsupported component type",
+            "accessor": "accessor index",
+            "bounds": "bufferView",
+            "sparse": "sparse",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            for extension in ("gltf", "glb"):
+                path = root / ("color." + extension)
+                document, binary = color_document(extension, 5121, 4, external=True)
+                (root / "mesh.bin").write_bytes(binary)
+                write_asset(path, document)
+                stage = Usd.Stage.Open(str(path))
+                layer = stage.GetRootLayer()
+                before = layer.ExportToString()
+                for name, message in cases.items():
+                    with self.subTest(extension=extension, name=name):
+                        invalid, _ = color_document(extension, 5121, 4, external=True)
+                        mutate(invalid, name)
+                        write_asset(path, invalid)
+                        with self.assertRaisesRegex(Tf.ErrorException, message):
+                            layer.Reload(True)
+                        self.assertEqual(layer.ExportToString(), before)
+                floats, float_binary = color_document(extension, 5126, 4, external=True)
+                offset = floats["bufferViews"][2]["byteOffset"]
+                for component in (0, 3):
+                    for value in (float("nan"), float("inf"), -0.01, 1.01):
+                        with self.subTest(extension=extension, component=component, value=value):
+                            invalid = bytearray(float_binary)
+                            position = offset + component * 4
+                            invalid[position:position + 4] = struct.pack("<f", value)
+                            (root / "mesh.bin").write_bytes(invalid)
+                            write_asset(path, floats)
+                            with self.assertRaisesRegex(Tf.ErrorException, "non-finite or out-of-range"):
+                                layer.Reload(True)
+                            self.assertEqual(layer.ExportToString(), before)
+                updated = bytearray(binary)
+                updated[document["bufferViews"][2]["byteOffset"]] = 128
+                updated[document["bufferViews"][2]["byteOffset"] + 3] = 64
+                (root / "mesh.bin").write_bytes(updated)
+                write_asset(path, document)
+                self.assertTrue(layer.Reload(True))
+                mesh = stage.GetPrimAtPath("/Asset/geo/Node_0/Mesh_0/Primitive_0")
+                self.assertAlmostEqual(
+                    UsdGeom.PrimvarsAPI(mesh).GetPrimvar("displayColor").Get()[0][0], 128 / 255, places=6)
+                self.assertAlmostEqual(
+                    UsdGeom.PrimvarsAPI(mesh).GetPrimvar("gltf:colorAlpha").Get()[0], 64 / 255, places=6)
+
     def test_mesh_failures_and_reload_preservation(self):
         def mutate(document, name):
             primitive = document["meshes"][0]["primitives"][0]
@@ -323,7 +469,7 @@ class FileFormatTest(unittest.TestCase):
                 primitive["material"] = 0
                 document["materials"] = [{}]
             elif name == "attribute":
-                primitive["attributes"]["COLOR_0"] = 0
+                primitive["attributes"]["COLOR_1"] = 0
             elif name == "mode":
                 primitive["mode"] = 1
 
