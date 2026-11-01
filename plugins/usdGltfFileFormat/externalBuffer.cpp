@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 #include "externalBuffer.h"
 
 #include <simdjson.h>

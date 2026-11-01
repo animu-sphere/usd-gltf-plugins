@@ -1,5 +1,8 @@
 # OpenUSD glTF Plugins
 
+[![CI](https://github.com/animu-sphere/usd-gltf-plugins/actions/workflows/ost-source-ci.yml/badge.svg?branch=main)](https://github.com/animu-sphere/usd-gltf-plugins/actions/workflows/ost-source-ci.yml?query=branch%3Amain)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-4b8bbe.svg)](LICENSE)
+
 An independent OpenStrata Project repository for opening glTF 2.0 (`.gltf` /
 `.glb`) files as ordinary OpenUSD scenes through `Usd.Stage.Open`, using
 fastgltf and standard USD schemas. It requires no custom USD schema or imaging
@@ -57,10 +60,19 @@ ost plugin test plugins/usdGltfFileFormat --up-to 2
 - [Documentation index](docs/README.md)
 - [Implementation policy](docs/design/IMPLEMENTATION_POLICY.md)
 - [Roadmap](docs/roadmap/README.md)
+- [Changelog](CHANGELOG.md)
+
+## Contributing
+
+See the [contributing guide](CONTRIBUTING.md) and the
+[Code of Conduct](CODE_OF_CONDUCT.md). Please report vulnerabilities privately
+as described in the [security policy](SECURITY.md).
 
 ## Compatibility and licenses
 
 [Tested environments](docs/reference/CAPABILITY_MATRIX.md#tested-environments)
-are listed in the capability matrix. Vendored dependency licenses are in the
-[third-party notices](third_party/NOTICES.txt), which are also installed under
-`share/licenses/usd-gltf-plugins`.
+are listed in the capability matrix.
+
+This project is licensed under the [Apache License 2.0](LICENSE). Vendored
+dependency licenses are in the [third-party notices](third_party/NOTICES.txt).
+Both are installed under `share/licenses/usd-gltf-plugins`.

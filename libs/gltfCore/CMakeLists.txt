@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 add_library(usd_gltf_core STATIC
     accessor.cpp
     parse.cpp

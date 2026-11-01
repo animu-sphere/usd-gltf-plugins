@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 # Finds OpenUSD and adds the vendored glTF parsing libraries. Included by both
 # build entry points: the repository root and the standalone plugin bundle.
 

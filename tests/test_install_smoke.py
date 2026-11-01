@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 import os
 import pathlib
 import subprocess
@@ -32,8 +33,9 @@ class InstallSmokeTest(unittest.TestCase):
                 command += ["--config", os.environ["USD_GLTF_TEST_CONFIG"]]
             subprocess.run(command, check=True, capture_output=True, text=True)
             registration = prefix / "plugin" / "resources" / "usdGltfFileFormat"
+            licenses = prefix / "share" / "licenses" / "usd-gltf-plugins"
             for path in (registration / "plugInfo.json", registration / "NOTICES.txt",
-                         prefix / "share" / "licenses" / "usd-gltf-plugins" / "NOTICES.txt"):
+                         licenses / "LICENSE", licenses / "NOTICES.txt"):
                 self.assertTrue(path.is_file(), path)
 
             environment = dict(os.environ, PXR_PLUGINPATH_NAME=str(registration))

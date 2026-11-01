@@ -4,6 +4,7 @@ plugin:
   name: usdGltfFileFormat
   version: 0.1.0
   kind: usd-fileformat
+license: Apache-2.0
 runtime:
   openusd: "==26.08"
   cxx_abi: inherit

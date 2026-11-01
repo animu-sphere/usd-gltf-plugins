@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
 add_executable(fastgltf_smoke fastgltf_smoke.cpp)
