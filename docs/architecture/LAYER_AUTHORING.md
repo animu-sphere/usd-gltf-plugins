@@ -1,7 +1,8 @@
 # Layer authoring decision
 
-Status: revised and implemented for the current scene subset. Evaluated
-locally on Windows with OpenUSD 26.08.
+Decision record, revised 2026-11-01. The evidence below was gathered locally on
+Windows with OpenUSD 26.08 when the decision was made. The
+[capability matrix](../reference/CAPABILITY_MATRIX.md) records current results.
 
 ## Decision
 
@@ -15,8 +16,8 @@ scene authoring.
 This is a publication boundary, not a general transaction guarantee:
 conversion must check all failures before transfer, and a failure during
 transfer itself is not guaranteed to be atomic. Texture files and other
-external resources are not covered by this layer-level approach; their
-lifetime and failure handling remain open.
+external resources are not covered by this layer-level approach; see
+[TEXTURES](../design/TEXTURES.md#cache-and-asset-lifetime).
 
 ## Investigation
 
@@ -39,7 +40,5 @@ during `Read`, at the cost of explicitly maintaining schema-compatible specs,
 attribute types, defaults and metadata.
 
 The end-to-end plugin tests exercise both formats, failed reload without
-publication, and successful reload on an existing stage, including the
-triangle-mesh subset, including local external buffers. They do not prove
-recovery from every USD error. Image handling and results on other platforms
-remain unverified.
+publication, and successful reload on an existing stage. They do not prove
+recovery from every USD error.

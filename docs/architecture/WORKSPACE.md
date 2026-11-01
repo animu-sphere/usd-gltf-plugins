@@ -1,54 +1,62 @@
 # Workspace architecture
 
-Status: **partially started**. The registration scaffold is an OpenStrata
-workspace member and supports both a root CMake build and a standalone bundle
-build. The remaining components and dependency directions are planned.
-
-## Proposed layout
+## Layout
 
 ```text
 usd-gltf-plugins/
-  .github/workflows/       CI
-  cmake/                   shared build support
+  .github/workflows/       generated CI workflow
+  cmake/                   shared dependency setup for both build entry points
   docs/                    project documentation
   libs/
     gltfCore/              parsing and safe glTF access
-    gltfTexture/           image resolution and conversion
+    gltfTexture/           image resolution and conversion; added with images
     gltfUsd/               USD scene translation
   plugins/
-    usdGltfFileFormat/     OpenUSD file-format entry point
+    usdGltfFileFormat/     OpenUSD file-format entry point and bundle manifest
   tools/
-    gltfConvert/           optional later development/CLI tool
+    gltfConvert/           only if a CLI is needed
   tests/
     fixtures/
-    unit/
-    integration/
-  third_party/             only if needed
+  third_party/             vendored dependencies
 ```
 
-The root contains CMake and OpenStrata workspace configuration, a CI matrix
-and a generated GitHub Actions workflow. The Windows, Linux and macOS
-pull-request cells passed the workspace build and both scaffold tests in
-[run 41289600882](https://github.com/animu-sphere/usd-gltf-plugins/actions/runs/41289600882).
-This does not verify the later importer or renderer support. CMake presets
-and the remaining project and dependency configuration are still to be
-established.
+The root contains the CMake project, OpenStrata workspace configuration and CI
+matrix. The workflow is generated from the matrix with `ost ci generate github`.
+
+## Build entry points
+
+Two CMake entry points produce the same library, registration and install
+layout:
+
+- The **repository root**, used by plain CMake and `ost build`.
+- **`plugins/usdGltfFileFormat`**, used by the standalone bundle
+  (`ost plugin build`). In this mode it adds the shared dependency setup, the
+  libraries and the tests itself.
+
+Each target is defined once, in its own directory's `CMakeLists.txt`. A change
+to the build must keep both entry points working.
+
+## Components
 
 | Component | Responsibility | Boundary |
 | --- | --- | --- |
-| `gltfCore` | Parse using fastgltf; safely access glTF data, URIs and buffers | Does not create USD prims; avoid copying all fastgltf data into another model unnecessarily |
-| `gltfTexture` | Resolve images, decode/convert KTX2, handle color-space information and caching | Does not build USD material networks |
-| `gltfUsd` | Translate scene, mesh, transforms, materials and bindings; currently implements nodes and a triangle-mesh subset | Does not register the plugin |
+| `gltfCore` | Parse using fastgltf; safely access glTF data, URIs and buffers | Does not depend on USD or create USD prims; avoid copying all fastgltf data into another model unnecessarily |
+| `gltfTexture` | Accept bufferView, data URI and external URI images; decode and convert KTX2; handle color-space information, caching and output asset paths | Owns image processing only; does not build USD material networks |
+| `gltfUsd` | Translate scene, mesh, transforms, materials and bindings onto a temporary `SdfLayer` | Does not register the plugin |
 | `usdGltfFileFormat` | Register `SdfFileFormat`, invoke import and propagate diagnostics | Does not own the conversion implementation |
 | `gltfConvert` | If needed, call the same conversion library from a CLI | Does not implement a separate conversion pipeline |
 
-The intended direct dependencies are:
+External buffer loading is in the plugin (`externalBuffer.cpp`). It does not
+depend on USD, and belongs with the shared URI handling when images need it.
+
+The direct dependencies are:
 
 ```text
 usdGltfFileFormat -> gltfUsd -> gltfCore
                              -> gltfTexture
 ```
 
-Image input must accommodate both bufferViews and external URIs without a
-cycle between `gltfTexture` and `gltfUsd`. `usd-vrm-plugins` is a reference
-only; no dependency on it or forced shared library is intended.
+The CMake targets are `UsdGltfFileFormat`, `usd_gltf_usd` and `usd_gltf_core`.
+Image input must accommodate both bufferViews and external URIs without a cycle
+between `gltfTexture` and `gltfUsd`. `usd-vrm-plugins` is a reference only; no
+dependency on it or forced shared library is intended.

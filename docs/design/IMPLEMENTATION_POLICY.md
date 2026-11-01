@@ -1,8 +1,5 @@
 # Implementation policy
 
-Status: **adopted initial design**, 2026-11-01. Implementation and
-compatibility are not yet verified.
-
 ## Purpose and principles
 
 Import glTF 2.0 and GLB as ordinary OpenUSD scenes so standard USD tools and
@@ -23,17 +20,18 @@ file through `Usd.Stage.Open`, without a dedicated renderer.
 9. Provide a standard-image conversion path for KTX2 rather than requiring
    KTX2-aware imaging from consumers.
 
-## Scope
+## Quality principles
 
-The initial milestone covers file-format registration and import, scene and
-node hierarchy, transforms, meshes, UVs and vertex attributes, metallic-
-roughness PBR materials, PNG/JPEG and `KHR_texture_basisu` images, material
-bindings, asset resolution, image caching, diagnostics, tests, and OpenStrata
-workspace integration.
+- Do not silently drop important information to make a load succeed. Reject
+  unsupported content with a diagnostic, or use an explicit fallback that is
+  specified and tested.
+- A support claim requires implementation, tests and a stated environment.
+- Do not promise releases by date.
 
-Later work includes animation, skinning, morph targets, cameras, punctual
-lights, material extensions, export, and optimization. Full support for all
-glTF extensions and lossless round-tripping are not initial goals.
+## Non-goals
+
+Full support for all glTF extensions and lossless round-tripping are not goals
+of the initial versions.
 
 The component boundaries are defined in [WORKSPACE](../architecture/WORKSPACE.md);
 the [import pipeline](../architecture/IMPORT_PIPELINE.md) owns the entry point
@@ -43,8 +41,9 @@ and failure policy. Scene, material, and texture details belong to
 
 ## Quality and dependencies
 
-- Use CMake and CMakePresets, integrated with the current OpenStrata workspace
-  conventions. Verify their current schema before creating configuration.
+- Use CMake, integrated with the current OpenStrata workspace conventions.
+  Verify the current schema before creating configuration. CMake presets do not
+  replace OpenStrata and must not pin environment-specific absolute paths.
 - Make versions of fastgltf, the KTX decoder/transcoder, and test dependencies
   pinnable using a method consistent with OpenStrata. KTX-Software is a
   candidate, not a selected dependency.
@@ -56,10 +55,6 @@ and failure policy. Scene, material, and texture details belong to
 - Check redistribution licenses before using official glTF samples or other
   test assets. Malformed GLB, out-of-range accessors, oversized inputs,
   unsafe external URIs and corrupt KTX2 must fail safely with diagnostics.
-
-See the [roadmap](../roadmap/README.md) for milestones and unresolved
-decisions, and the [capability matrix](../reference/CAPABILITY_MATRIX.md)
-for actual status.
 
 ## External references
 

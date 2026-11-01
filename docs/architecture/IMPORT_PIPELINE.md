@@ -1,9 +1,5 @@
 # Import pipeline
 
-Status: **early implementation**. The importer opens selected nodes, transforms
-and a limited triangle-based mesh subset including UVs and vertex colors with
-embedded or local external buffers; other asset content is not implemented.
-
 ```text
 .gltf / .glb
     -> usdGltfFileFormat (SdfFileFormat)
@@ -13,33 +9,26 @@ embedded or local external buffers; other asset content is not implemented.
     -> SdfLayer containing an ordinary USD scene
 ```
 
-The initial approach is eager conversion on read, not `SdfAbstractData` lazy
-loading. Keep the plugin thin and the translator reusable. The import-only
-plugin registration must explicitly declare writing unsupported, using the
-metadata supported by the selected OpenUSD version.
+Conversion is eager on read, not `SdfAbstractData` lazy loading. Keep the plugin
+thin and the translator reusable. The import-only plugin registration
+explicitly declares writing unsupported, using the metadata supported by the
+selected OpenUSD version.
 
-The selected approach is to author on a temporary `SdfLayer` and transfer
-its content only after successful conversion. See the
-[layer authoring decision](LAYER_AUTHORING.md) for experiments and remaining
-integration tests. Image assets may require deliberate persistent storage;
-their lifecycle and portability are separate unresolved requirements in
-[TEXTURES](../design/TEXTURES.md).
+Scenes are authored on a temporary `SdfLayer`, and its content is transferred
+only after successful conversion. See the
+[layer authoring decision](LAYER_AUTHORING.md). Image assets may require
+deliberate persistent storage; see [TEXTURES](../design/TEXTURES.md) for their
+lifecycle and portability requirements.
 
-Resolve external buffer URIs as described below; image URI handling remains
-open. Reject unsupported
-required extensions rather than silently presenting an incorrect scene;
-define the diagnostic policy for unsupported optional extensions. Malformed
-or unsafe data must produce explicit diagnostics and failure rather than a
-success result containing an unintentionally incomplete stage.
+## Failure policy
 
-Scene selection is defined in [SCENE_CONVENTIONS](../design/SCENE_CONVENTIONS.md).
-The importer currently supports triangles, triangle strips and triangle fans as
-described in [scene conventions](../design/SCENE_CONVENTIONS.md). It rejects unsupported
-mesh content, skins, cameras, lights, morph data and animations rather than
-silently dropping them. Unsupported optional extensions are reported as
-warnings; required extensions are rejected by fastgltf. Images are not yet
-loaded or resolved. See also the
-[open decisions](../roadmap/README.md#decisions-to-verify).
+Reject unsupported content rather than silently dropping it or presenting an
+incorrect scene. Unsupported required extensions fail; fastgltf rejects them
+during parsing. Unsupported optional extensions are reported as warnings.
+Malformed or unsafe data must produce explicit diagnostics and failure rather
+than a success result containing an unintentionally incomplete stage. Scene
+selection is defined in
+[SCENE_CONVENTIONS](../design/SCENE_CONVENTIONS.md#scene-selection).
 
 ## External buffer policy
 
@@ -54,10 +43,10 @@ declared `byteLength`. Only that many bytes are read and cached for the
 duration of conversion; failed reads prevent layer publication. Unused
 buffers in other scenes are not loaded.
 
-External buffer resolution currently requires a local source and filesystem;
-it does not use USD's asset resolver to open the buffer. This deliberately
-excludes remote assets, resolver-managed resources and shared buffers in
-parent directories. Canonicalization and file opening are separate operations:
-the check is not a security sandbox against concurrent changes to the
-filesystem. Assets must not be imported from directories writable by an
-untrusted concurrent actor. Image URI policy remains a separate decision.
+External buffer resolution requires a local source and filesystem; it does not
+use USD's asset resolver to open the buffer. This deliberately excludes remote
+assets, resolver-managed resources and shared buffers in parent directories.
+Canonicalization and file opening are separate operations: the check is not a
+security sandbox against concurrent changes to the filesystem. Assets must not
+be imported from directories writable by an untrusted concurrent actor. Image
+URI policy is a [separate decision](../roadmap/README.md#decisions-to-verify).
