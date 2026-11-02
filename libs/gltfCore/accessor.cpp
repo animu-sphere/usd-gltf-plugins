@@ -76,9 +76,14 @@ GetAccessorData(const fastgltf::Asset& asset, std::size_t index, fastgltf::Acces
         error = "accessor has an invalid type, component type, normalization, or count";
         return false;
     }
-    if (accessor.sparse || !accessor.bufferViewIndex)
+    if (accessor.sparse)
     {
-        error = "sparse or missing bufferView accessors are not supported";
+        error = "sparse accessors are not supported";
+        return false;
+    }
+    if (!accessor.bufferViewIndex)
+    {
+        error = "accessors without a bufferView are not supported";
         return false;
     }
     std::span<const std::byte> bytes;

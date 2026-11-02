@@ -46,13 +46,17 @@ TOLERANCE = 1e-5
 OPTIONAL_WARNING = re.compile(r"glTF optional extension '(.*)' is not supported")
 # The text of a rejection, and the causes that make it a fitting one.
 DIAGNOSTIC_CAUSES = {
-    "extensions are required": ("requires ",),
     "animations are not supported": ("animations",),
-    "uses skin, camera, light, or morph": ("skin", "camera", "light", "morph targets"),
-    "primitive mode, morph targets, or compression": ("points or lines", "morph targets", "requires KHR_draco"),
-    "unsupported morph weights": ("morph targets",),
-    "sparse or missing bufferView": ("sparse accessor",),
+    "skins are not supported": ("skin",),
+    "cameras are not supported": ("camera",),
+    "lights are not supported": ("light",),
+    "morph weights are not supported": ("morph targets",),
+    "morph targets are not supported": ("morph targets",),
+    "primitive mode": ("points or lines",),
+    "sparse accessors are not supported": ("sparse accessor",),
+    "without a bufferView are not supported": ("accessor without a bufferView",),
 }
+REQUIRED_DIAGNOSTIC = re.compile(r"unsupported required extensions: (.*)")
 
 COMPONENTS = {5120: numpy.int8, 5121: numpy.uint8, 5122: numpy.int16, 5123: numpy.uint16, 5125: numpy.uint32,
               5126: numpy.float32}
@@ -635,8 +639,10 @@ def mesh_causes(document, mesh):
         compressed = primitive.get("extensions", {}).keys() & {"KHR_draco_mesh_compression"}
         for index in accessors:
             accessor = document["accessors"][index]
-            if "sparse" in accessor or ("bufferView" not in accessor and not compressed):
+            if "sparse" in accessor:
                 causes.add("sparse accessor")
+            elif "bufferView" not in accessor and not compressed:
+                causes.add("accessor without a bufferView")
         if set(primitive.get("attributes", {})) & {"JOINTS_0", "WEIGHTS_0"}:
             causes.add("skin")
     return causes
@@ -644,6 +650,10 @@ def mesh_causes(document, mesh):
 
 def diagnostic_fits(diagnostic, causes):
     """Returns whether a diagnostic names a cause that the file really has."""
+    required = REQUIRED_DIAGNOSTIC.search(diagnostic)
+    if required:
+        named = {f"requires {name}" for name in required.group(1).split(", ")}
+        return named == {cause for cause in causes if cause.startswith("requires ")}
     for pattern, kinds in DIAGNOSTIC_CAUSES.items():
         if pattern in diagnostic:
             return any(cause.startswith(kinds) for cause in causes)
