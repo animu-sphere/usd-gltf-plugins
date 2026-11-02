@@ -56,8 +56,9 @@ documents. It states:
   existing stage.
 - **Verification:** valid fixtures, failures, USD structure and meaning, and a display
   comparison where display compatibility is claimed.
-- **Documents:** the capability matrix row and evidence, an ADR or design change only
-  if the design changed, and removal of the task from the roadmap.
+- **Documents:** the capability matrix row and evidence, the
+  [sample baseline](../adr/0010-sample-baseline.md) if its results change, an ADR or design
+  change only if the design changed, and removal of the task from the roadmap.
 
 Each material extension is its own unit: evaluate what MaterialX and UsdPreviewSurface
 can express first. A result that looks close is not a claim of equivalence with glTF.

@@ -31,7 +31,8 @@ packaging and packages that do not work outside the repository. A person confirm
 commit to be tagged:
 
 - The version's release criteria are met.
-- The [display check](../reference/CAPABILITY_MATRIX.md#display-checks) passes.
+- The [display check](../reference/CAPABILITY_MATRIX.md#display-checks) passes, and the
+  [sample check](../reference/CAPABILITY_MATRIX.md#sample-assets) matches its baseline.
 - The release record states changes, the supported subset, known constraints and test environments,
   without copying the capability matrix.
 
@@ -40,7 +41,8 @@ commit to be tagged:
 1. Open one release pull request. It sets the version in `openstrata.toml` and the bundle manifest,
    gives the changelog a dated section, adds `docs/releases/vX.Y.Z.md`, and moves the next version
    out of the backlog. A pre-release such as `v0.1.0-alpha.1` needs none of this.
-2. After merging, run the release workflow by hand on `main`, and the display check on that commit.
+2. After merging, run the release workflow by hand on `main`, and the display and sample checks on
+   that commit.
 3. Push the tag. The workflow also pushes the packages to GHCR, and creates a draft release with
    their pins.
 4. Edit the draft's notes if needed, and publish it.

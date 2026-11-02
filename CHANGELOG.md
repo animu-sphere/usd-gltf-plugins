@@ -11,6 +11,8 @@ here.
 ### Added
 
 - Release packages on GHCR, with a pin table in each release.
+- Sample check, `tests/check_samples.py`, which records whether every Khronos sample asset opens,
+  agrees with the file in USD and draws, and compares that with a committed baseline.
 
 ## [0.1.0] - 2026-11-02
 

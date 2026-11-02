@@ -66,6 +66,17 @@ python tests\check_display.py build\cy2026-windows-x86_64-py313-usd
 It exits nonzero if a comparison fails, and keeps images and logs in `display_check` in
 the build directory.
 
+To compare every Khronos sample asset with the committed baseline, in the same environment and with
+a [glTF-Sample-Assets](https://github.com/KhronosGroup/glTF-Sample-Assets) checkout at the baseline's
+commit:
+
+```powershell
+python tests\check_samples.py build\cy2026-windows-x86_64-py313-usd <glTF-Sample-Assets> --render
+```
+
+It exits nonzero if a result differs, and keeps images and logs in `sample_check` in the build
+directory. `--update` accepts the new results. Without `--render` it needs no GPU.
+
 ## Documentation
 
 - [Documentation index](docs/README.md)
