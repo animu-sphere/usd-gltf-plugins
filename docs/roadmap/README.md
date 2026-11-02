@@ -18,6 +18,7 @@ The only version plan, without dates. What is implemented is in the
 - **Partly done:** reword the task so that it states only what remains.
 - **Next version:** the release pull request moves the next version from `backlog.md` to
   `current.md`, replacing its scope with concrete tasks.
+- **Deferred:** move the task to a version in `backlog.md`, and give the reason in the pull request.
 - **Dropped:** delete the task, and give the reason in the pull request.
 
 The `docs_consistency` test checks that `current.md` plans one version, that a version
