@@ -8,6 +8,10 @@ here.
 
 ## [Unreleased]
 
+### Added
+
+- Release packages on GHCR, with a pin table in each release.
+
 ## [0.1.0] - 2026-11-02
 
 ### Added

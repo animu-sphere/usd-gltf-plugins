@@ -17,10 +17,18 @@ Keep the parts that apply to one bundle, and leave out the rest until there is a
 
 | Kept | Left out, and why |
 | --- | --- |
-| Tag check, and a dry run through `workflow_dispatch` | Registry publication: nothing pins this package yet |
+| Tag check, and a dry run through `workflow_dispatch` | Consumer lanes: the package has no CMake interface |
 | Build, test and package on each CI platform, with a reproducible digest | The aggregate product: with one bundle it only wraps the same archive |
-| Proof that the package works outside the repository | Consumer lanes: the package has no CMake interface |
-| A **draft** release, published by a person after the release gate | Closure checklists: the workflow fails on the first failed step instead |
+| Proof that the package works outside the repository | Closure checklists: the workflow fails on the first failed step instead |
+| A **draft** release, published by a person after the release gate | |
+| Packages on GHCR, with a pin table | |
+
+**Packages go to one public GHCR repository,** `ghcr.io/animu-sphere/usd-gltf-plugins`, tagged
+`<name>-<version>-<target>`, the shape `usd-vrm-plugins` and `usd-mmd-plugins` publish. The packages
+were first left out because nothing pinned them, and were added at v0.1.0 so that this repository's
+releases can be consumed like theirs. They are pushed before the draft exists, because the draft's
+notes carry the pins, so a push is not undone by discarding a draft. A repository that a first push
+creates is private, and making it public is a manual step in the package's settings.
 
 **Pins are read, not copied.** The workflow takes its cells from `ost ci matrix --lane main`.
 The reference's `release.yml` has its own copy of these pins, and its comments record a tag build
