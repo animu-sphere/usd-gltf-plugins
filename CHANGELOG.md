@@ -15,6 +15,7 @@ here.
   agrees with the file in USD and draws, and compares that with a committed baseline.
 - `KHR_texture_transform`, optional or required, in every texture slot through both shader paths,
   including its `texCoord` override.
+- `KHR_mesh_quantization`: non-float POSITION, NORMAL, TANGENT and TEXCOORD, authored as floats.
 
 ### Changed
 

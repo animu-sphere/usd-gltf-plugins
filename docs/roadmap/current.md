@@ -8,9 +8,6 @@ implementation order, which investigation may change. Each feature follows the
 
 ### First
 
-- `KHR_mesh_quantization`: non-float POSITION, NORMAL, TANGENT and TEXCOORD, tested with stride,
-  normalization, out-of-range values and loss of precision. If it cannot be supported, record why
-  in an ADR. It is independent of `KHR_draco_mesh_compression`.
 - Cameras: perspective and orthographic through `UsdGeomCamera`, under the existing scene selection,
   transform, naming and reflection rules.
 - `KHR_lights_punctual`: directional, point and spot through `UsdLux`, stating units, intensity,

@@ -30,11 +30,34 @@ stability. Do not prescribe `/Asset/rig` or `/Asset/anim` as mandatory:
 their placement must be decided when UsdSkel and animation are designed.
 
 Mesh primitives use float POSITION and optional float NORMAL, TANGENT, TEXCOORD_n
-and COLOR_0 accessors. Accessors may be interleaved. Indices are glTF unsigned
-byte, unsigned short or unsigned int. USD subdivision is disabled and winding
-remains right-handed; strips and fans are expanded into triangles, including
-degenerate triangles, with alternating strip winding. Absent normals are
-generated per face for flat shading.
+and COLOR_0 accessors, or the [quantized formats](#quantized-attributes). Accessors
+may be interleaved. Indices are glTF unsigned byte, unsigned short or unsigned int.
+USD subdivision is disabled and winding remains right-handed; strips and fans are
+expanded into triangles, including degenerate triangles, with alternating strip
+winding. Absent normals are generated per face for flat shading.
+
+## Quantized attributes
+
+`KHR_mesh_quantization` adds these formats, and only for a file that lists it in
+`extensionsRequired`, because its specification says it cannot be optional. Anything else
+that is not float, including COLOR_0 beyond its own formats, is rejected.
+
+| Attribute | Formats |
+| --- | --- |
+| POSITION | Byte, unsigned byte, short or unsigned short, each normalized or not |
+| NORMAL | Normalized byte or short |
+| TANGENT | Normalized byte or short |
+| TEXCOORD_n | Byte, unsigned byte, short or unsigned short, and normalized byte or short |
+
+Each is authored as the same floats that the same attribute would have, with no property
+recording that it was quantized. An integer that is not normalized keeps its value, which a float
+holds exactly. A normalized one is `c / 255` or `c / 65535` when unsigned, and `max(c / 127, -1)` or
+`max(c / 32767, -1)` when signed, so the two lowest values of a signed type both mean -1.
+
+The dequantizing scale and offset stay where the file puts them, in node transforms and
+`KHR_texture_transform`. Values are not renormalized: a quantized normal or tangent can be slightly
+off unit length, and the extension's specification expects a renderer to normalize it after
+transforming it. Tangent W is not checked to be a sign, as for a float tangent.
 
 ## Coordinate system and units
 
@@ -61,8 +84,8 @@ normals transform by the inverse transpose.
 ## Texture coordinates
 
 Each TEXCOORD_n must use VEC2 floats, normalized unsigned bytes or normalized
-unsigned shorts, with the same count as POSITION. Sets must begin at zero and
-be consecutive. TEXCOORD_0 is authored as the vertex-interpolated
+unsigned shorts, or a [quantized format](#quantized-attributes), with the same
+count as POSITION. Sets must begin at zero and be consecutive. TEXCOORD_0 is authored as the vertex-interpolated
 `texCoord2f[]` primvar `st`; subsequent sets use `st1`, `st2`, and so on.
 Values are not clamped, so tiling outside the unit square is retained.
 
@@ -75,8 +98,8 @@ another flip.
 
 ## Tangents
 
-TANGENT must use VEC4 floats with the same count as POSITION, and finite values. It
-is authored unchanged as the vertex-interpolated `float4[]` primvar `gltf_tangent`:
+TANGENT must use VEC4 floats or a [quantized format](#quantized-attributes), with the same count as
+POSITION, and finite values. It is authored as the vertex-interpolated `float4[]` primvar `gltf_tangent`:
 XYZ is the tangent and W the bitangent sign, as glTF defines them. Flipping V does
 not change these values. Material graphs [do not read this primvar](../adr/0004-normal-textures-and-tangents.md#tangents).
 

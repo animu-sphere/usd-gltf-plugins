@@ -4,6 +4,8 @@
 #include "accessor.h"
 #include "material.h"
 
+#include <fastgltf/core.hpp>
+
 #include "pxr/base/gf/vec2f.h"
 #include "pxr/base/gf/vec3f.h"
 #include "pxr/base/gf/vec4f.h"
@@ -48,21 +50,108 @@ readUnsigned(const std::byte* data, std::size_t size)
 }
 
 float
-readRealComponent(const std::byte* data, std::size_t size, fastgltf::ComponentType type)
+readRealComponent(const std::byte* data, std::size_t size, fastgltf::ComponentType type,
+                  bool normalized)
 {
     const auto bits = readUnsigned(data, size);
-    return type == fastgltf::ComponentType::Float ? std::bit_cast<float>(bits)
-                                                  : float(bits) / float(size == 1 ? 255 : 65535);
+    if (type == fastgltf::ComponentType::Float)
+    {
+        return std::bit_cast<float>(bits);
+    }
+    const bool isSigned =
+        type == fastgltf::ComponentType::Byte || type == fastgltf::ComponentType::Short;
+    const auto range = std::uint32_t(1) << (size * 8);
+    const float value = isSigned && bits >= range / 2 ? float(bits) - float(range) : float(bits);
+    if (!normalized)
+    {
+        return value;
+    }
+    return std::max(value / float(isSigned ? range / 2 - 1 : range - 1), -1.0f);
+}
+
+enum class VertexAttribute
+{
+    Position,
+    Normal,
+    Tangent,
+    Texcoord,
+};
+
+struct VertexFormat
+{
+    fastgltf::ComponentType type = fastgltf::ComponentType::Float;
+    std::size_t size = 4;
+    bool normalized = false;
+};
+
+// The formats KHR_mesh_quantization adds to those of glTF itself.
+bool
+isQuantizedFormat(VertexAttribute attribute, const fastgltf::Accessor& accessor)
+{
+    const auto type = accessor.componentType;
+    const bool isSigned =
+        type == fastgltf::ComponentType::Byte || type == fastgltf::ComponentType::Short;
+    const bool isUnsigned = type == fastgltf::ComponentType::UnsignedByte ||
+                            type == fastgltf::ComponentType::UnsignedShort;
+    switch (attribute)
+    {
+    case VertexAttribute::Position:
+        return isSigned || isUnsigned;
+    case VertexAttribute::Normal:
+    case VertexAttribute::Tangent:
+        return isSigned && accessor.normalized;
+    case VertexAttribute::Texcoord:
+        return isSigned || (isUnsigned && !accessor.normalized);
+    }
+    return false;
+}
+
+// Selects the format to read an attribute as. Anything else stays float, which
+// GetAccessorData then rejects.
+bool
+selectVertexFormat(const fastgltf::Asset& asset, std::size_t index, VertexAttribute attribute,
+                   VertexFormat& format, std::string& error)
+{
+    if (index >= asset.accessors.size())
+    {
+        error = "vertex attribute accessor index is out of range";
+        return false;
+    }
+    const auto& accessor = asset.accessors[index];
+    const auto type = accessor.componentType;
+    const bool isCoreInteger = attribute == VertexAttribute::Texcoord && accessor.normalized &&
+                               (type == fastgltf::ComponentType::UnsignedByte ||
+                                type == fastgltf::ComponentType::UnsignedShort);
+    if (!isCoreInteger && !isQuantizedFormat(attribute, accessor))
+    {
+        return true;
+    }
+    // The extension's specification says that it cannot be optional, because a file has no
+    // float version of the data for a client that does not implement it.
+    if (!isCoreInteger &&
+        std::find(asset.extensionsRequired.begin(), asset.extensionsRequired.end(),
+                  fastgltf::extensions::KHR_mesh_quantization) == asset.extensionsRequired.end())
+    {
+        error = "vertex attribute format requires KHR_mesh_quantization in extensionsRequired";
+        return false;
+    }
+    format = {type, fastgltf::getComponentByteSize(type), accessor.normalized};
+    return true;
 }
 
 bool
-readVectors(const fastgltf::Asset& asset, std::size_t index, VtVec3fArray& values,
-            std::string& error, const gltfCore::BufferLoader& loadBuffer)
+readVectors(const fastgltf::Asset& asset, std::size_t index, VertexAttribute attribute,
+            VtVec3fArray& values, std::string& error, const gltfCore::BufferLoader& loadBuffer)
 {
+    VertexFormat format;
+    if (!selectVertexFormat(asset, index, attribute, format, error))
+    {
+        return false;
+    }
     gltfCore::AccessorData data;
-    if (!gltfCore::GetAccessorData(asset, index, fastgltf::AccessorType::Vec3,
-                                   fastgltf::ComponentType::Float, 12, true, data, error,
-                                   loadBuffer))
+    if (!gltfCore::GetAccessorData(asset, index, fastgltf::AccessorType::Vec3, format.type,
+                                   format.size * 3, true, data, error, loadBuffer,
+                                   format.normalized))
     {
         return false;
     }
@@ -76,8 +165,9 @@ readVectors(const fastgltf::Asset& asset, std::size_t index, VtVec3fArray& value
     {
         for (std::size_t component = 0; component < 3; ++component)
         {
-            const auto bits = readUnsigned(data.bytes.data() + i * data.stride + component * 4, 4);
-            const float value = std::bit_cast<float>(bits);
+            const float value =
+                readRealComponent(data.bytes.data() + i * data.stride + component * format.size,
+                                  format.size, format.type, format.normalized);
             if (!std::isfinite(value))
             {
                 error = "vertex attribute contains a non-finite value";
@@ -93,10 +183,15 @@ bool
 readTangents(const fastgltf::Asset& asset, std::size_t index, VtVec4fArray& values,
              std::string& error, const gltfCore::BufferLoader& loadBuffer)
 {
+    VertexFormat format;
+    if (!selectVertexFormat(asset, index, VertexAttribute::Tangent, format, error))
+    {
+        return false;
+    }
     gltfCore::AccessorData data;
-    if (!gltfCore::GetAccessorData(asset, index, fastgltf::AccessorType::Vec4,
-                                   fastgltf::ComponentType::Float, 16, true, data, error,
-                                   loadBuffer))
+    if (!gltfCore::GetAccessorData(asset, index, fastgltf::AccessorType::Vec4, format.type,
+                                   format.size * 4, true, data, error, loadBuffer,
+                                   format.normalized))
     {
         return false;
     }
@@ -105,8 +200,9 @@ readTangents(const fastgltf::Asset& asset, std::size_t index, VtVec4fArray& valu
     {
         for (std::size_t component = 0; component < 4; ++component)
         {
-            const auto bits = readUnsigned(data.bytes.data() + i * data.stride + component * 4, 4);
-            const float value = std::bit_cast<float>(bits);
+            const float value =
+                readRealComponent(data.bytes.data() + i * data.stride + component * format.size,
+                                  format.size, format.type, format.normalized);
             if (!std::isfinite(value))
             {
                 error = "tangent contains a non-finite value";
@@ -122,31 +218,15 @@ bool
 readTexcoords(const fastgltf::Asset& asset, std::size_t index, VtVec2fArray& values,
               std::string& error, const gltfCore::BufferLoader& loadBuffer)
 {
-    if (index >= asset.accessors.size())
+    VertexFormat format;
+    if (!selectVertexFormat(asset, index, VertexAttribute::Texcoord, format, error))
     {
-        error = "texture coordinate accessor index is out of range";
-        return false;
-    }
-    const auto type = asset.accessors[index].componentType;
-    std::size_t size;
-    switch (type)
-    {
-    case fastgltf::ComponentType::Float:
-        size = 4;
-        break;
-    case fastgltf::ComponentType::UnsignedByte:
-        size = 1;
-        break;
-    case fastgltf::ComponentType::UnsignedShort:
-        size = 2;
-        break;
-    default:
-        error = "texture coordinate accessor has an unsupported component type";
         return false;
     }
     gltfCore::AccessorData data;
-    if (!gltfCore::GetAccessorData(asset, index, fastgltf::AccessorType::Vec2, type, size * 2, true,
-                                   data, error, loadBuffer, type != fastgltf::ComponentType::Float))
+    if (!gltfCore::GetAccessorData(asset, index, fastgltf::AccessorType::Vec2, format.type,
+                                   format.size * 2, true, data, error, loadBuffer,
+                                   format.normalized))
     {
         return false;
     }
@@ -160,8 +240,9 @@ readTexcoords(const fastgltf::Asset& asset, std::size_t index, VtVec2fArray& val
     {
         for (std::size_t component = 0; component < 2; ++component)
         {
-            const float value = readRealComponent(
-                data.bytes.data() + i * data.stride + component * size, size, type);
+            const float value =
+                readRealComponent(data.bytes.data() + i * data.stride + component * format.size,
+                                  format.size, format.type, format.normalized);
             if (!std::isfinite(value))
             {
                 error = "texture coordinate contains a non-finite value";
@@ -234,8 +315,9 @@ readColors(const fastgltf::Asset& asset, std::size_t index, VtVec3fArray& colors
     {
         for (std::size_t component = 0; component < components; ++component)
         {
-            const float value = readRealComponent(
-                data.bytes.data() + i * data.stride + component * size, size, type);
+            const float value =
+                readRealComponent(data.bytes.data() + i * data.stride + component * size, size,
+                                  type, type != fastgltf::ComponentType::Float);
             if (!std::isfinite(value) || value < 0 || value > 1)
             {
                 error = "vertex color contains a non-finite or out-of-range value";
@@ -423,12 +505,14 @@ authorPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& primiti
         }
     }
     VtVec3fArray points;
-    if (!readVectors(asset, position->accessorIndex, points, error, loadBuffer))
+    if (!readVectors(asset, position->accessorIndex, VertexAttribute::Position, points, error,
+                     loadBuffer))
     {
         return false;
     }
     VtVec3fArray normals;
-    if (normal && (!readVectors(asset, normal->accessorIndex, normals, error, loadBuffer) ||
+    if (normal && (!readVectors(asset, normal->accessorIndex, VertexAttribute::Normal, normals,
+                                error, loadBuffer) ||
                    normals.size() != points.size()))
     {
         if (error.empty())
