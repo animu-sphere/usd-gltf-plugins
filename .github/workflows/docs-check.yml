@@ -1,0 +1,23 @@
+# Hand-written. Checks links, matrix states and evidence paths in seconds, with no runtime, so that
+# a change to documents has this instead of ci.yml. CTest runs the same check on the other changes.
+name: docs check
+
+on:
+  pull_request:
+    paths: ["**.md", "docs/**", "LICENSE", "tests/check_docs.py"]
+  push:
+    branches: [main]
+    paths: ["**.md", "docs/**", "LICENSE", "tests/check_docs.py"]
+
+permissions:
+  contents: read
+
+jobs:
+  docs:
+    name: docs consistency
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - run: python3 tests/check_docs.py

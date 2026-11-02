@@ -23,7 +23,8 @@ runners:
       acknowledgement: required
 
 # These are the OpenUSD 26.08 SDK artifacts published by OpenStrata.
-# Regenerate the workflow with `ost ci generate github` after changing this file.
+# Regenerate with `ost ci generate github --reusable-source --out .github/workflows/ost-source-ci.yml --force`
+# after changing this file. ci.yml decides which changes run it.
 cells:
   - name: workspace-pr-windows
     kind: workspace

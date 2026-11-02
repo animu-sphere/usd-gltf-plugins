@@ -1,0 +1,17 @@
+# Hand-written, so that regenerating ost-source-ci.yml cannot lose it. Changes to documents alone do
+# not build, and docs-check.yml covers them. Keep its paths in step with these.
+name: ci
+
+on:
+  pull_request:
+    paths-ignore: ["**.md", "docs/**", "LICENSE"]
+  push:
+    branches: [main]
+    paths-ignore: ["**.md", "docs/**", "LICENSE"]
+
+permissions:
+  contents: read
+
+jobs:
+  source:
+    uses: ./.github/workflows/ost-source-ci.yml
