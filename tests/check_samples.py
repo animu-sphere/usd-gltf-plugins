@@ -1,0 +1,805 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Records what happens to every Khronos sample asset, and compares it with the committed baseline.
+
+Run this in the OpenStrata lookdev environment, with a built workspace and a checkout of
+glTF-Sample-Assets at the commit in tests/sample_baseline.json:
+
+    python tests/check_samples.py build/cy2026-windows-x86_64-py313-usd ../glTF-Sample-Assets --render
+
+Each file gets three separate results, each in its own process, so that a crash costs one file:
+
+- opened: whether the stage opens, and otherwise the diagnostic.
+- meaning: USD data compared with values this script decodes from the glTF itself.
+- rendered: whether Storm draws anything through each shader path. Pixels are not judged.
+
+It exits nonzero if a result differs from the baseline, and --update accepts the new results.
+It is not part of CTest, because the assets are not in this repository. The capability matrix
+summarizes the results and says what they do and do not show.
+"""
+
+import argparse
+import base64
+import concurrent.futures
+import json
+import os
+import pathlib
+import re
+import shutil
+import subprocess
+import sys
+import urllib.parse
+
+import numpy
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+BASELINE = ROOT / "tests" / "sample_baseline.json"
+IMPLEMENTED_EXTENSIONS = {"KHR_texture_basisu"}
+PATHS = ("mtlx", "preview")
+CAMERA = "/SampleCheckCamera"
+RESULT_MARKER = "SAMPLE_RESULT "
+TIMEOUT_SECONDS = 600
+RENDER_WIDTH = 256
+# Of the pixels of a render, this fraction must be covered for it to count as drawn.
+MINIMUM_COVERAGE = 0.001
+MAXIMUM_MISMATCHES = 6
+TOLERANCE = 1e-5
+OPTIONAL_WARNING = re.compile(r"glTF optional extension '(.*)' is not supported")
+# The text of a rejection, and the causes that make it a fitting one.
+DIAGNOSTIC_CAUSES = {
+    "extensions are required": ("requires ",),
+    "animations are not supported": ("animations",),
+    "uses skin, camera, light, or morph": ("skin", "camera", "light", "morph targets"),
+    "primitive mode, morph targets, or compression": ("points or lines", "morph targets", "requires KHR_draco"),
+    "unsupported morph weights": ("morph targets",),
+    "sparse or missing bufferView": ("sparse accessor",),
+}
+
+COMPONENTS = {5120: numpy.int8, 5121: numpy.uint8, 5122: numpy.int16, 5123: numpy.uint16, 5125: numpy.uint32,
+              5126: numpy.float32}
+NORMALIZED_SCALE = {5120: 127.0, 5121: 255.0, 5122: 32767.0, 5123: 65535.0}
+TYPES = {"SCALAR": 1, "VEC2": 2, "VEC3": 3, "VEC4": 4}
+PREVIEW_WRAP = {10497: "repeat", 33648: "mirror", 33071: "clamp"}
+MTLX_WRAP = {10497: "periodic", 33648: "mirror", 33071: "clamp"}
+IMAGE_SIGNATURES = (b"\x89PNG\r\n\x1a\n", b"\xff\xd8\xff")
+# A glTF texture slot, and the prefix of the nodes that read it in each network.
+SLOTS = {"baseColorTexture": "baseColor", "metallicRoughnessTexture": "metallicRoughness",
+         "normalTexture": "normal", "occlusionTexture": "occlusion", "emissiveTexture": "emissive"}
+COLOR_SLOTS = {"baseColorTexture", "emissiveTexture"}
+PBR_SLOTS = {"baseColorTexture", "metallicRoughnessTexture"}
+
+
+class Asset:
+    """A glTF file read without the plugin or fastgltf, so that it can check their results."""
+
+    def __init__(self, path):
+        self.path = path
+        self.binary = None
+        data = path.read_bytes()
+        if data[:4] == b"glTF":
+            self.json = self.read_glb(data)
+        else:
+            self.json = json.loads(data.decode("utf-8"))
+        self.buffers = {}
+
+    def read_glb(self, data):
+        offset = 12
+        document = None
+        while offset < len(data):
+            length = int.from_bytes(data[offset:offset + 4], "little")
+            kind = data[offset + 4:offset + 8]
+            chunk = data[offset + 8:offset + 8 + length]
+            if kind == b"JSON":
+                document = json.loads(chunk.decode("utf-8"))
+            elif kind == b"BIN\0":
+                self.binary = chunk
+            offset += 8 + length
+        return document
+
+    def read_uri(self, uri):
+        if uri.startswith("data:"):
+            return base64.b64decode(uri.partition(",")[2])
+        return (self.path.parent / urllib.parse.unquote(uri)).read_bytes()
+
+    def buffer(self, index):
+        if index not in self.buffers:
+            uri = self.json["buffers"][index].get("uri")
+            self.buffers[index] = self.read_uri(uri) if uri else self.binary
+        return self.buffers[index]
+
+    def buffer_view(self, index):
+        view = self.json["bufferViews"][index]
+        offset = view.get("byteOffset", 0)
+        return self.buffer(view["buffer"])[offset:offset + view["byteLength"]]
+
+    def accessor(self, index, normalize=True):
+        """Returns an accessor's values as (count, components), as float for normalized integers."""
+        accessor = self.json["accessors"][index]
+        component = accessor["componentType"]
+        dtype = numpy.dtype(COMPONENTS[component]).newbyteorder("<")
+        width = TYPES[accessor["type"]]
+        count = accessor["count"]
+        if "bufferView" not in accessor:
+            return numpy.zeros((count, width), dtype)
+        view = self.json["bufferViews"][accessor["bufferView"]]
+        stride = view.get("byteStride") or dtype.itemsize * width
+        offset = view.get("byteOffset", 0) + accessor.get("byteOffset", 0)
+        values = numpy.ndarray((count, width), dtype, self.buffer(view["buffer"]), offset, (stride, dtype.itemsize))
+        if normalize and component in NORMALIZED_SCALE and accessor.get("normalized"):
+            return numpy.maximum(values.astype(numpy.float64) / NORMALIZED_SCALE[component], -1.0)
+        return values
+
+    def image_bytes(self, index):
+        """Returns the bytes of an image, or None when they are not stored as PNG or JPEG."""
+        image = self.json["images"][index]
+        data = self.buffer_view(image["bufferView"]) if "bufferView" in image else self.read_uri(image["uri"])
+        return data if data.startswith(IMAGE_SIGNATURES) else None
+
+    def texture_source(self, texture):
+        """Returns the image index a texture should show, with KTX2 preferred as the plugin documents."""
+        basisu = texture.get("extensions", {}).get("KHR_texture_basisu")
+        return basisu["source"] if basisu else texture.get("source")
+
+
+class Check:
+    def __init__(self):
+        self.mismatches = []
+
+    def expect(self, passed, message):
+        if not passed:
+            self.mismatches.append(message)
+        return passed
+
+    def close(self, actual, expected, message):
+        actual = numpy.asarray(actual, numpy.float64)
+        expected = numpy.asarray(expected, numpy.float64)
+        if actual.size == 0 and expected.size == 0:
+            return True
+        if actual.shape != expected.shape:
+            return self.expect(False, f"{message}: shape {actual.shape}, expected {expected.shape}")
+        limit = TOLERANCE * numpy.maximum(1.0, numpy.abs(expected))
+        return self.expect(bool(numpy.all(numpy.abs(actual - expected) <= limit)), f"{message}: values differ")
+
+
+def node_matrix(node):
+    """Returns a node's local matrix in USD's row-vector convention."""
+    if "matrix" in node:
+        # glTF stores columns, which read as rows are this convention already.
+        return numpy.array(node["matrix"], numpy.float64).reshape(4, 4)
+    x, y, z, w = node.get("rotation", (0, 0, 0, 1))
+    norm = (x * x + y * y + z * z + w * w) ** 0.5 or 1.0
+    x, y, z, w = x / norm, y / norm, z / norm, w / norm
+    rotation = numpy.array([
+        [1 - 2 * (y * y + z * z), 2 * (x * y + z * w), 2 * (x * z - y * w)],
+        [2 * (x * y - z * w), 1 - 2 * (x * x + z * z), 2 * (y * z + x * w)],
+        [2 * (x * z + y * w), 2 * (y * z - x * w), 1 - 2 * (x * x + y * y)]])
+    matrix = numpy.identity(4)
+    matrix[:3, :3] = rotation * numpy.array(node.get("scale", (1, 1, 1)), numpy.float64).reshape(3, 1)
+    matrix[3, :3] = node.get("translation", (0, 0, 0))
+    return matrix
+
+
+def expected_triangles(asset, primitive, vertices):
+    """Returns the triangles a primitive means, in a rotation that does not depend on the author."""
+    indices = asset.accessor(primitive["indices"]).reshape(-1).astype(numpy.int64) if "indices" in primitive \
+        else numpy.arange(vertices, dtype=numpy.int64)
+    mode = primitive.get("mode", 4)
+    if mode == 4:
+        return indices[:len(indices) // 3 * 3].reshape(-1, 3)
+    count = max(len(indices) - 2, 0)
+    steps = numpy.arange(count)
+    if mode == 5:
+        odd = steps % 2
+        return numpy.stack([indices[steps], indices[steps + 1 + odd], indices[steps + 2 - odd]], axis=1)
+    return numpy.stack([indices[steps + 1], indices[steps + 2], numpy.full(count, indices[0])], axis=1)
+
+
+def canonical_triangles(triangles):
+    """Rotates each triangle to start at its smallest index, which keeps its winding."""
+    triangles = numpy.asarray(triangles, numpy.int64)
+    if not len(triangles):
+        return triangles.reshape(0, 3)
+    first = numpy.argmin(triangles, axis=1)
+    rows = numpy.arange(len(triangles))
+    return numpy.stack([triangles[rows, first], triangles[rows, (first + 1) % 3], triangles[rows, (first + 2) % 3]],
+                       axis=1)
+
+
+def check_primitive(check, asset, prim, primitive, label):
+    from pxr import UsdGeom, UsdShade
+
+    mesh = UsdGeom.Mesh(prim)
+    attributes = primitive["attributes"]
+    positions = asset.accessor(attributes["POSITION"])
+    check.close(mesh.GetPointsAttr().Get(), positions, f"{label} points")
+
+    counts = numpy.asarray(mesh.GetFaceVertexCountsAttr().Get())
+    check.expect(bool(numpy.all(counts == 3)), f"{label} has a face that is not a triangle")
+    authored = numpy.asarray(mesh.GetFaceVertexIndicesAttr().Get(), numpy.int64).reshape(-1, 3)
+    triangles = expected_triangles(asset, primitive, len(positions))
+    check.expect(numpy.array_equal(canonical_triangles(authored), canonical_triangles(triangles)),
+                 f"{label} triangles differ")
+
+    normals = mesh.GetNormalsAttr().Get()
+    if "NORMAL" in attributes:
+        check.close(normals, asset.accessor(attributes["NORMAL"]), f"{label} normals")
+    else:
+        check_generated_normals(check, mesh, normals, positions, authored, label)
+
+    primvars = UsdGeom.PrimvarsAPI(prim)
+    sets = sorted(int(name[9:]) for name in attributes if name.startswith("TEXCOORD_"))
+    for number in sets:
+        values = numpy.array(asset.accessor(attributes[f"TEXCOORD_{number}"]), numpy.float64)
+        values[:, 1] = 1.0 - values[:, 1]
+        name = "st" if number == 0 else f"st{number}"
+        check.close(primvars.GetPrimvar(name).Get(), values, f"{label} {name}")
+    if "TANGENT" in attributes:
+        check.close(primvars.GetPrimvar("gltf_tangent").Get(), asset.accessor(attributes["TANGENT"]),
+                    f"{label} tangents")
+    if "COLOR_0" in attributes:
+        colors = asset.accessor(attributes["COLOR_0"])
+        check.close(primvars.GetPrimvar("displayColor").Get(), colors[:, :3], f"{label} displayColor")
+        if colors.shape[1] == 4:
+            check.close(primvars.GetPrimvar("gltf_colorAlpha").Get(), colors[:, 3], f"{label} gltf_colorAlpha")
+
+    index = primitive.get("material")
+    material = asset.json["materials"][index] if index is not None else {}
+    suffix = "VertexColor" if "COLOR_0" in attributes else ""
+    name = f"Material_{index}{'_' + suffix if suffix else ''}" if index is not None else f"Default{suffix}"
+    bound = UsdShade.MaterialBindingAPI(prim).GetDirectBinding().GetMaterialPath()
+    expected = f"/Asset/mtl/{name}"
+    check.expect(str(bound) == expected, f"{label} is bound to {bound}, expected {expected}")
+    check.expect(bool(mesh.GetDoubleSidedAttr().Get()) == bool(material.get("doubleSided")),
+                 f"{label} doubleSided differs")
+    return expected, material, "COLOR_0" in attributes
+
+
+def check_generated_normals(check, mesh, normals, positions, triangles, label):
+    """A primitive without NORMAL is flat shaded: each face's normal follows from its corners."""
+    a, b, c = (positions[triangles[:, corner]] for corner in range(3))
+    faces = numpy.cross(numpy.asarray(b - a, numpy.float64), numpy.asarray(c - a, numpy.float64))
+    lengths = numpy.linalg.norm(faces, axis=1, keepdims=True)
+    # A degenerate triangle has no normal to compare.
+    valid = lengths[:, 0] > 1e-12
+    faces = faces[valid] / lengths[valid]
+    authored = numpy.asarray(normals, numpy.float64)
+    if mesh.GetNormalsInterpolation() == "faceVarying" and authored.size:
+        check.expect(len(authored) == len(triangles) * 3, f"{label} generated normals have the wrong count")
+        authored = authored[::3]
+    elif mesh.GetNormalsInterpolation() != "uniform":
+        check.expect(False, f"{label} generated normals are {mesh.GetNormalsInterpolation()}")
+        return
+    if check.expect(len(authored) == len(triangles), f"{label} generated normals have the wrong count"):
+        check.expect(bool(numpy.all(numpy.sum(authored[valid] * faces, axis=1) > 0.99)),
+                     f"{label} generated normals are not the face normals")
+
+
+def connected_shader(shader_input):
+    from pxr import UsdShade
+
+    sources = shader_input.GetConnectedSources()[0] if shader_input else []
+    return UsdShade.Shader(sources[0].source.GetPrim()) if sources else None
+
+
+def resolved_image(check, shader, label, images):
+    """Reads an authored image through the resolver, as a renderer would."""
+    from pxr import Ar
+
+    asset = shader.GetInput("file").Get() if shader.GetInput("file") else None
+    if not check.expect(asset and asset.resolvedPath, f"{label} does not resolve"):
+        return None
+    resolved = asset.resolvedPath
+    if resolved not in images:
+        data = Ar.GetResolver().OpenAsset(Ar.ResolvedPath(resolved))
+        images[resolved] = bytes(data.GetBuffer()) if data else None
+    return images[resolved]
+
+
+def check_texture(check, asset, stage, material_path, key, info, label, images):
+    from pxr import UsdShade
+
+    slot = SLOTS[key]
+    preview = UsdShade.Shader(stage.GetPrimAtPath(f"{material_path}/preview/{slot}Texture"))
+    mtlx = UsdShade.Shader(stage.GetPrimAtPath(f"{material_path}/mtlx/{slot}Image"))
+    if not check.expect(preview and mtlx, f"{label} {slot} texture is not authored in both networks"):
+        return None
+    texture = asset.json["textures"][info["index"]]
+    data = resolved_image(check, preview, f"{label} {slot}", images)
+    mtlx_data = resolved_image(check, mtlx, f"{label} {slot} MaterialX", images)
+    check.expect(data == mtlx_data, f"{label} {slot} networks read different images")
+    if data is not None:
+        check.expect(data.startswith(IMAGE_SIGNATURES), f"{label} {slot} is not served as PNG or JPEG")
+        source = asset.texture_source(texture)
+        original = asset.image_bytes(source) if source is not None else None
+        if original is not None:
+            check.expect(data == original, f"{label} {slot} shows different bytes from image {source}")
+
+    number = info.get("texCoord", 0)
+    primvar = "st" if number == 0 else f"st{number}"
+    reader = connected_shader(preview.GetInput("st"))
+    check.expect(reader and reader.GetInput("varname").Get() == primvar, f"{label} {slot} Preview UV set differs")
+    reader = connected_shader(mtlx.GetInput("texcoord"))
+    check.expect(reader and reader.GetInput("geomprop").Get() == primvar, f"{label} {slot} MaterialX UV set differs")
+
+    sampler = asset.json["samplers"][texture["sampler"]] if "sampler" in texture else {}
+    wrap_s, wrap_t = sampler.get("wrapS", 10497), sampler.get("wrapT", 10497)
+    check.expect(preview.GetInput("wrapS").Get() == PREVIEW_WRAP[wrap_s], f"{label} {slot} Preview wrapS differs")
+    check.expect(preview.GetInput("wrapT").Get() == PREVIEW_WRAP[wrap_t], f"{label} {slot} Preview wrapT differs")
+    check.expect(mtlx.GetInput("uaddressmode").Get() == MTLX_WRAP[wrap_s], f"{label} {slot} MaterialX wrapS differs")
+    check.expect(mtlx.GetInput("vaddressmode").Get() == MTLX_WRAP[wrap_t], f"{label} {slot} MaterialX wrapT differs")
+
+    space = "sRGB" if key in COLOR_SLOTS else "raw"
+    check.expect(preview.GetInput("sourceColorSpace").Get() == space, f"{label} {slot} color space is not {space}")
+    return preview
+
+
+def check_material(check, asset, stage, path, material, has_colors, images):
+    """Compares a bound material's Preview factors and both networks' textures with the glTF."""
+    from pxr import UsdShade
+
+    label = path.rsplit("/", 1)[1]
+    surface = UsdShade.Shader(stage.GetPrimAtPath(f"{path}/preview/surface"))
+    pbr_surface = UsdShade.Shader(stage.GetPrimAtPath(f"{path}/mtlx/surface"))
+    if not check.expect(surface and pbr_surface, f"{label} does not have both surfaces"):
+        return
+    usd_material = UsdShade.Material(stage.GetPrimAtPath(path))
+    for context, shader in (("mtlx", "gltf_pbr"), ("", "UsdPreviewSurface")):
+        source = usd_material.ComputeSurfaceSource(context)[0]
+        check.expect(source and shader in (source.GetShaderId() or ""), f"{label} does not resolve to {shader}")
+
+    pbr = material.get("pbrMetallicRoughness", {})
+    textures = {}
+    infos = {key: (pbr if key in PBR_SLOTS else material).get(key) for key in SLOTS}
+    for key, info in infos.items():
+        if info:
+            textures[key] = check_texture(check, asset, stage, path, key, info, label, images)
+
+    base = pbr.get("baseColorFactor", (1, 1, 1, 1))
+    metallic, roughness = pbr.get("metallicFactor", 1), pbr.get("roughnessFactor", 1)
+    emissive = material.get("emissiveFactor", (0, 0, 0))
+
+    def factor(name, expected, description):
+        value = surface.GetInput(name).Get() if surface.GetInput(name) else None
+        check.expect(value is not None, f"{label} Preview {description} is not authored")
+        if value is not None:
+            check.close(value, expected, f"{label} Preview {description}")
+
+    def scale(key, channels, expected, description):
+        shader = textures.get(key)
+        if shader:
+            values = shader.GetInput("scale").Get()
+            check.close([values[channel] for channel in channels], expected, f"{label} Preview {description}")
+
+    if infos["baseColorTexture"]:
+        scale("baseColorTexture", (0, 1, 2), base[:3], "base color scale")
+    elif not has_colors:
+        factor("diffuseColor", base[:3], "base color")
+    if infos["metallicRoughnessTexture"]:
+        scale("metallicRoughnessTexture", (2, 1), (metallic, roughness), "metallic and roughness scale")
+    else:
+        factor("metallic", metallic, "metallic")
+        factor("roughness", roughness, "roughness")
+    if infos["emissiveTexture"]:
+        scale("emissiveTexture", (0, 1, 2), emissive, "emissive scale")
+    elif any(emissive):
+        factor("emissiveColor", emissive, "emissive")
+    if infos["normalTexture"]:
+        amount = infos["normalTexture"].get("scale", 1)
+        scale("normalTexture", (0, 1, 2), (2 * amount, 2 * amount, 2), "normal scale")
+    if infos["occlusionTexture"]:
+        strength = infos["occlusionTexture"].get("strength", 1)
+        check_occlusion(check, textures.get("occlusionTexture"), strength, label)
+
+    mode = material.get("alphaMode", "OPAQUE")
+    modes = {"OPAQUE": 0, "MASK": 1, "BLEND": 2}
+    authored_mode = pbr_surface.GetInput("alpha_mode").Get() if pbr_surface.GetInput("alpha_mode") else 0
+    check.expect(authored_mode == modes[mode], f"{label} MaterialX alpha_mode is {authored_mode}, not {modes[mode]}")
+    threshold = surface.GetInput("opacityThreshold")
+    if mode == "MASK":
+        cutoff = material.get("alphaCutoff", 0.5)
+        if check.expect(pbr_surface.GetInput("alpha_cutoff"), f"{label} MaterialX alpha_cutoff is not authored"):
+            check.close(pbr_surface.GetInput("alpha_cutoff").Get(), cutoff, f"{label} MaterialX alpha_cutoff")
+        if cutoff > 0 and check.expect(threshold, f"{label} Preview opacityThreshold is not authored"):
+            check.close(threshold.Get(), cutoff, f"{label} Preview opacityThreshold")
+    else:
+        check.expect(not threshold or not threshold.Get(), f"{label} is {mode} but has a Preview opacityThreshold")
+    opacity = surface.GetInput("opacity")
+    if mode == "OPAQUE":
+        check.expect(not opacity or opacity.Get() in (None, 1.0), f"{label} is OPAQUE but its Preview opacity is not 1")
+
+
+def check_occlusion(check, shader, strength, label):
+    """Occlusion is 1 + strength * (sample - 1), which a texture's scale and bias express."""
+    if shader:
+        values = [shader.GetInput("scale").Get()[0], shader.GetInput("bias").Get()[0] if shader.GetInput("bias") else 0]
+        check.close(values, (strength, 1 - strength), f"{label} Preview occlusion strength")
+
+
+def check_meaning(stage, asset):
+    """Returns what differs between the stage and the file, walking the selected scene."""
+    from pxr import Usd, UsdGeom
+
+    check = Check()
+    document = asset.json
+    meta = stage.GetMetadata("upAxis"), stage.GetMetadata("metersPerUnit")
+    check.expect(meta == ("Y", 1.0), f"stage metrics are {meta}")
+    scenes = document.get("scenes", [])
+    roots = scenes[document.get("scene", 0)].get("nodes", []) if scenes else []
+    cache = UsdGeom.XformCache(Usd.TimeCode.Default())
+    expected_paths = set()
+    materials = {}
+
+    def walk(index, parent_path, parent_world):
+        node = document["nodes"][index]
+        path = f"{parent_path}/Node_{index}"
+        prim = stage.GetPrimAtPath(path)
+        if not check.expect(prim and prim.IsA(UsdGeom.Xform), f"{path} is not an Xform"):
+            return
+        world = node_matrix(node) @ parent_world
+        check.close(numpy.array(cache.GetLocalToWorldTransform(prim)), world, f"Node_{index} world transform")
+        if "mesh" in node:
+            mesh_index = node["mesh"]
+            for number, primitive in enumerate(document["meshes"][mesh_index]["primitives"]):
+                mesh_path = f"{path}/Mesh_{mesh_index}/Primitive_{number}"
+                expected_paths.add(mesh_path)
+                label = f"mesh {mesh_index} primitive {number}"
+                mesh_prim = stage.GetPrimAtPath(mesh_path)
+                if check.expect(mesh_prim and mesh_prim.IsA(UsdGeom.Mesh), f"{mesh_path} is not a Mesh"):
+                    bound, material, has_colors = check_primitive(check, asset, mesh_prim, primitive, label)
+                    materials[bound] = (material, has_colors)
+        for child in node.get("children", []):
+            walk(child, path, world)
+
+    for root in roots:
+        walk(root, "/Asset/geo", numpy.identity(4))
+    actual = {str(prim.GetPath()) for prim in stage.Traverse() if prim.IsA(UsdGeom.Mesh)}
+    check.expect(actual == expected_paths, f"{len(actual)} meshes authored, expected {len(expected_paths)}")
+    images = {}
+    for path, (material, has_colors) in sorted(materials.items()):
+        check_material(check, asset, stage, path, material, has_colors, images)
+    return check.mismatches, len(expected_paths)
+
+
+def diagnostics_from(text, root):
+    """Reduces USD's diagnostic text to its messages, without source locations or local paths."""
+    messages = []
+    for line in text.splitlines():
+        match = re.search(r" at line \d+ in file .*? : '(.*)'?$", line) or \
+            re.search(r" at line \d+ of .*? -- (.*)$", line)
+        if match:
+            line = match[1]
+        elif "glTF" not in line and "usdGltfFileFormat" not in line:
+            continue
+        line = line.strip().rstrip("'").strip()
+        line = line.replace(str(root), "<samples>").replace(str(root).replace("\\", "/"), "<samples>")
+        messages.append(line.replace("\\", "/"))
+    return messages
+
+
+def author_view(stage):
+    """Adds a camera that frames everything from an angle, because the default one can miss a model:
+    it sees a flat plane edge on, and its clipping range loses a model a few millimeters across."""
+    from pxr import Gf, Usd, UsdGeom
+
+    box = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_]).ComputeWorldBound(
+        stage.GetPseudoRoot()).ComputeAlignedRange()
+    radius = box.GetSize().GetLength() / 2 or 1.0
+    focal, aperture = 50.0, 36.0
+    distance = radius * 1.1 * 2 * focal / aperture
+    camera = UsdGeom.Camera.Define(stage, CAMERA)
+    camera.CreateFocalLengthAttr(focal)
+    camera.CreateHorizontalApertureAttr(aperture)
+    camera.CreateVerticalApertureAttr(aperture)
+    camera.CreateClippingRangeAttr(Gf.Vec2f(distance / 100, distance + radius * 2))
+    camera.AddTranslateOp(opSuffix="center").Set(box.GetMidpoint())
+    camera.AddRotateYOp().Set(30.0)
+    camera.AddRotateXOp().Set(-30.0)
+    camera.AddTranslateOp(opSuffix="distance").Set(Gf.Vec3d(0, 0, distance))
+
+
+def inspect(path, root, directory):
+    """Runs in a process of its own, and prints a result for this file."""
+    from pxr import Sdf, Tf, Usd, UsdShade
+
+    result = {"opened": True, "diagnostics": []}
+    try:
+        stage = Usd.Stage.Open(str(path))
+        if not stage:
+            raise RuntimeError("the stage did not open")
+    except (Tf.ErrorException, RuntimeError) as error:
+        result = {"opened": False, "diagnostics": diagnostics_from(str(error), root)}
+        print(RESULT_MARKER + json.dumps(result), flush=True)
+        return
+
+    asset = Asset(path)
+    used = asset.json.get("extensionsUsed", [])
+    result["ignored"] = sorted(set(used) - IMPLEMENTED_EXTENSIONS)
+    result["mismatches"], result["meshes"] = check_meaning(stage, asset)
+
+    for shading in PATHS:
+        session = Sdf.Layer.CreateAnonymous(".usda")
+        edit = Usd.Stage.Open(stage.GetRootLayer(), session)
+        edit.SetEditTarget(session)
+        author_view(edit)
+        for prim in edit.Traverse():
+            if shading == "preview" and prim.IsA(UsdShade.Material):
+                output = UsdShade.Material(prim).GetSurfaceOutput("mtlx")
+                if output:
+                    output.GetAttr().SetConnections([])
+        session.Export(str(directory / f"{shading}_session.usda"))
+    print(RESULT_MARKER + json.dumps(result), flush=True)
+
+
+def plugin_environment(build):
+    environment = dict(os.environ)
+    resources = build / "plugin" / "resources" / "usdGltfFileFormat"
+    if not resources.is_dir():
+        sys.exit(f"{resources} does not exist. Run ost build first.")
+    environment["PXR_PLUGINPATH_NAME"] = str(resources)
+    environment["PYTHONIOENCODING"] = "utf-8"
+    return environment
+
+
+def open_file(key, path, root, build, output):
+    """Opens one file in a process of its own, so that a crash or hang costs only this file."""
+    directory = output / key.replace("/", "__")
+    directory.mkdir(parents=True, exist_ok=True)
+    command = [sys.executable, str(pathlib.Path(__file__).resolve()), "--inspect", str(path), str(root),
+               str(directory)]
+    try:
+        process = subprocess.run(command, env=plugin_environment(build), capture_output=True, text=True,
+                                 encoding="utf-8", errors="replace", timeout=TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        return {"opened": "timeout"}
+    (directory / "inspect.log").write_text(process.stdout + process.stderr, encoding="utf-8")
+    payload = next((line[len(RESULT_MARKER):] for line in reversed(process.stdout.splitlines())
+                    if line.startswith(RESULT_MARKER)), None)
+    if process.returncode or payload is None:
+        tail = (process.stderr.strip().splitlines() or ["no output"])[-1]
+        return {"opened": "crashed", "exit": process.returncode, "detail": tail[:200]}
+    found = json.loads(payload)
+    warnings = sorted(set(diagnostics_from(process.stderr, root)))
+    if not found["opened"]:
+        diagnostic = rejection(found["diagnostics"], warnings)
+        causes = rejection_causes(Asset(path).json)
+        return {"opened": "rejected", "diagnostic": diagnostic, "causes": causes,
+                "diagnostic_fits": diagnostic_fits(diagnostic, causes)}
+    mismatches = found["mismatches"]
+    # What the plugin ignores it must say it ignores, so that nothing is dropped silently.
+    warned = {match[1] for match in map(OPTIONAL_WARNING.fullmatch, warnings) if match}
+    mismatches += [f"{name} is ignored without a warning" for name in found["ignored"] if name not in warned]
+    warnings = [warning for warning in warnings if not OPTIONAL_WARNING.fullmatch(warning)]
+    if mismatches:
+        meaning = "differs"
+    elif found["ignored"]:
+        meaning = "partial"
+    else:
+        meaning = "verified"
+    entry = {"opened": "opened", "meaning": meaning, "meshes": found["meshes"], "warnings": warnings}
+    if found["ignored"]:
+        entry["ignored"] = found["ignored"]
+    if mismatches:
+        entry["mismatches"] = mismatches[:MAXIMUM_MISMATCHES]
+        entry["mismatch_count"] = len(mismatches)
+    return entry
+
+
+def rejection(errors, warnings):
+    """Returns the message that caused a rejection, rather than the generic one USD adds after it."""
+    for message in [*errors, *warnings]:
+        if "glTF" in message or "usdGltfFileFormat" in message:
+            return message
+    return errors[0] if errors else "no diagnostic"
+
+
+def rejection_causes(document):
+    """Lists everything in a file that is unsupported, read from the file and not the diagnostic."""
+    required = set(document.get("extensionsRequired", [])) - IMPLEMENTED_EXTENSIONS
+    causes = {f"requires {name}" for name in required}
+    if document.get("animations"):
+        causes.add("animations")
+    nodes = document.get("nodes", [])
+    scenes = document.get("scenes", [])
+    pending = list(scenes[document.get("scene", 0)].get("nodes", [])) if scenes else []
+    seen = set()
+    while pending:
+        index = pending.pop()
+        if index in seen:
+            continue
+        seen.add(index)
+        node = nodes[index]
+        pending += node.get("children", [])
+        if "skin" in node:
+            causes.add("skin")
+        if "camera" in node:
+            causes.add("camera")
+        if "KHR_lights_punctual" in node.get("extensions", {}):
+            causes.add("light")
+        if "weights" in node:
+            causes.add("morph targets")
+        if "mesh" in node:
+            causes |= mesh_causes(document, document["meshes"][node["mesh"]])
+    return sorted(causes)
+
+
+def mesh_causes(document, mesh):
+    causes = {"morph targets"} if "weights" in mesh else set()
+    for primitive in mesh.get("primitives", []):
+        if primitive.get("mode", 4) not in (4, 5, 6):
+            causes.add("points or lines")
+        if primitive.get("targets"):
+            causes.add("morph targets")
+        accessors = [*primitive.get("attributes", {}).values()]
+        if "indices" in primitive:
+            accessors.append(primitive["indices"])
+        # Compressed primitives keep their data in the extension, not a bufferView.
+        compressed = primitive.get("extensions", {}).keys() & {"KHR_draco_mesh_compression"}
+        for index in accessors:
+            accessor = document["accessors"][index]
+            if "sparse" in accessor or ("bufferView" not in accessor and not compressed):
+                causes.add("sparse accessor")
+        if set(primitive.get("attributes", {})) & {"JOINTS_0", "WEIGHTS_0"}:
+            causes.add("skin")
+    return causes
+
+
+def diagnostic_fits(diagnostic, causes):
+    """Returns whether a diagnostic names a cause that the file really has."""
+    for pattern, kinds in DIAGNOSTIC_CAUSES.items():
+        if pattern in diagnostic:
+            return any(cause.startswith(kinds) for cause in causes)
+    return False
+
+
+def coverage(image_path):
+    """Returns the fraction of pixels a render covered, by alpha or by differing from its corner."""
+    from PySide6 import QtGui
+
+    image = QtGui.QImage(str(image_path)).convertToFormat(QtGui.QImage.Format.Format_RGBA8888)
+    if image.isNull():
+        return None
+    pixels = numpy.frombuffer(image.constBits(), numpy.uint8).reshape(image.height(), image.bytesPerLine() // 4, 4)
+    differs = numpy.any(numpy.abs(pixels.astype(numpy.int16) - pixels[0, 0].astype(numpy.int16)) > 8, axis=2)
+    return float(numpy.mean(differs))
+
+
+def render_file(key, path, build, output, usdrecord):
+    """Renders one opened file through each path. This shows that Storm draws, and no more."""
+    results = {}
+    directory = output / key.replace("/", "__")
+    for shading in PATHS:
+        image_path = directory / f"{shading}.png"
+        image_path.unlink(missing_ok=True)
+        session = str(directory / f"{shading}_session.usda")
+        command = [usdrecord, "--camera", CAMERA, "--sessionLayer", session, "--imageWidth", str(RENDER_WIDTH),
+                   str(path), str(image_path)]
+        try:
+            process = subprocess.run(command, env=plugin_environment(build), capture_output=True, text=True,
+                                     encoding="utf-8", errors="replace", timeout=TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            results[shading] = "timeout"
+            continue
+        text = process.stdout + process.stderr
+        (directory / f"{shading}.log").write_text(text, encoding="utf-8")
+        errors = [line for line in text.splitlines() if "Error" in line or "Failed to" in line]
+        covered = coverage(image_path) if image_path.exists() else None
+        if process.returncode:
+            results[shading] = "failed"
+        elif covered is None:
+            results[shading] = "no image"
+        elif covered < MINIMUM_COVERAGE:
+            results[shading] = "blank"
+        else:
+            results[shading] = "drawn with errors" if errors else "drawn"
+    return results
+
+
+def sample_files(root):
+    """Lists every file on disk, because the repository's index omits some."""
+    models = root / "Models"
+    return {path.relative_to(models).as_posix(): path for path in sorted(models.rglob("*"))
+            if path.suffix in (".gltf", ".glb")}
+
+
+def sample_commit(root):
+    return subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"], check=True, capture_output=True,
+                          text=True).stdout.strip()
+
+
+def write_baseline(commit, results):
+    """Writes one line per file, so that a change shows as a small diff."""
+    lines = [f"    {json.dumps(key)}: {json.dumps(results[key], sort_keys=True)}" for key in sorted(results)]
+    BASELINE.write_text('{\n  "commit": ' + json.dumps(commit) + ',\n  "files": {\n' + ",\n".join(lines) + "\n  }\n}\n",
+                        encoding="utf-8", newline="\n")
+
+
+def summarize(results):
+    tally = {}
+    for entry in results.values():
+        fields = [f"opened: {entry['opened']}"]
+        if "meaning" in entry:
+            fields.append(f"meaning: {entry['meaning']}")
+        fields += [f"rendered {shading}: {outcome}" for shading, outcome in entry.get("rendered", {}).items()]
+        for field in fields:
+            tally[field] = tally.get(field, 0) + 1
+    for field in sorted(tally):
+        print(f"{tally[field]:4} {field}")
+    causes = {}
+    for key, entry in results.items():
+        if entry["opened"] == "rejected":
+            cause = ", ".join(entry["causes"]) or "no cause found"
+            causes[cause] = causes.get(cause, 0) + 1
+            if not entry["diagnostic_fits"]:
+                print(f"     {key}: the diagnostic does not fit: {entry['diagnostic']}")
+    for cause, count in sorted(causes.items(), key=lambda item: (-item[1], item[0])):
+        print(f"{count:4} rejected: {cause}")
+
+
+def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "--inspect":
+        inspect(pathlib.Path(sys.argv[2]), pathlib.Path(sys.argv[3]), pathlib.Path(sys.argv[4]))
+        return 0
+
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("build", type=pathlib.Path, help="the directory of a built workspace")
+    parser.add_argument("samples", type=pathlib.Path, help="a checkout of glTF-Sample-Assets")
+    parser.add_argument("--render", action="store_true", help="also render, which needs a GPU")
+    parser.add_argument("--update", action="store_true", help="accept the results as the new baseline")
+    parser.add_argument("--only", help="check the files whose key contains this text")
+    parser.add_argument("--jobs", type=int, default=max((os.cpu_count() or 2) // 2, 1), help="files to open at once")
+    arguments = parser.parse_args()
+
+    build = arguments.build.resolve()
+    root = arguments.samples.resolve()
+    output = build / "sample_check"
+    output.mkdir(parents=True, exist_ok=True)
+    baseline = json.loads(BASELINE.read_text(encoding="utf-8")) if BASELINE.exists() else {"commit": None, "files": {}}
+    commit = sample_commit(root)
+    if baseline["commit"] and commit != baseline["commit"] and not arguments.update:
+        sys.exit(f"The samples are at {commit}, and the baseline is for {baseline['commit']}.")
+    usdrecord = shutil.which("usdrecord")
+    if arguments.render and not usdrecord:
+        sys.exit("usdrecord was not found. Activate the lookdev runtime first.")
+
+    files = sample_files(root)
+    if arguments.only:
+        files = {key: path for key, path in files.items() if arguments.only in key}
+    with concurrent.futures.ThreadPoolExecutor(arguments.jobs) as pool:
+        opened = pool.map(lambda item: open_file(item[0], item[1], root, build, output), files.items())
+        results = dict(zip(files, opened))
+    if arguments.render:
+        # One at a time, because the renders share one GPU.
+        for key, path in files.items():
+            if results[key]["opened"] == "opened":
+                results[key]["rendered"] = render_file(key, path, build, output, usdrecord)
+
+    summarize(results)
+    if arguments.update:
+        merged = {**baseline["files"], **results} if arguments.only else results
+        if not arguments.render:
+            for key, entry in merged.items():
+                if "rendered" in baseline["files"].get(key, {}):
+                    entry["rendered"] = baseline["files"][key]["rendered"]
+        write_baseline(commit, merged)
+        print(f"Wrote {BASELINE.relative_to(ROOT)} with {len(merged)} files at {commit}.")
+        return 0
+
+    differences = []
+    for key, entry in results.items():
+        expected = baseline["files"].get(key)
+        if expected is None:
+            differences.append(f"{key}: not in the baseline")
+            continue
+        if not arguments.render:
+            expected = {name: value for name, value in expected.items() if name != "rendered"}
+        if entry != expected:
+            differences.append(f"{key}:\n  baseline {json.dumps(expected, sort_keys=True)}\n"
+                               f"  now      {json.dumps(entry, sort_keys=True)}")
+    if not arguments.only:
+        differences += [f"{key}: in the baseline but not the samples" for key in baseline["files"]
+                        if key not in results]
+    print("\n".join(differences) if differences else f"All {len(results)} files match the baseline.")
+    return 1 if differences else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
