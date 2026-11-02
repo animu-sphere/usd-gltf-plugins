@@ -51,8 +51,9 @@ a change is an edit that a pull request shows.
 For the selected scene: stage metrics; prim paths and the mesh count; world transforms; points,
 triangles (in any rotation that keeps winding), normals including generated ones, UV sets with V
 flipped, tangents and vertex colors; bindings and `doubleSided`. For each bound material: which
-shader each path resolves to; for each texture in both networks, that it resolves, UV set, wrap modes
-and image bytes (PNG and JPEG sources must be identical, and KTX2 must be served as an image);
+shader each path resolves to; for each texture in both networks, that it resolves, UV set, its
+[transform](0011-texture-transform.md), wrap modes and image bytes (PNG and JPEG sources must be
+identical, and KTX2 must be served as an image);
 Preview's color space, factors, scales, normal scale and occlusion strength; and alpha mode and
 cutoff in both paths.
 

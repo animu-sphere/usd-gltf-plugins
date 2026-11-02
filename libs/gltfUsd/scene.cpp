@@ -3,6 +3,7 @@
 
 #include "material.h"
 #include "mesh.h"
+#include "parse.h"
 #include "sceneSelection.h"
 
 #include "pxr/base/gf/matrix4d.h"
@@ -296,7 +297,7 @@ ConvertScene(const fastgltf::Asset& asset, const std::string& sourcePath,
     }
     for (const auto& extension : asset.extensionsUsed)
     {
-        if (std::string_view(extension) != fastgltf::extensions::KHR_texture_basisu)
+        if (!gltfCore::IsImplementedExtension(extension))
         {
             TF_WARN("glTF optional extension '%s' is not supported", extension.c_str());
         }

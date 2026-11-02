@@ -23,9 +23,19 @@ see [TEXTURES](../design/TEXTURES.md) for their lifecycle and portability.
 
 Reject unsupported content rather than silently dropping it or presenting an
 incorrect scene. Unsupported required extensions fail during parsing, and the diagnostic names each
-of them. Unsupported optional extensions are reported as warnings. `KHR_lights_punctual` is parsed to detect
-light references on selected nodes, which are rejected; parsing it does not
-enable support for the extension.
+of them. A selected node's light reference is rejected, which is why `KHR_lights_punctual` is parsed;
+parsing it does not enable support for the extension.
+
+An optional extension takes one of three outcomes, and none of them is silent:
+
+- **Ignore, with a warning naming it,** when the file stays a valid glTF without it. glTF
+  defines this as a fallback, so the result is what any client without it would show.
+- **Approximate, with a warning stating what is lost,** when a path can express most of the meaning.
+  The approximation is specified and tested, and is recorded as a limit in the capability matrix. For
+  example, [a rotated normal map's frame](../adr/0011-texture-transform.md#normal-maps).
+- **Reject,** when ignoring it would leave out scene content that a client would otherwise show, or
+  would present malformed data as if it were valid.
+
 Malformed or unsafe data must produce explicit diagnostics and failure rather
 than a success result containing an unintentionally incomplete stage. Scene
 selection is defined in

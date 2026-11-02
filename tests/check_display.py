@@ -303,6 +303,39 @@ def check_ktx2_textures(renderer, report):
                          render.sample(1, LOWER_RIGHT))
 
 
+def check_texture_transforms(renderer, report):
+    """Each quad is compared with its reference, where the specification's matrix is baked into UVs."""
+    grid = [(x, y) for x in (0.125, 0.375, 0.625, 0.875) for y in (0.125, 0.375, 0.625, 0.875)]
+    # Baking a scale of 0 makes UVs degenerate, which turns the reference's MaterialX path black.
+    scale_of_0 = 10
+    # Storm's MaterialX path derives the frame from the primvar, without the rotation or mirror.
+    frame_differs = (16, 17, 18, 21)
+    for path in PATHS:
+        render = renderer.record("texture_transforms", FIXTURES / "texture_transforms.gltf", path)
+        reference = renderer.record("texture_transforms_reference", FIXTURES / "texture_transforms_reference.gltf", path)
+        if not render or not reference:
+            continue
+        report.expect(f"{path} fixture and reference have the same quads", len(render.meshes) == len(reference.meshes) == 22,
+                      f"{len(render.meshes)} and {len(reference.meshes)}")
+        for mesh in range(len(render.meshes)):
+            samples = [(render.sample(mesh, point), reference.sample(mesh, point)) for point in grid]
+            worst = max(abs(x - y) for a, b in samples for x, y in zip(a, b))
+            if mesh == scale_of_0 and path == "mtlx":
+                continue
+            if mesh in frame_differs and path == "mtlx":
+                report.expect(f"{path} transform {mesh} differs from its reference, the documented limit", worst >= 5,
+                              f"apart by {worst}")
+            else:
+                report.expect(f"{path} transform {mesh} matches its reference", worst <= SAME, f"apart by {worst}")
+        # What a reference that was itself wrong could not hide.
+        for mesh, label, names in ((0, "every field at its default", "RGBW"), (1, "offset in U", "GRWB"),
+                                   (2, "offset in V", "BWRG"), (3, "scale about the upper left", "RRRR"),
+                                   (4, "rotation", "BRWG"), (7, "negative scale", "GRWB"), (9, "clamp", "WWWW"),
+                                   (10, "scale of 0", "RRRR"), (11, "override of texCoord", "BWRG"),
+                                   (12, "override with a transform", "WBGR"), (14, "emissive", "BRWG")):
+            report.image(label, render, mesh, names)
+
+
 def png(color):
     """Encodes a uniform 4 by 4 RGBA image."""
 
@@ -532,7 +565,7 @@ def main():
     report = Report(arguments.verbose)
     renderer = Renderer(output, plugin, report)
     for check in (check_reflections, check_alpha_modes, check_base_color_textures, check_pbr_textures,
-                  check_normal_textures, check_ktx2_textures, check_measurements):
+                  check_normal_textures, check_texture_transforms, check_ktx2_textures, check_measurements):
         print(check.__name__.removeprefix("check_"), flush=True)
         check(renderer, report)
 
