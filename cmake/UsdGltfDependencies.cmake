@@ -6,6 +6,12 @@ get_filename_component(USD_GLTF_REPOSITORY_ROOT "${CMAKE_CURRENT_LIST_DIR}/.." A
 
 find_package(pxr REQUIRED CONFIG)
 
+# A host process can load other versions of the vendored libraries, so nothing in the plugin
+# may bind to or replace their symbols. OpenUSD's own headers keep their default visibility.
+set(CMAKE_C_VISIBILITY_PRESET hidden)
+set(CMAKE_CXX_VISIBILITY_PRESET hidden)
+set(CMAKE_VISIBILITY_INLINES_HIDDEN ON)
+
 function(usd_gltf_add_fastgltf)
     set(third_party_dir "${USD_GLTF_REPOSITORY_ROOT}/third_party")
     add_library(usd_gltf_simdjson STATIC "${third_party_dir}/simdjson/simdjson.cpp")

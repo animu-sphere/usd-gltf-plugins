@@ -6,8 +6,8 @@ Windows with OpenUSD 26.08 when the decision was made. The
 
 ## Decision
 
-Build the converted scene on an anonymous, temporary layer on a separate
-worker thread. Geometry, material networks and bindings use schema APIs
+Build the converted scene on an anonymous, temporary layer on one worker thread
+that lives as long as the process and runs one conversion at a time. Geometry, material networks and bindings use schema APIs
 (`UsdGeom`, `UsdShade`) on a stage opened over that layer. The worker must not
 be inside the caller's `SdfChangeBlock`. Transport its `Tf` errors back to the
 calling thread before returning. The buffer-loader callback executes on that
@@ -54,6 +54,28 @@ requires; the direct specs had omitted the first and left the second varying.
 Opening a generated 5000-node scene took 1.21 s before and 1.27 s after on the
 same machine. The stage was already open during geometry authoring, so its change
 processing is not new.
+
+A new thread for each read first crashed intermittently on macOS arm64 CI, on the authoring
+thread, while `UsdStage::DefinePrim` ran prim indexing tasks in TBB. Each row is 120 runs of the
+test suite on a `macos-15` runner, three at a time:
+
+| Authoring thread | Crashes |
+| --- | --- |
+| New for each read, default stack | 6, 7 and 8, in three probes |
+| New for each read, 1 MiB stack | 9 |
+| New for each read, 8 MiB stack | 11 |
+| One for the process | 0 |
+| New for each read, `PXR_WORK_THREAD_LIMIT=1` | 0 |
+
+The same sequence without this plugin, from Python and on a new thread each time, crashed once in
+120 runs of 1500 threads, with the same stack. So it comes from OpenUSD and TBB under thread
+turnover, and is not specific to this plugin's authoring. Fault addresses were small invalid values
+and not the stack's limit. The mechanism inside TBB was not found. It was not seen on Windows or
+Linux, where a short-lived thread is also used.
+
+Conversions therefore run one at a time, which limits a process reading many glTF files in
+parallel. A conversion that reaches another glTF read runs it on the same thread rather than
+waiting for itself.
 
 The end-to-end plugin tests exercise both formats, failed reload without
 publication, successful reload on an existing stage, and material reload

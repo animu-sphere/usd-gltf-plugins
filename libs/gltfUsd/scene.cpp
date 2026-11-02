@@ -21,10 +21,14 @@
 #include <fastgltf/core.hpp>
 
 #include <cmath>
+#include <condition_variable>
+#include <deque>
 #include <exception>
 #include <future>
+#include <mutex>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -182,6 +186,65 @@ authorScene(const fastgltf::Asset& asset, const std::string& sourcePath,
     return layer;
 }
 
+// Runs authoring on one thread that lives as long as the process, one task at a time. A thread per
+// read crashed intermittently in TBB on macOS, without this plugin too: see docs/architecture/
+// LAYER_AUTHORING.md. Never destroyed, because the thread can outlive static destruction.
+class AuthoringThread
+{
+  public:
+    static AuthoringThread&
+    Get()
+    {
+        static AuthoringThread* const instance = new AuthoringThread;
+        return *instance;
+    }
+
+    template <class Function>
+    SdfLayerRefPtr
+    Run(Function function)
+    {
+        // A resolver or buffer loader could read another glTF layer while authoring.
+        if (std::this_thread::get_id() == _thread.get_id())
+        {
+            return function();
+        }
+        std::packaged_task<SdfLayerRefPtr()> task(std::move(function));
+        auto result = task.get_future();
+        {
+            const std::lock_guard<std::mutex> lock(_mutex);
+            _tasks.push_back(std::move(task));
+        }
+        _wake.notify_one();
+        return result.get();
+    }
+
+  private:
+    AuthoringThread() : _thread([this] { _Loop(); })
+    {
+    }
+
+    void
+    _Loop()
+    {
+        for (;;)
+        {
+            std::packaged_task<SdfLayerRefPtr()> task;
+            {
+                std::unique_lock<std::mutex> lock(_mutex);
+                _wake.wait(lock, [this] { return !_tasks.empty(); });
+                task = std::move(_tasks.front());
+                _tasks.pop_front();
+            }
+            task();
+        }
+    }
+
+    std::mutex _mutex;
+    std::condition_variable _wake;
+    std::deque<std::packaged_task<SdfLayerRefPtr()>> _tasks;
+    std::thread _thread; // Last, so that the members above exist when it starts.
+};
+
 } // namespace
 
 pxr::SdfLayerRefPtr
@@ -222,24 +285,22 @@ ConvertScene(const fastgltf::Asset& asset, const std::string& sourcePath,
     SdfLayerRefPtr result;
     try
     {
-        auto task =
-            std::async(std::launch::async,
-                       [&]()
-                       {
-                           TfErrorMark mark;
-                           SdfLayerRefPtr staged;
-                           try
-                           {
-                               staged = authorScene(asset, sourcePath, loadBuffer, selected->index);
-                           }
-                           catch (const std::exception& e)
-                           {
-                               TF_RUNTIME_ERROR("glTF authoring failed: %s", e.what());
-                           }
-                           mark.TransportTo(errors);
-                           return staged;
-                       });
-        result = task.get();
+        result = AuthoringThread::Get().Run(
+            [&]()
+            {
+                TfErrorMark mark;
+                SdfLayerRefPtr staged;
+                try
+                {
+                    staged = authorScene(asset, sourcePath, loadBuffer, selected->index);
+                }
+                catch (const std::exception& e)
+                {
+                    TF_RUNTIME_ERROR("glTF authoring failed: %s", e.what());
+                }
+                mark.TransportTo(errors);
+                return staged;
+            });
     }
     catch (const std::exception& e)
     {
