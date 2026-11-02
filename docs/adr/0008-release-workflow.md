@@ -27,8 +27,8 @@ Keep the parts that apply to one bundle, and leave out the rest until there is a
 `<name>-<version>-<target>`, the shape `usd-vrm-plugins` and `usd-mmd-plugins` publish. The packages
 were first left out because nothing pinned them, and were added at v0.1.0 so that this repository's
 releases can be consumed like theirs. They are pushed before the draft exists, because the draft's
-notes carry the pins, so a push is not undone by discarding a draft. A repository that a first push
-creates is private, and making it public is a manual step in the package's settings.
+notes carry the pins, so a push is not undone by discarding a draft. The package was created by a
+push from this repository's workflow, and it came out public and linked to the repository.
 
 **Pins are read, not copied.** The workflow takes its cells from `ost ci matrix --lane main`.
 The reference's `release.yml` has its own copy of these pins, and its comments record a tag build

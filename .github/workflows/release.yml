@@ -220,10 +220,8 @@ jobs:
           if-no-files-found: error
 
   # Pushes the bundle for every target to one GHCR repository, tagged <name>-<version>-<target>.
-  # The repository is public, which is a setting on the package: a repository that a first push
-  # creates would be private. `ost` does not read the docker credential store, so a push needs a
-  # user and password. A dry run imports the packages, pushes nothing, and writes a table with no
-  # source.
+  # The package is public. `ost` does not read the docker credential store, so a push needs a user
+  # and password. A dry run imports the packages, pushes nothing, and writes a table with no source.
   publish:
     name: publish the packages
     needs: [preflight, build]
