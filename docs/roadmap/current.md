@@ -8,9 +8,6 @@ implementation order, which investigation may change. Each feature follows the
 
 ### First
 
-- What the [sample baseline](../reference/CAPABILITY_MATRIX.md#sample-assets) found: normalize a
-  rotation within the tolerance of unit length; name the extension when a required one is rejected;
-  and state the cause found in the diagnostics that list several.
 - `KHR_texture_transform`: offset, scale, rotation and `texCoord` override, across texture slots and
   UV sets, including one image under different transforms. Fixtures settle the differences in UV
   definition, transform order and V direction. Also UV and material boundary conditions, and a

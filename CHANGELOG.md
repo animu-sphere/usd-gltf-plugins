@@ -14,6 +14,16 @@ here.
 - Sample check, `tests/check_samples.py`, which records whether every Khronos sample asset opens,
   agrees with the file in USD and draws, and compares that with a committed baseline.
 
+### Changed
+
+- A rejection names each unsupported required extension, and states the one skin, camera, light,
+  morph, primitive mode or accessor cause it found rather than listing the possibilities.
+
+### Fixed
+
+- A rotation within the tolerance of unit length is normalized, and no longer scales and shears its
+  node.
+
 ## [0.1.0] - 2026-11-02
 
 ### Added

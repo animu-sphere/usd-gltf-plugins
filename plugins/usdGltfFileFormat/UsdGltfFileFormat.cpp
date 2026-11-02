@@ -37,7 +37,9 @@ class UsdGltfFileFormat : public SdfFileFormat
         {
             return false;
         }
-        return gltfCore::Parse(reinterpret_cast<const std::byte*>(bytes.get()), input->GetSize())
+        std::string error;
+        return gltfCore::Parse(reinterpret_cast<const std::byte*>(bytes.get()), input->GetSize(),
+                               error)
                    .error() == fastgltf::Error::None;
     }
 
@@ -56,12 +58,13 @@ class UsdGltfFileFormat : public SdfFileFormat
             TF_RUNTIME_ERROR("usdGltfFileFormat: cannot read asset '%s'", path.c_str());
             return false;
         }
-        auto asset =
-            gltfCore::Parse(reinterpret_cast<const std::byte*>(bytes.get()), input->GetSize());
+        std::string error;
+        auto asset = gltfCore::Parse(reinterpret_cast<const std::byte*>(bytes.get()),
+                                     input->GetSize(), error);
         if (asset.error() != fastgltf::Error::None)
         {
             TF_RUNTIME_ERROR("usdGltfFileFormat: cannot parse '%s': %s", path.c_str(),
-                             fastgltf::getErrorMessage(asset.error()).data());
+                             error.c_str());
             return false;
         }
         ExternalBufferLoader loader(path);

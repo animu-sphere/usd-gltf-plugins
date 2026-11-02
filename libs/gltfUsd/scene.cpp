@@ -40,6 +40,25 @@ namespace
 
 using namespace pxr;
 
+// Returns what a node uses that cannot be converted, or nullptr.
+const char*
+unsupportedNodeContent(const fastgltf::Node& node)
+{
+    if (node.skinIndex)
+    {
+        return "skins are";
+    }
+    if (node.cameraIndex)
+    {
+        return "cameras are";
+    }
+    if (node.lightIndex)
+    {
+        return "KHR_lights_punctual lights are";
+    }
+    return node.weights.empty() ? nullptr : "morph weights are";
+}
+
 bool
 nodeMatrix(const fastgltf::Node& node, GfMatrix4d& result)
 {
@@ -53,10 +72,15 @@ nodeMatrix(const fastgltf::Node& node, GfMatrix4d& result)
         {
             return false;
         }
+        // The tolerance accepts rotations that would otherwise scale and shear the node. This does
+        // not use fastgltf::math::normalize, whose quaternion division multiplies in fastgltf 1.0.0.
+        const double length = std::sqrt(lengthSquared);
+        const fastgltf::math::nquat rotation(
+            fastgltf::num(q.x() / length), fastgltf::num(q.y() / length),
+            fastgltf::num(q.z() / length), fastgltf::num(q.w() / length));
         matrix = fastgltf::math::scale(
             fastgltf::math::rotate(
-                fastgltf::math::translate(fastgltf::math::nmat4x4(), trs->translation),
-                trs->rotation),
+                fastgltf::math::translate(fastgltf::math::nmat4x4(), trs->translation), rotation),
             trs->scale);
     }
     else
@@ -142,11 +166,9 @@ authorScene(const fastgltf::Asset& asset, const std::string& sourcePath,
         }
         visited[index] = true;
         const auto& node = asset.nodes[index];
-        if (node.skinIndex || node.cameraIndex || node.lightIndex || !node.weights.empty())
+        if (const char* unsupported = unsupportedNodeContent(node))
         {
-            TF_RUNTIME_ERROR(
-                "glTF node %zu uses skin, camera, light, or morph data that is not supported yet",
-                index);
+            TF_RUNTIME_ERROR("glTF node %zu: %s not supported yet", index, unsupported);
             return {};
         }
         GfMatrix4d matrix;

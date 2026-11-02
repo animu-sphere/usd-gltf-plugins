@@ -27,7 +27,7 @@ CI success is not evidence of display compatibility.
 | --- | --- | --- | --- |
 | `.gltf` / `.glb` registration and import | Verified (USD data, CI) | Read only; writing and editing are declared unsupported. Eager conversion on read. | `tests/test_file_format.py::test_registration_and_capabilities` |
 | Scene selection | Verified (USD data, CI) | Declared default scene, or scene 0 with a warning. No scenes or an invalid default fail. Scenes are never merged. | `tests/scene_selection.cpp`, `tests/test_file_format.py::test_first_scene_fallback_warns`, `tests/test_file_format.py::test_failures_report_diagnostics` |
-| Node hierarchy and transforms | Verified (USD data, CI) | TRS and matrix nodes. Invalid quaternions and perspective matrices fail. A quaternion within the tolerance of unit length is applied without normalizing. Multiply referenced meshes are duplicated, not shared. | `tests/test_file_format.py::test_scene_hierarchy_and_transforms`, `tests/test_file_format.py::test_node_order_and_optional_extension_warning` |
+| Node hierarchy and transforms | Verified (USD data, CI) | TRS and matrix nodes. Invalid quaternions and perspective matrices fail. A quaternion within the tolerance of unit length is normalized. Multiply referenced meshes are duplicated, not shared. | `tests/test_file_format.py::test_scene_hierarchy_and_transforms`, `tests/test_file_format.py::test_rotations_are_normalized_within_the_tolerance`, `tests/test_file_format.py::test_node_order_and_optional_extension_warning` |
 | Triangle-based meshes | Verified (USD data, CI) | Indexed and non-indexed TRIANGLES, TRIANGLE_STRIP and TRIANGLE_FAN with float POSITION. Interleaved accessors are accepted. | `tests/test_file_format.py::test_triangle_meshes`, `tests/test_file_format.py::test_triangle_strips_and_fans`, `tests/test_file_format.py::test_triangle_strip_and_fan_index_types_and_nonindexed_counts`, `tests/test_file_format.py::test_mesh_schema_attributes` |
 | Normals | Verified (USD data, CI) | Supplied float NORMAL, or generated per face when absent. | `tests/test_file_format.py::test_flat_normals_and_negative_scale` |
 | Texture coordinate sets | Verified (USD data, CI) | Consecutive TEXCOORD_n. Authored values; sampling through them is covered by the texture rows. | `tests/test_file_format.py::test_texture_coordinates`, `tests/test_file_format.py::test_texture_coordinate_failures_preserve_layer` |
@@ -36,7 +36,7 @@ CI success is not evidence of display compatibility.
 | Coordinate system and units | Verified (USD data, CI) | Y-up and meters authored on direct open and reload; referencing into a Z-up centimeter stage. Not every transform combination. | `tests/test_file_format.py::test_coordinate_system_and_reference_composition` |
 | Reflections, winding and normals | Verified (USD data, CI) | Indexed and non-indexed triangles with odd and even reflections in hierarchical transforms and a mirrored reference. | `tests/test_file_format.py::test_hierarchical_reflection_winding_and_normals`, `tests/test_file_format.py::test_reflection_view_fixture` |
 | Failure and reload behavior | Verified (USD data, CI) | Tested failures emit a diagnostic and do not publish a partial layer. Not proven for every USD error; [the transfer itself is not atomic](../architecture/LAYER_AUTHORING.md#decision). | `tests/test_file_format.py::test_failed_reload_does_not_publish_partial_stage`, `tests/test_file_format.py::test_mesh_failures_and_reload_preservation`, `tests/test_file_format.py::test_nonfinite_position_is_rejected` |
-| Extensions | Experimental | `KHR_texture_basisu` is implemented; see its row. Any other required extension fails. Other optional extensions warn and are ignored, except that a selected node using `KHR_lights_punctual` is rejected. | `tests/test_file_format.py::test_failures_report_diagnostics`, `tests/test_file_format.py::test_node_order_and_optional_extension_warning`, `tests/test_file_format.py::test_optional_lights_outside_selected_scene_and_required_lights`, `tests/test_file_format.py::test_unsupported_features_fail_without_publishing` |
+| Extensions | Experimental | `KHR_texture_basisu` is implemented; see its row. Any other required extension fails, and the diagnostic names it. Other optional extensions warn and are ignored, except that a selected node using `KHR_lights_punctual` is rejected. | `tests/test_file_format.py::test_failures_report_diagnostics`, `tests/test_file_format.py::test_node_order_and_optional_extension_warning`, `tests/test_file_format.py::test_optional_lights_outside_selected_scene_and_required_lights`, `tests/test_file_format.py::test_unsupported_features_fail_without_publishing` |
 | usdview/Storm display | Experimental | The [display check](#display-checks) of simple fixtures through both shader paths, run on one Windows machine. Not general renderer support. | `tests/check_display.py`, `tests/fixtures/reflections.gltf`, `tests/fixtures/alpha_modes.gltf`, `tests/fixtures/base_color_textures.gltf`, `tests/fixtures/pbr_textures.gltf`, `tests/fixtures/normal_textures.gltf`, `tests/fixtures/ktx2_textures.gltf` |
 | OpenStrata workspace build and tests | Verified (Windows x86-64, Linux x86-64, macOS arm64; OpenUSD 26.08) | The environments listed under [tested environments](#tested-environments). | [tag workflow 41388405224](https://github.com/animu-sphere/usd-gltf-plugins/actions/runs/41388405224) |
 | Standalone OpenStrata bundle | Verified (Windows x86-64, Linux x86-64, macOS arm64; OpenUSD 26.08) | `ost plugin test` confirms discovery of the file format, not a successful import. | `plugins/usdGltfFileFormat/openstrata.plugin.yaml`, [tag workflow 41388405224](https://github.com/animu-sphere/usd-gltf-plugins/actions/runs/41388405224) |
@@ -185,20 +185,17 @@ not in this repository: 339 files in 150 models. The result for each file is in
 [`tests/sample_baseline.json`](../../tests/sample_baseline.json), and
 [ADR 0010](../adr/0010-sample-baseline.md) explains what is compared and its limits.
 
-Last result: at `89f29a8`, on Windows with OpenUSD 26.08, the OpenStrata lookdev runtime and an NVIDIA
+Last result: at `b2dc127`, on Windows with OpenUSD 26.08, the OpenStrata lookdev runtime and an NVIDIA
 RTX A5000. Repeated runs gave the same result for every file. It is not part of CI.
 
 | Result | Files | What it means |
 | --- | --- | --- |
 | Opened | 196 | The stage opens. No file crashed or timed out. |
 | Rejected | 143 | Each has a diagnostic naming a cause the file really has. |
-| Meaning verified | 91 | USD agrees with values decoded from the file, in all that is compared, and the file uses no ignored extension. |
+| Meaning verified | 93 | USD agrees with values decoded from the file, in all that is compared, and the file uses no ignored extension. |
 | Meaning partial | 103 | The same, but the file uses an optional extension that is ignored, with a warning. What it changes is not compared. |
-| Meaning differs | 2 | Both variants of TextureEncodingTest: see below. |
+| Meaning differs | 0 | |
 | Rendered | 196 | Storm drew something through both shader paths. No pixel was judged, so this is not evidence of correct display. |
-
-TextureEncodingTest has a rotation of `(0, 0, 0.707, 0.707)`, within the accepted tolerance of unit
-length. The plugin applies it without normalizing, which scales and shears that node by about 0.03%.
 
 Why files are rejected, read from each file. Most files have several causes, so a count of files that
 have a cause is not what supporting it would open:
@@ -220,9 +217,6 @@ have a cause is not what supporting it would open:
 | Requires meshopt compression | 5 | 0 |
 | Points or lines | 3 | 3 |
 | Sparse accessor | 2 | 2 |
-
-Of the 143 diagnostics, 69 say only that a required extension is not enabled, without naming it. The
-21 about nodes and 3 about primitives list several possible causes rather than the one found.
 
 Ignored optional extensions, in files that opened, include `KHR_materials_transmission` (51),
 `KHR_materials_volume` (43), `KHR_materials_ior` (28), `KHR_materials_clearcoat` (17) and

@@ -327,17 +327,42 @@ readIndices(const fastgltf::Asset& asset, std::size_t index, std::size_t pointCo
     return true;
 }
 
+// Returns what a primitive uses that cannot be converted, or an empty string.
+std::string
+unsupportedPrimitiveContent(const fastgltf::Primitive& primitive)
+{
+    switch (primitive.type)
+    {
+    case fastgltf::PrimitiveType::Points:
+        return "primitive mode POINTS is not supported";
+    case fastgltf::PrimitiveType::Lines:
+        return "primitive mode LINES is not supported";
+    case fastgltf::PrimitiveType::LineLoop:
+        return "primitive mode LINE_LOOP is not supported";
+    case fastgltf::PrimitiveType::LineStrip:
+        return "primitive mode LINE_STRIP is not supported";
+    default:
+        break;
+    }
+    if (!primitive.targets.empty())
+    {
+        return "morph targets are not supported";
+    }
+    if (primitive.dracoCompression)
+    {
+        return "KHR_draco_mesh_compression is not supported";
+    }
+    return primitive.mappings.empty() ? "" : "KHR_materials_variants is not supported";
+}
+
 bool
 authorPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& primitive,
                 const UsdPrim& parent, std::size_t index, std::string& error,
                 const gltfCore::BufferLoader& loadBuffer, MaterialAuthor& materials)
 {
-    if ((primitive.type != fastgltf::PrimitiveType::Triangles &&
-         primitive.type != fastgltf::PrimitiveType::TriangleStrip &&
-         primitive.type != fastgltf::PrimitiveType::TriangleFan) ||
-        !primitive.targets.empty() || primitive.dracoCompression || !primitive.mappings.empty())
+    error = unsupportedPrimitiveContent(primitive);
+    if (!error.empty())
     {
-        error = "primitive mode, morph targets, or compression is not supported";
         return false;
     }
     const fastgltf::Attribute* position = nullptr;
@@ -588,10 +613,14 @@ AuthorMesh(const fastgltf::Asset& asset, std::size_t meshIndex, const pxr::UsdPr
         return false;
     }
     const auto& source = asset.meshes[meshIndex];
-    if (source.primitives.empty() || !source.weights.empty())
+    if (source.primitives.empty())
     {
-        TF_RUNTIME_ERROR("glTF mesh %zu has no primitives or uses unsupported morph weights",
-                         meshIndex);
+        TF_RUNTIME_ERROR("glTF mesh %zu has no primitives", meshIndex);
+        return false;
+    }
+    if (!source.weights.empty())
+    {
+        TF_RUNTIME_ERROR("glTF mesh %zu: morph weights are not supported yet", meshIndex);
         return false;
     }
     const auto group = UsdGeomXform::Define(

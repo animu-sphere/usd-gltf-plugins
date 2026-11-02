@@ -51,8 +51,10 @@ openPackage(const std::string& resolvedPackagePath)
     {
         return {};
     }
+    // The file format has already reported why the source cannot be read.
+    std::string error;
     auto parsed =
-        gltfCore::Parse(reinterpret_cast<const std::byte*>(bytes.get()), input->GetSize());
+        gltfCore::Parse(reinterpret_cast<const std::byte*>(bytes.get()), input->GetSize(), error);
     if (parsed.error() != fastgltf::Error::None)
     {
         return {};

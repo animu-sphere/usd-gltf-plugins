@@ -1031,7 +1031,7 @@ class FileFormatTest(unittest.TestCase):
             "stride": "bufferView",
             "material": "texture coordinate set the primitive does not have",
             "attribute": "unsupported or repeated vertex attribute",
-            "mode": "not supported",
+            "mode": "primitive mode LINES is not supported",
         }
         with tempfile.TemporaryDirectory() as directory:
             for extension in ("gltf", "glb"):
@@ -2487,12 +2487,12 @@ class FileFormatTest(unittest.TestCase):
 
     def test_unsupported_features_fail_without_publishing(self):
         cases = {
-            "skin": "skin, camera, light, or morph",
-            "camera": "skin, camera, light, or morph",
-            "light": "skin, camera, light, or morph",
-            "morph target": "morph targets",
-            "mesh weights": "morph weights",
-            "node weights": "skin, camera, light, or morph",
+            "skin": "node 1: skins are not supported",
+            "camera": "node 1: cameras are not supported",
+            "light": "node 1: KHR_lights_punctual lights are not supported",
+            "morph target": "morph targets are not supported",
+            "mesh weights": "mesh 0: morph weights are not supported",
+            "node weights": "node 1: morph weights are not supported",
             "animation": "animations are not supported",
         }
         with tempfile.TemporaryDirectory() as directory:
@@ -2833,6 +2833,34 @@ class FileFormatTest(unittest.TestCase):
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertIn("UNKNOWN_optional", result.stderr)
 
+    def test_rotations_are_normalized_within_the_tolerance(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for extension in ("gltf", "glb"):
+                for label, component in (("short", 0.707), ("long", 0.7073)):
+                    with self.subTest(extension=extension, label=label):
+                        path = pathlib.Path(directory) / f"{label}.{extension}"
+                        write_asset(path, {
+                            "asset": {"version": "2.0"}, "scene": 0, "scenes": [{"nodes": [0]}],
+                            "nodes": [{"rotation": [0, 0, component, component], "scale": [2, 3, 4]}],
+                        })
+                        stage = Usd.Stage.Open(str(path))
+                        matrix = UsdGeom.Xformable(stage.GetPrimAtPath("/Asset/geo/Node_0")) \
+                            .GetLocalTransformation(Usd.TimeCode.Default())
+                        # A quarter turn about Z, with each scale exact.
+                        expected = Gf.Matrix4d(0, 2, 0, 0, -3, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 1)
+                        for row in range(4):
+                            for column in range(4):
+                                self.assertAlmostEqual(matrix[row][column], expected[row][column], places=5)
+
+                with self.subTest(extension=extension, label="outside the tolerance"):
+                    path = pathlib.Path(directory) / f"outside.{extension}"
+                    write_asset(path, {
+                        "asset": {"version": "2.0"}, "scene": 0, "scenes": [{"nodes": [0]}],
+                        "nodes": [{"rotation": [0, 0, 0.72, 0.72]}],
+                    })
+                    with self.assertRaisesRegex(Tf.ErrorException, "invalid transform"):
+                        Usd.Stage.Open(str(path))
+
     def test_failures_report_diagnostics(self):
         cases = {
             "no scenes": ({"asset": {"version": "2.0"}}, "no scenes"),
@@ -2852,10 +2880,22 @@ class FileFormatTest(unittest.TestCase):
                                                           0, 0, 1, 0, 0, 0, 0, 1]}]}, "invalid transform"),
             "required extension": ({"asset": {"version": "2.0"}, "scenes": [{}],
                                     "extensionsUsed": ["UNKNOWN_extension"],
-                                    "extensionsRequired": ["UNKNOWN_extension"]}, "cannot parse"),
+                                    "extensionsRequired": ["UNKNOWN_extension"]},
+                                   "cannot parse .*unsupported required extensions: UNKNOWN_extension"),
             "known required extension": ({"asset": {"version": "2.0"}, "scenes": [{}],
                                           "extensionsUsed": ["KHR_lights_punctual"],
-                                          "extensionsRequired": ["KHR_lights_punctual"]}, "cannot parse"),
+                                          "extensionsRequired": ["KHR_lights_punctual"]},
+                                         "unsupported required extensions: KHR_lights_punctual"),
+            "disabled required extension": ({"asset": {"version": "2.0"}, "scenes": [{}],
+                                             "extensionsUsed": ["KHR_draco_mesh_compression"],
+                                             "extensionsRequired": ["KHR_draco_mesh_compression"]},
+                                            "unsupported required extensions: KHR_draco_mesh_compression"),
+            "several required extensions": ({"asset": {"version": "2.0"}, "scenes": [{}],
+                                             "extensionsUsed": ["KHR_texture_basisu", "EXT_texture_webp",
+                                                                "UNKNOWN_extension"],
+                                             "extensionsRequired": ["KHR_texture_basisu", "EXT_texture_webp",
+                                                                    "UNKNOWN_extension"]},
+                                            "unsupported required extensions: EXT_texture_webp, UNKNOWN_extension"),
         }
         with tempfile.TemporaryDirectory() as directory:
             for extension in ("gltf", "glb"):

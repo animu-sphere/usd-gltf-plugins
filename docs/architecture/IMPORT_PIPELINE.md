@@ -22,8 +22,8 @@ see [TEXTURES](../design/TEXTURES.md) for their lifecycle and portability.
 ## Failure policy
 
 Reject unsupported content rather than silently dropping it or presenting an
-incorrect scene. unsupported required extensions fail during parsing. Unsupported optional
-extensions are reported as warnings. `KHR_lights_punctual` is parsed to detect
+incorrect scene. Unsupported required extensions fail during parsing, and the diagnostic names each
+of them. Unsupported optional extensions are reported as warnings. `KHR_lights_punctual` is parsed to detect
 light references on selected nodes, which are rejected; parsing it does not
 enable support for the extension.
 Malformed or unsafe data must produce explicit diagnostics and failure rather
