@@ -64,7 +64,7 @@ test suite on a `macos-15` runner, three at a time:
 | New for each read, default stack | 6, 7 and 8, in three probes |
 | New for each read, 1 MiB stack | 9 |
 | New for each read, 8 MiB stack | 11 |
-| One for the process | 0 |
+| One for the process | 0, and 0 of 360 for the implementation |
 | New for each read, `PXR_WORK_THREAD_LIMIT=1` | 0 |
 
 The same sequence without this plugin, from Python and on a new thread each time, crashed once in

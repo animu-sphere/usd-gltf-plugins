@@ -54,5 +54,8 @@ Every release must satisfy these checks:
 4. Push the tag. The workflow builds, tests and packages on each CI platform, checks that each
    package works without the source tree, and creates a draft release.
 5. Go through the release gate, edit the draft's notes, and publish it.
+6. In a following pull request, write `docs/releases/vX.Y.Z.md`, which records the tag commit, the
+   workflow run and checksums. Those do not exist until the tag does, so it is not in the tagged
+   commit. The same pull request moves the next version out of the backlog.
 
 The [decision record](../adr/0008-release-workflow.md) explains what the workflow does not do.

@@ -21,6 +21,7 @@ than presenting planned behavior as implemented.
 | [Textures](design/TEXTURES.md) | URI, image conversion, cache and path lifetime specification | Texture support status |
 | [Capability matrix](reference/CAPABILITY_MATRIX.md) | **The only record of what is implemented and verified:** scope, limitations, evidence, environments | Future commitments, release plans |
 | [Roadmap](roadmap/README.md), [current](roadmap/current.md), [backlog](roadmap/backlog.md) | **The only version plan:** unfinished scope, completion criteria, open decisions, task lifecycle | Finished work, test history, long design rationale |
+| Release records, `docs/releases/vX.Y.Z.md` | What each published release was: tag commit, assets, and the evidence seen at that commit. Not edited afterwards. | Current status, plans |
 
 Decision records keep the options considered, the reasoning and the evidence
 available when the decision was made; they are not progress reports:
@@ -36,6 +37,7 @@ available when the decision was made; they are not progress reports:
 - [0006: Damaged and oversized images](adr/0006-image-failures.md)
 - [0007: Display check](adr/0007-display-check.md)
 - [0008: Release workflow](adr/0008-release-workflow.md)
+- [0009: First release's targets and compatibility](adr/0009-release-targets.md)
 
 New decisions go in `docs/adr/NNNN-title.md`.
 

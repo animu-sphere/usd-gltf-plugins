@@ -14,6 +14,7 @@ MATRIX = ROOT / "docs" / "reference" / "CAPABILITY_MATRIX.md"
 ROADMAP = ROOT / "docs" / "roadmap"
 ROADMAP_CURRENT = ROADMAP / "current.md"
 ROADMAP_BACKLOG = ROADMAP / "backlog.md"
+RELEASES = ROOT / "docs" / "releases"
 CHANGELOG = ROOT / "CHANGELOG.md"
 MATRIX_HEADER = ["Capability", "State", "Supported subset and limitations", "Evidence"]
 STATE = re.compile(r"Unsupported|Experimental|Verified \(.+\)")
@@ -67,10 +68,11 @@ def check_single_owner(path):
         location = f"{path.relative_to(ROOT)}:{number}"
         if STATUS_LINE.match(line):
             yield f"{location}: status belongs in the capability matrix, not a document header"
-        if path != MATRIX and "/actions/runs/" in line:
+        if path != MATRIX and path.parent != RELEASES and "/actions/runs/" in line:
             yield f"{location}: CI run evidence belongs in the capability matrix"
         heading = HEADING.match(line)
-        if path not in (ROADMAP_CURRENT, ROADMAP_BACKLOG, CHANGELOG) and heading and RELEASE_HEADING.match(heading[2]):
+        in_plan = path in (ROADMAP_CURRENT, ROADMAP_BACKLOG, CHANGELOG) or path.parent == RELEASES
+        if not in_plan and heading and RELEASE_HEADING.match(heading[2]):
             yield f"{location}: release scope belongs in the roadmap"
 
 

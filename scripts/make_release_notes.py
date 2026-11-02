@@ -4,7 +4,7 @@
 With --tag, the tag must be vX.Y.Z or vX.Y.Z-suffix, X.Y.Z must be the version of the project
 and of the bundle, and the changelog must have the section the tag needs: [X.Y.Z] with a date
 for a release, or a nonempty [Unreleased] for a pre-release. Without --tag this is a dry run
-of the project's version, which takes [Unreleased].
+of the project's version, which takes [X.Y.Z] once the changelog has one, and [Unreleased] before.
 
 Package files are named by X.Y.Z, because the suffix belongs to the tag and not to the bundle.
 """
@@ -103,7 +103,7 @@ def main():
             fail(f"tag {arguments.tag} does not match the project version {version}")
         tag, prerelease = arguments.tag, bool(match[2])
     else:
-        tag, prerelease = f"v{version}", True
+        tag, prerelease = f"v{version}", changelog_section(version) is None
     changes = changes_for(version, prerelease)
 
     if arguments.github_output:
