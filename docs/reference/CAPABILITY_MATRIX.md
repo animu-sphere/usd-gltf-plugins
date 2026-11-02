@@ -57,8 +57,8 @@ CI success is not evidence of display compatibility.
 
 ## Tested environments
 
-There is no supported platform matrix yet. These are the environments where
-the evidence above was produced.
+[ADR 0009](../adr/0009-release-targets.md) sets the targets for release packages. These are the
+environments where the evidence above was produced.
 
 | Environment | OpenUSD | Result |
 | --- | --- | --- |
@@ -178,3 +178,18 @@ only part of it.
 The Khronos FlightHelmet sample, which is not in this repository and not part of the check,
 was once rendered through both paths and looked correct by eye. All of its images use KTX2,
 including normal and metallic-roughness data.
+
+## Sample assets
+
+From [glTF-Sample-Assets](https://github.com/KhronosGroup/glTF-Sample-Assets) at commit `8f49239`,
+which is not in this repository: 87 files in the variants of 34 chosen models, on Windows with
+OpenUSD 26.08. This was run once, by hand, and is not part of CI.
+
+- **Opened: 63.** They include DamagedHelmet, FlightHelmet with PNG and with KTX2 images, Sponza,
+  ABeautifulGame, BoomBox and the texture and orientation test models. Every mesh has a bound
+  material, and every asset path resolves and opens.
+- **Rejected with a diagnostic: 24.** Of these, 7 were read: extensions the file requires (Draco and
+  quantization), animations, and nodes with a camera. Other than those read, the 24 were not
+  examined one by one. All variants of Duck, ToyCar, MultiUVTest and CesiumMilkTruck are rejected.
+- **By eye only:** 9 assets rendered through `usdrecord` showed nothing visibly wrong. No pixel was
+  compared.

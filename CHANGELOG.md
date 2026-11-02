@@ -8,6 +8,8 @@ here.
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-02
+
 ### Added
 
 - Default and factor-only metallic-roughness material networks and bindings,
