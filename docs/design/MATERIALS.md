@@ -50,8 +50,9 @@ Distinguish color data (base color and emissive) from non-color data
 MaterialX through [vector images](../adr/0003-pbr-texture-networks.md#non-color-images-in-materialx).
 Texture readers consume the
 primvar's [converted coordinates](SCENE_CONVENTIONS.md#texture-coordinates)
-without another flip. Apply `KHR_texture_transform` to UVs. Document
-observed differences from glTF shading and renderer-specific limitations.
+without another flip. `KHR_texture_transform` applies between the reader and the image, as in
+[ADR 0011](../adr/0011-texture-transform.md). Document observed differences from glTF shading and
+renderer-specific limitations.
 
 Each extension, including clearcoat, transmission, ior, sheen, specular and
 unlit, requires its own explicit capability entry and tests. Do not silently

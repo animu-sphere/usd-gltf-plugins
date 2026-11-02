@@ -3,6 +3,7 @@
 
 #include "image.h"
 
+#include "pxr/base/gf/math.h"
 #include "pxr/base/gf/vec2f.h"
 #include "pxr/base/gf/vec3f.h"
 #include "pxr/base/gf/vec4f.h"
@@ -145,13 +146,22 @@ connectPreviewVertexColor(const UsdShadeNodeGraph& graph, UsdShadeShader& surfac
     return alpha && surface.GetInput(TfToken("opacity")).ConnectToSource(alpha);
 }
 
-// An image, with the primvar holding its coordinates.
+// Applied to `st` as scale, then counter-clockwise rotation about the origin, then translation.
+struct UvTransform
+{
+    GfVec2f scale;
+    float rotationDegrees;
+    GfVec2f translation;
+};
+
+// An image, with the primvar holding its coordinates and any transform of them.
 struct TextureInput
 {
     std::string file;
     std::string primvar;
     fastgltf::Wrap wrapS;
     fastgltf::Wrap wrapT;
+    std::optional<UvTransform> transform;
 };
 
 struct MaterialTextures
@@ -198,15 +208,36 @@ mtlxWrap(fastgltf::Wrap wrap)
     }
 }
 
+UsdShadeOutput
+authorPreviewTransform(const UsdShadeNodeGraph& graph, const std::string& image,
+                       const UsdShadeOutput& st, const UvTransform& transform)
+{
+    auto node = UsdShadeShader::Define(graph.GetPrim().GetStage(),
+                                       graph.GetPath().AppendChild(TfToken(image + "Transform")));
+    const auto in =
+        node ? node.CreateInput(TfToken("in"), SdfValueTypeNames->Float2) : UsdShadeInput();
+    return in && node.CreateIdAttr().Set(TfToken("UsdTransform2d")) && in.ConnectToSource(st) &&
+                   setInput(node, "scale", SdfValueTypeNames->Float2, transform.scale) &&
+                   setInput(node, "rotation", SdfValueTypeNames->Float,
+                            transform.rotationDegrees) &&
+                   setInput(node, "translation", SdfValueTypeNames->Float2, transform.translation)
+               ? node.CreateOutput(TfToken("result"), SdfValueTypeNames->Float2)
+               : UsdShadeOutput();
+}
+
 // UsdUVTexture computes texture * scale + bias, which expresses glTF's factors
 // and occlusion strength exactly.
 UsdShadeShader
 authorPreviewTexture(const UsdShadeNodeGraph& graph, const char* name, const TextureInput& texture,
                      const char* colorSpace, const GfVec4f& scale, const GfVec4f& bias = GfVec4f(0))
 {
-    const auto st = authorPrimvarReader(
-        graph, texCoordReaderName(texture).c_str(), "UsdPrimvarReader_float2", "varname",
-        texture.primvar.c_str(), "fallback", SdfValueTypeNames->Float2, GfVec2f(0), "result");
+    auto st = authorPrimvarReader(graph, texCoordReaderName(texture).c_str(),
+                                  "UsdPrimvarReader_float2", "varname", texture.primvar.c_str(),
+                                  "fallback", SdfValueTypeNames->Float2, GfVec2f(0), "result");
+    if (st && texture.transform)
+    {
+        st = authorPreviewTransform(graph, name, st, *texture.transform);
+    }
     auto image = UsdShadeShader::Define(graph.GetPrim().GetStage(),
                                         graph.GetPath().AppendChild(TfToken(name)));
     const auto stInput =
@@ -341,14 +372,42 @@ authorMtlxMultiply(const UsdShadeNodeGraph& graph, const char* name, const char*
     return multiply.CreateOutput(TfToken("out"), type);
 }
 
+// place2d cannot express a scale of 0, because it divides by it. rotate2d turns clockwise.
+UsdShadeOutput
+authorMtlxTransform(const UsdShadeNodeGraph& graph, const std::string& image,
+                    const UsdShadeOutput& st, const UvTransform& transform)
+{
+    const auto type = SdfValueTypeNames->Float2;
+    const auto scaled = authorMtlxMultiply(graph, (image + "Scale").c_str(), "ND_multiply_vector2",
+                                           type, st, transform.scale);
+    auto rotate = scaled ? defineMtlxNode(graph, (image + "Rotate").c_str(), "ND_rotate2d_vector2")
+                         : UsdShadeShader();
+    const auto in = rotate ? rotate.CreateInput(TfToken("in"), type) : UsdShadeInput();
+    if (!in || !in.ConnectToSource(scaled) ||
+        !setInput(rotate, "amount", SdfValueTypeNames->Float, -transform.rotationDegrees))
+    {
+        return UsdShadeOutput();
+    }
+    auto translate = defineMtlxNode(graph, (image + "Translate").c_str(), "ND_add_vector2");
+    const auto in1 = translate ? translate.CreateInput(TfToken("in1"), type) : UsdShadeInput();
+    return in1 && in1.ConnectToSource(rotate.CreateOutput(TfToken("out"), type)) &&
+                   setInput(translate, "in2", type, transform.translation)
+               ? translate.CreateOutput(TfToken("out"), type)
+               : UsdShadeOutput();
+}
+
 // Non-color data is a vector image, which no color space transform applies to.
 UsdShadeOutput
 authorMtlxImage(const UsdShadeNodeGraph& graph, const char* name, const TextureInput& texture,
                 bool color)
 {
-    const auto st = authorPrimvarReader(
-        graph, texCoordReaderName(texture).c_str(), "ND_geompropvalue_vector2", "geomprop",
-        texture.primvar.c_str(), "default", SdfValueTypeNames->Float2, GfVec2f(0), "out");
+    auto st = authorPrimvarReader(graph, texCoordReaderName(texture).c_str(),
+                                  "ND_geompropvalue_vector2", "geomprop", texture.primvar.c_str(),
+                                  "default", SdfValueTypeNames->Float2, GfVec2f(0), "out");
+    if (st && texture.transform)
+    {
+        st = authorMtlxTransform(graph, name, st, *texture.transform);
+    }
     const auto type = color ? SdfValueTypeNames->Color4f : SdfValueTypeNames->Float4;
     auto image = defineMtlxNode(graph, name, color ? "ND_image_color4" : "ND_image_vector4");
     const auto stInput =
@@ -663,6 +722,34 @@ authorMaterial(const fastgltf::Material& source, const std::string& name,
     return material;
 }
 
+// The extension overrides the texture's own set.
+std::size_t
+texCoordOf(const fastgltf::TextureInfo& info)
+{
+    return info.transform && info.transform->texCoordIndex ? *info.transform->texCoordIndex
+                                                           : info.texCoordIndex;
+}
+
+// glTF applies translation * rotation * scale to (u, v), with
+//     rotation = | cos r   sin r |
+//                | -sin r  cos r |
+// and `st` holds (u, 1 - v). Substituting gives the scale and rotation unchanged, with r now
+// counter-clockwise, and a translation that also moves the origin from the upper left.
+std::optional<UvTransform>
+uvTransform(const fastgltf::TextureTransform& source)
+{
+    if (source.rotation == 0 && source.uvOffset[0] == 0 && source.uvOffset[1] == 0 &&
+        source.uvScale[0] == 1 && source.uvScale[1] == 1)
+    {
+        return std::nullopt;
+    }
+    const double rotation = source.rotation;
+    return UvTransform{
+        GfVec2f(source.uvScale[0], source.uvScale[1]), float(GfRadiansToDegrees(rotation)),
+        GfVec2f(float(source.uvOffset[0] + std::sin(rotation) * source.uvScale[1]),
+                float(1.0 - source.uvOffset[1] - std::cos(rotation) * source.uvScale[1]))};
+}
+
 bool
 resolveTexture(const fastgltf::Asset& asset, const fastgltf::TextureInfo& info,
                const std::string& sourcePath, const gltfCore::BufferLoader& loadBuffer,
@@ -711,7 +798,19 @@ resolveTexture(const fastgltf::Asset& asset, const fastgltf::TextureInfo& info,
     result.file = location.packaged
                       ? ArJoinPackageRelativePath("./" + TfGetBaseName(sourcePath), location.path)
                       : "./" + location.path;
-    result.primvar = info.texCoordIndex == 0 ? "st" : "st" + std::to_string(info.texCoordIndex);
+    const auto texCoord = texCoordOf(info);
+    result.primvar = texCoord == 0 ? "st" : "st" + std::to_string(texCoord);
+    if (info.transform)
+    {
+        result.transform = uvTransform(*info.transform);
+        // The parser accepts each value, but a sum of very large ones can overflow.
+        if (result.transform && !(std::isfinite(result.transform->translation[0]) &&
+                                  std::isfinite(result.transform->translation[1])))
+        {
+            error = "KHR_texture_transform is out of range";
+            return false;
+        }
+    }
     result.wrapS = sampler.wrapS;
     result.wrapT = sampler.wrapT;
     return true;
@@ -775,7 +874,7 @@ MaterialAuthor::Bind(std::size_t index, std::size_t uvSetCount, const pxr::VtVec
     const auto& source = _asset.materials[index];
     const auto& pbr = source.pbrData;
     const auto hasUvSet = [uvSetCount](const auto& info)
-    { return !info || info->texCoordIndex < uvSetCount; };
+    { return !info || texCoordOf(*info) < uvSetCount; };
     if (!hasUvSet(pbr.baseColorTexture) || !hasUvSet(pbr.metallicRoughnessTexture) ||
         !hasUvSet(source.normalTexture) || !hasUvSet(source.occlusionTexture) ||
         !hasUvSet(source.emissiveTexture))
@@ -835,6 +934,15 @@ MaterialAuthor::Bind(std::size_t index, std::size_t uvSetCount, const pxr::VtVec
             !resolve(source.emissiveTexture, textures.emissive))
         {
             return false;
+        }
+        if (const auto& normal = textures.normal;
+            normal && normal->transform &&
+            (normal->transform->rotationDegrees != 0.0f || normal->transform->scale[0] < 0.0f ||
+             normal->transform->scale[1] < 0.0f))
+        {
+            TF_WARN("glTF material %zu: a MaterialX renderer may derive the normal map's tangent "
+                    "frame without its rotation or mirroring by KHR_texture_transform",
+                    index);
         }
         if (pbr.baseColorTexture && colors)
         {

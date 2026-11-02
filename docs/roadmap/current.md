@@ -8,10 +8,6 @@ implementation order, which investigation may change. Each feature follows the
 
 ### First
 
-- `KHR_texture_transform`: offset, scale, rotation and `texCoord` override, across texture slots and
-  UV sets, including one image under different transforms. Fixtures settle the differences in UV
-  definition, transform order and V direction. Also UV and material boundary conditions, and a
-  policy for ignoring, approximating or rejecting optional extensions.
 - `KHR_mesh_quantization`: non-float POSITION, NORMAL, TANGENT and TEXCOORD, tested with stride,
   normalization, out-of-range values and loss of precision. If it cannot be supported, record why
   in an ADR. It is independent of `KHR_draco_mesh_compression`.

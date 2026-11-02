@@ -39,6 +39,7 @@ available when the decision was made; they are not progress reports:
 - [0008: Release workflow](adr/0008-release-workflow.md)
 - [0009: First release's targets and compatibility](adr/0009-release-targets.md)
 - [0010: Sample asset baseline](adr/0010-sample-baseline.md)
+- [0011: Texture transforms](adr/0011-texture-transform.md)
 
 New decisions go in `docs/adr/NNNN-title.md`.
 

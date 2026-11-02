@@ -21,6 +21,7 @@ import argparse
 import base64
 import concurrent.futures
 import json
+import math
 import os
 import pathlib
 import re
@@ -33,7 +34,7 @@ import numpy
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 BASELINE = ROOT / "tests" / "sample_baseline.json"
-IMPLEMENTED_EXTENSIONS = {"KHR_texture_basisu"}
+IMPLEMENTED_EXTENSIONS = {"KHR_texture_basisu", "KHR_texture_transform"}
 PATHS = ("mtlx", "preview")
 CAMERA = "/SampleCheckCamera"
 RESULT_MARKER = "SAMPLE_RESULT "
@@ -298,6 +299,49 @@ def resolved_image(check, shader, label, images):
     return images[resolved]
 
 
+def transform_of(info):
+    return info.get("extensions", {}).get("KHR_texture_transform", {})
+
+
+def specified_uv(transform, u, v):
+    """The matrix of the KHR_texture_transform specification, in glTF's own coordinates."""
+    offset, scale = transform.get("offset", (0, 0)), transform.get("scale", (1, 1))
+    cosine, sine = math.cos(transform.get("rotation", 0)), math.sin(transform.get("rotation", 0))
+    u, v = u * scale[0], v * scale[1]
+    return cosine * u + sine * v + offset[0], -sine * u + cosine * v + offset[1]
+
+
+def preview_st(node, st):
+    """What UsdTransform2d computes, as its specification defines it."""
+    rotation = math.radians(node.GetInput("rotation").Get())
+    scale, translation = node.GetInput("scale").Get(), node.GetInput("translation").Get()
+    s, t = st[0] * scale[0], st[1] * scale[1]
+    return (math.cos(rotation) * s - math.sin(rotation) * t + translation[0],
+            math.sin(rotation) * s + math.cos(rotation) * t + translation[1])
+
+
+def mtlx_st(nodes, st):
+    """What the MaterialX nodes compute. rotate2d's formula is that of its GLSL implementation."""
+    scale, rotate, translate = nodes
+    factor, amount = scale.GetInput("in2").Get(), math.radians(rotate.GetInput("amount").Get())
+    offset = translate.GetInput("in2").Get()
+    s, t = st[0] * factor[0], st[1] * factor[1]
+    return (math.cos(amount) * s + math.sin(amount) * t + offset[0],
+            -math.sin(amount) * s + math.cos(amount) * t + offset[1])
+
+
+def check_transform(check, transform, compute, label):
+    """Compares authored nodes with the specification, at points that are not on any axis of symmetry."""
+    for u, v in ((0.0, 0.0), (1.0, 0.0), (0.25, 0.75)):
+        expected = specified_uv(transform, u, v)
+        check.close(compute((u, 1 - v)), (expected[0], 1 - expected[1]), f"{label} at ({u}, {v})")
+
+
+def is_identity(transform):
+    return (not transform.get("rotation", 0) and list(transform.get("offset", (0, 0))) == [0, 0]
+            and list(transform.get("scale", (1, 1))) == [1, 1])
+
+
 def check_texture(check, asset, stage, material_path, key, info, label, images):
     from pxr import UsdShade
 
@@ -317,12 +361,27 @@ def check_texture(check, asset, stage, material_path, key, info, label, images):
         if original is not None:
             check.expect(data == original, f"{label} {slot} shows different bytes from image {source}")
 
-    number = info.get("texCoord", 0)
+    transform = transform_of(info)
+    number = transform.get("texCoord", info.get("texCoord", 0))
     primvar = "st" if number == 0 else f"st{number}"
     reader = connected_shader(preview.GetInput("st"))
-    check.expect(reader and reader.GetInput("varname").Get() == primvar, f"{label} {slot} Preview UV set differs")
-    reader = connected_shader(mtlx.GetInput("texcoord"))
-    check.expect(reader and reader.GetInput("geomprop").Get() == primvar, f"{label} {slot} MaterialX UV set differs")
+    mtlx_reader = connected_shader(mtlx.GetInput("texcoord"))
+    if not is_identity(transform):
+        if check.expect(reader and reader.GetShaderId() == "UsdTransform2d", f"{label} {slot} Preview has no transform"):
+            check_transform(check, transform, lambda st, node=reader: preview_st(node, st),
+                            f"{label} {slot} Preview transform")
+            reader = connected_shader(reader.GetInput("in"))
+        translate = mtlx_reader
+        rotate = connected_shader(translate.GetInput("in1")) if translate and translate.GetInput("in1") else None
+        scale = connected_shader(rotate.GetInput("in")) if rotate and rotate.GetInput("in") else None
+        if check.expect(scale and scale.GetInput("in2"), f"{label} {slot} MaterialX has no transform"):
+            check_transform(check, transform, lambda st: mtlx_st((scale, rotate, translate), st),
+                            f"{label} {slot} MaterialX transform")
+            mtlx_reader = connected_shader(scale.GetInput("in1"))
+    check.expect(reader and reader.GetInput("varname") and reader.GetInput("varname").Get() == primvar,
+                 f"{label} {slot} Preview UV set differs")
+    check.expect(mtlx_reader and mtlx_reader.GetInput("geomprop") and mtlx_reader.GetInput("geomprop").Get() == primvar,
+                 f"{label} {slot} MaterialX UV set differs")
 
     sampler = asset.json["samplers"][texture["sampler"]] if "sampler" in texture else {}
     wrap_s, wrap_t = sampler.get("wrapS", 10497), sampler.get("wrapT", 10497)

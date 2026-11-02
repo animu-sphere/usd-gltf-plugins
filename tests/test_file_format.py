@@ -2,6 +2,7 @@
 import base64
 import faulthandler
 import json
+import math
 import pathlib
 import struct
 import subprocess
@@ -1982,6 +1983,188 @@ class FileFormatTest(unittest.TestCase):
                 self.assertTrue(asset.resolvedPath, asset.path)
                 self.assertTrue(asset_bytes(asset.resolvedPath))
             self.assertFalse(reference.GetPrimAtPath(material.AppendPath(Sdf.Path("preview/normalTexture"))))
+
+    def test_texture_transform_networks(self):
+        slots = (("baseColor", "baseColorTexture", "baseColorImage"),
+                 ("metallicRoughness", "metallicRoughnessTexture", "metallicRoughnessImage"),
+                 ("normal", "normalTexture", "normalImage"),
+                 ("occlusion", "occlusionTexture", "occlusionImage"),
+                 ("emissive", "emissiveTexture", "emissiveImage"))
+        # (u, v) to (u', v'), computed by hand from the extension's matrix, with V flipped by the primvar.
+        transforms = (
+            ("baseColor", {"offset": [0.25, 0.125]}, (1, 1), 0, (0.25, -0.125)),
+            ("metallicRoughness", {"scale": [2, 3]}, (2, 3), 0, (0, -2)),
+            ("normal", {"rotation": math.pi / 2}, (1, 1), 90, (1, 1)),
+            ("occlusion", {"rotation": -math.pi / 2}, (1, 1), -90, (-1, 1)),
+            ("emissive", {"offset": [0.5, 0.25], "rotation": math.pi, "scale": [2, 4]}, (2, 4), 180, (0.5, 4.75)),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            for extension in ("gltf", "glb"):
+                for required in (False, True):
+                    with self.subTest(extension=extension, required=required):
+                        path = root / f"transforms{int(required)}.{extension}"
+                        document, binary = textured_document(extension, None, PNG)
+                        document["extensionsUsed"] = ["KHR_texture_transform"]
+                        if required:
+                            document["extensionsRequired"] = ["KHR_texture_transform"]
+                        infos = {slot: {"index": 0, "extensions": {"KHR_texture_transform": transform}}
+                                 for slot, transform, _, _, _ in transforms}
+                        document["materials"] = [{
+                            "pbrMetallicRoughness": {"baseColorTexture": infos["baseColor"],
+                                                     "metallicRoughnessTexture": infos["metallicRoughness"]},
+                            "normalTexture": infos["normal"],
+                            "occlusionTexture": infos["occlusion"],
+                            "emissiveTexture": infos["emissive"],
+                        }]
+                        write_asset(path, document, binary)
+                        stage = Usd.Stage.Open(str(path))
+                        base = "/Asset/mtl/Material_0"
+                        for slot, _, scale, rotation, translation in transforms:
+                            preview_name, mtlx_name = next((p, m) for s, p, m in slots if s == slot)
+                            texture = UsdShade.Shader.Get(stage, f"{base}/preview/{preview_name}")
+                            node = UsdShade.Shader(texture.GetInput("st").GetConnectedSource()[0].GetPrim())
+                            self.assertEqual(node.GetShaderId(), "UsdTransform2d")
+                            self.assertEqual(node.GetPath().name, preview_name + "Transform")
+                            self.assertEqual(node.GetInput("scale").Get(), Gf.Vec2f(*scale))
+                            self.assertAlmostEqual(node.GetInput("rotation").Get(), rotation, places=4)
+                            for actual, expected in zip(node.GetInput("translation").Get(), translation):
+                                self.assertAlmostEqual(actual, expected, places=5)
+                            reader = UsdShade.Shader(node.GetInput("in").GetConnectedSource()[0].GetPrim())
+                            self.assertEqual(reader.GetInput("varname").Get(), "st")
+
+                            image = UsdShade.Shader.Get(stage, f"{base}/mtlx/{mtlx_name}")
+                            add = UsdShade.Shader(image.GetInput("texcoord").GetConnectedSource()[0].GetPrim())
+                            self.assertEqual(add.GetShaderId(), "ND_add_vector2")
+                            for actual, expected in zip(add.GetInput("in2").Get(), translation):
+                                self.assertAlmostEqual(actual, expected, places=5)
+                            rotate = UsdShade.Shader(add.GetInput("in1").GetConnectedSource()[0].GetPrim())
+                            self.assertEqual(rotate.GetShaderId(), "ND_rotate2d_vector2")
+                            self.assertAlmostEqual(rotate.GetInput("amount").Get(), -rotation, places=4)
+                            multiply = UsdShade.Shader(rotate.GetInput("in").GetConnectedSource()[0].GetPrim())
+                            self.assertEqual(multiply.GetShaderId(), "ND_multiply_vector2")
+                            self.assertEqual(multiply.GetInput("in2").Get(), Gf.Vec2f(*scale))
+                            reader = UsdShade.Shader(multiply.GetInput("in1").GetConnectedSource()[0].GetPrim())
+                            self.assertEqual(reader.GetInput("geomprop").Get(), "st")
+
+    def test_texture_transform_uv_set_and_identity(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            for extension in ("gltf", "glb"):
+                with self.subTest(extension=extension):
+                    path = root / ("override." + extension)
+                    document, binary = textured_document(extension, None, PNG)
+                    document["extensionsUsed"] = ["KHR_texture_transform"]
+                    transform = {"KHR_texture_transform": {"texCoord": 2}}
+                    document["materials"] = [{
+                        "pbrMetallicRoughness": {"baseColorTexture": {"index": 0, "texCoord": 1, "extensions": transform}},
+                        # The same image under another transform, with its own set.
+                        "emissiveTexture": {"index": 0, "texCoord": 2, "extensions": {
+                            "KHR_texture_transform": {"offset": [0.5, 0], "texCoord": 1}}},
+                    }]
+                    write_asset(path, document, binary)
+                    stage = Usd.Stage.Open(str(path))
+                    base = "/Asset/mtl/Material_0"
+                    # A transform of defaults authors no node, and reads the overriding set directly.
+                    texture = UsdShade.Shader.Get(stage, f"{base}/preview/baseColorTexture")
+                    reader = UsdShade.Shader(texture.GetInput("st").GetConnectedSource()[0].GetPrim())
+                    self.assertEqual(reader.GetInput("varname").Get(), "st2")
+                    self.assertFalse(stage.GetPrimAtPath(f"{base}/preview/baseColorTextureTransform"))
+                    image = UsdShade.Shader.Get(stage, f"{base}/mtlx/baseColorImage")
+                    reader = UsdShade.Shader(image.GetInput("texcoord").GetConnectedSource()[0].GetPrim())
+                    self.assertEqual(reader.GetInput("geomprop").Get(), "st2")
+                    self.assertFalse(stage.GetPrimAtPath(f"{base}/mtlx/baseColorImageScale"))
+                    node = UsdShade.Shader.Get(stage, f"{base}/preview/emissiveTextureTransform")
+                    reader = UsdShade.Shader(node.GetInput("in").GetConnectedSource()[0].GetPrim())
+                    self.assertEqual(reader.GetInput("varname").Get(), "st1")
+                    self.assertEqual(UsdShade.Shader.Get(stage, f"{base}/mtlx/emissiveImageScale")
+                                     .GetInput("in1").GetConnectedSource()[0].GetPath().name, "st1Reader")
+
+    def test_texture_transform_diagnostics(self):
+        def run(path):
+            return subprocess.run(
+                [sys.executable, "-c", "from pxr import Usd; import sys; assert Usd.Stage.Open(sys.argv[1])", str(path)],
+                capture_output=True, text=True, check=False,
+            )
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            for extension in ("gltf", "glb"):
+                for name, transform, warns in (
+                    ("offset", {"offset": [0.5, 0]}, False),
+                    ("stretch", {"scale": [2, 0.5]}, False),
+                    ("rotation", {"rotation": 1}, True),
+                    ("mirror", {"scale": [-1, 1]}, True),
+                ):
+                    with self.subTest(extension=extension, name=name):
+                        path = root / f"{name}.{extension}"
+                        document, binary = textured_document(extension, None, PNG)
+                        document["extensionsUsed"] = ["KHR_texture_transform"]
+                        document["materials"] = [{"normalTexture": {
+                            "index": 0, "extensions": {"KHR_texture_transform": transform}}}]
+                        write_asset(path, document, binary)
+                        result = run(path)
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertNotIn("is not supported", result.stderr)
+                        self.assertEqual("tangent frame" in result.stderr, warns, result.stderr)
+
+                with self.subTest(extension=extension, name="base color does not warn"):
+                    path = root / f"base.{extension}"
+                    document, binary = textured_document(extension, None, PNG)
+                    document["extensionsUsed"] = ["KHR_texture_transform"]
+                    document["materials"][0]["pbrMetallicRoughness"]["baseColorTexture"]["extensions"] = {
+                        "KHR_texture_transform": {"rotation": 1}}
+                    write_asset(path, document, binary)
+                    result = run(path)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertNotIn("tangent frame", result.stderr)
+
+    def test_texture_transform_failures_preserve_layer(self):
+        cases = (
+            ("rotation type", {"rotation": "1"}, "KHR_texture_transform has a field of the wrong type"),
+            ("offset type", {"offset": "1"}, "KHR_texture_transform has a field of the wrong type"),
+            ("offset length", {"offset": [1, 2, 3]}, "KHR_texture_transform has a field of the wrong type"),
+            ("offset short", {"offset": [1]}, "KHR_texture_transform has a field of the wrong type|cannot parse"),
+            ("offset element", {"offset": [1, "2"]}, "cannot parse"),
+            ("scale type", {"scale": 2}, "KHR_texture_transform has a field of the wrong type"),
+            ("texCoord type", {"texCoord": 0.5}, "KHR_texture_transform has a field of the wrong type"),
+            ("texCoord negative", {"texCoord": -1}, "KHR_texture_transform has a field of the wrong type"),
+            ("rotation beyond float", {"rotation": 1e39}, "cannot parse"),
+            ("offset beyond float", {"offset": [1e39, 0]}, "cannot parse"),
+            ("scale beyond float", {"scale": [1, 1e39]}, "cannot parse"),
+            ("translation overflows", {"offset": [0, 3e38], "scale": [1, 3e38]}, "KHR_texture_transform is out of range"),
+            ("override has no set", {"texCoord": 7}, "texture coordinate set the primitive does not have"),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            for extension in ("gltf", "glb"):
+                path = pathlib.Path(directory) / ("transform." + extension)
+                document, binary = textured_document(extension, None, PNG)
+                write_asset(path, document, binary)
+                stage = Usd.Stage.Open(str(path))
+                layer = stage.GetRootLayer()
+                before = layer_text(layer)
+                for name, transform, message in cases:
+                    with self.subTest(extension=extension, name=name):
+                        invalid, invalid_binary = textured_document(extension, None, PNG)
+                        invalid["extensionsUsed"] = ["KHR_texture_transform"]
+                        info = invalid["materials"][0]["pbrMetallicRoughness"]["baseColorTexture"]
+                        info["extensions"] = {"KHR_texture_transform": transform}
+                        write_asset(path, invalid, invalid_binary)
+                        with self.assertRaisesRegex(Tf.ErrorException, message):
+                            layer.Reload(force=True)
+                        self.assertEqual(layer_text(layer), before)
+
+    def test_texture_transforms_view_fixture(self):
+        fixtures = pathlib.Path(__file__).parent / "fixtures"
+        stage = Usd.Stage.Open(str(fixtures / "texture_transforms.gltf"))
+        reference = Usd.Stage.Open(str(fixtures / "texture_transforms_reference.gltf"))
+        materials = stage.GetPrimAtPath("/Asset/mtl").GetChildren()
+        self.assertEqual(len(materials), 22)
+        self.assertEqual(len(reference.GetPrimAtPath("/Asset/mtl").GetChildren()), 22)
+        for prim in reference.Traverse():
+            self.assertNotEqual(UsdShade.Shader(prim).GetShaderId() if prim.IsA(UsdShade.Shader) else "", "UsdTransform2d")
+        self.assertTrue(any(UsdShade.Shader(prim).GetShaderId() == "UsdTransform2d"
+                            for prim in stage.Traverse() if prim.IsA(UsdShade.Shader)))
 
     def test_tangents_are_retained(self):
         values = ((1, 0, 0, 1), (0, 1, 0, -1), (0, 0, 1, 1))

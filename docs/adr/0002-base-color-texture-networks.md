@@ -50,6 +50,6 @@ Both paths compiled and displayed in Storm, as described under
 is one renderer, one set of simple images, and comparison by eye.
 
 `KHR_texture_transform` remains ignored with the existing optional extension warning.
-Other texture slots still fail. A normal map will need a decision on tangents, because
+[ADR 0011](0011-texture-transform.md) later applied it. Other texture slots still fail. A normal map will need a decision on tangents, because
 textured assets commonly carry a TANGENT attribute, which is currently rejected.
 [ADR 0004](0004-normal-textures-and-tangents.md) later made that decision.
