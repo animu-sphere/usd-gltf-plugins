@@ -55,3 +55,4 @@ The `docs_consistency` test ([check_docs.py](../tests/check_docs.py)) checks
 relative links, matrix states and evidence paths, and misplaced status lines,
 CI run links and release headings. It does not determine support from the code:
 that requires tests and, for display claims, renderer checks.
+
