@@ -38,6 +38,7 @@ Opens glTF 2.0 (`.gltf` and `.glb`) files as ordinary OpenUSD scenes through `Us
 | `usdGltfFileFormat-{version}-<target>.manifest.json` | Its OpenStrata manifest |
 | `usdGltfFileFormat-{version}-<target>.sbom.spdx.json` | Its software bill of materials |
 | `usd-gltf-plugins-{source}-src.tar.gz` | The source at this tag |
+| `package-pins.json` | The digests to pin each package on GHCR |
 | `SHA256SUMS` | Checksums of the files above |
 
 ## Checksums

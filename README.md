@@ -1,6 +1,6 @@
 # OpenUSD glTF Plugins
 
-[![CI](https://github.com/animu-sphere/usd-gltf-plugins/actions/workflows/ost-source-ci.yml/badge.svg?branch=main)](https://github.com/animu-sphere/usd-gltf-plugins/actions/workflows/ost-source-ci.yml?query=branch%3Amain)
+[![CI](https://github.com/animu-sphere/usd-gltf-plugins/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/animu-sphere/usd-gltf-plugins/actions/workflows/ci.yml?query=branch%3Amain)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-4b8bbe.svg)](LICENSE)
 
 An independent OpenStrata Project repository for opening glTF 2.0 (`.gltf` /

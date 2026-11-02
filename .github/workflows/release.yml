@@ -3,14 +3,15 @@
 # through `ost ci matrix`, so that re-pinning CI also re-pins this workflow.
 #
 # Pushing a tag vX.Y.Z or vX.Y.Z-suffix builds, tests and packages the bundle on every cell
-# of the main lane, proves that the package works without the source tree, and assembles a
-# DRAFT GitHub release. Publishing the draft is a human decision, after the release gate in
-# docs/roadmap/README.md.
+# of the main lane, proves that the package works without the source tree, pushes the packages to
+# GHCR, and assembles a DRAFT GitHub release that carries their pin table. Publishing the draft is
+# a human decision, after the release gate in docs/roadmap/README.md.
 #
 # workflow_dispatch is a dry run: the same lanes, with everything uploaded as workflow
-# artifacts, and no release created.
+# artifacts, no registry write, and no release created.
 #
-# Fork-PR safety: this never runs on pull_request, and only the release job can write.
+# Fork-PR safety: this never runs on pull_request. Only the publish job can write packages, and
+# only the release job can write contents.
 name: release
 
 on:
@@ -182,6 +183,8 @@ jobs:
           python tests/check_package.py "$(dirname "$archive")" --platform ${{ matrix.platform }} --profile ${{ matrix.profile }}
       - name: Stage the release files
         shell: bash
+        env:
+          VERSION: ${{ needs.preflight.outputs.version }}
         run: |
           set -euo pipefail
           archive="$(jq -er '.data.archive' .ost-ci/package.json)"
@@ -198,16 +201,101 @@ jobs:
           cp "$directory/manifest.json" "release-stage/$stem.manifest.json"
           cp "$directory/sbom.spdx.json" "release-stage/$stem.sbom.spdx.json"
           ls -l release-stage/
+          # What `ost artifact import` takes, for the publish job alone.
+          mkdir -p oci-stage/packages
+          cp -r "$directory" "oci-stage/packages/$target"
+          digest="$(jq -er '.data.archive_digest' .ost-ci/package.json)"
+          printf 'bundle\tusdGltfFileFormat\t%s\t%s\t%s\n' "$VERSION" "$target" "$digest" > oci-stage/package-digests.tsv
       - name: Upload the release files
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: release-${{ matrix.name }}
           path: release-stage/
           if-no-files-found: error
+      - name: Upload the package to publish
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: oci-${{ matrix.name }}
+          path: oci-stage/
+          if-no-files-found: error
+
+  # Pushes the bundle for every target to one GHCR repository, tagged <name>-<version>-<target>.
+  # The package is public. `ost` does not read the docker credential store, so a push needs a user
+  # and password. A dry run imports the packages, pushes nothing, and writes a table with no source.
+  publish:
+    name: publish the packages
+    needs: [preflight, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    env:
+      OST_HOME: ${{ github.workspace }}/.ost-ci-home
+      OCI_REPOSITORY: ghcr.io/animu-sphere/usd-gltf-plugins
+      OST_REGISTRY_USER: ${{ github.actor }}
+      OST_REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+      VERSION: ${{ needs.preflight.outputs.version }}
+      IS_RELEASE: ${{ needs.preflight.outputs.is_release }}
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Download the packages to publish
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          pattern: oci-*
+          path: oci-staged
+      - name: Bootstrap ost
+        uses: ./.github/actions/bootstrap-ost
+        with:
+          version: ${{ needs.preflight.outputs.ost_version }}
+      - name: Import every package into the local registry
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .ost-ci
+          for dir in oci-staged/*/packages/*/; do
+            ost artifact import "$dir" --json > /dev/null
+          done
+          cat oci-staged/*/package-digests.tsv > .ost-ci/artifacts.tsv
+          cat .ost-ci/artifacts.tsv
+      - name: Push each package to the OCI repository
+        if: ${{ env.IS_RELEASE == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          : > .ost-ci/pushed.tsv
+          while IFS=$'\t' read -r kind name version target digest; do
+            tag="$name-$version-$target"
+            ost artifact push "$digest" "oci://$OCI_REPOSITORY:$tag" --json > ".ost-ci/push-$tag.json" < /dev/null
+            oci="$(jq -er '.data.oci_digest' ".ost-ci/push-$tag.json")"
+            pushed="$(jq -er '.data.artifact_digest' ".ost-ci/push-$tag.json")"
+            if [ "$pushed" != "$digest" ]; then
+              echo "::error title=publish::pushing $tag reported $pushed, expected $digest" ; exit 1
+            fi
+            printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$kind" "$name" "$version" "$target" "$digest" "$oci" >> .ost-ci/pushed.tsv
+          done < .ost-ci/artifacts.tsv
+      - name: Build the pin table
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$IS_RELEASE" = "true" ]; then
+            arguments=(--rows .ost-ci/pushed.tsv --published)
+          else
+            arguments=(--rows .ost-ci/artifacts.tsv)
+          fi
+          python3 scripts/make_package_pins.py "${arguments[@]}" --version "$VERSION" \
+            --repository "$OCI_REPOSITORY" --targets 3 --out pins
+          cat pins/package-pins.md
+      - name: Upload the pin table
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-pins
+          path: pins/
+          if-no-files-found: error
 
   release:
     name: assemble the release (draft)
-    needs: [preflight, build]
+    needs: [preflight, build, publish]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -233,6 +321,8 @@ jobs:
         working-directory: dist-release
         run: |
           set -euo pipefail
+          # The pins are for the notes, and the JSON stays as a release file.
+          mv package-pins.md "$RUNNER_TEMP/package-pins.md"
           sha256sum * > "$RUNNER_TEMP/SHA256SUMS"
           mv "$RUNNER_TEMP/SHA256SUMS" SHA256SUMS
           cat SHA256SUMS
@@ -242,6 +332,8 @@ jobs:
           set -euo pipefail
           if [ "$IS_RELEASE" = "true" ]; then tag=(--tag "$TAG"); else tag=(); fi
           python3 scripts/make_release_notes.py "${tag[@]}" --checksums dist-release/SHA256SUMS --out release-notes.md
+          printf '\n' >> release-notes.md
+          cat "$RUNNER_TEMP/package-pins.md" >> release-notes.md
           cat release-notes.md
       - name: Create the draft GitHub release
         if: ${{ needs.preflight.outputs.is_release == 'true' }}
