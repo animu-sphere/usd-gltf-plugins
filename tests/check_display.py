@@ -752,6 +752,63 @@ def check_clearcoat(renderer, report):
     qt[2].doneCurrent()
 
 
+def check_transmission(renderer, report):
+    """Renders a white quad in darkness in front of a larger green emissive backdrop. An opaque quad
+    is black there. glTF's transmission passes the backdrop through the quad's dielectric part, tinted
+    by its base color, and Storm draws gltf_pbr's transmission as transparency, without refraction.
+    UsdPreviewSurface has no transmission, so through it the quad stays opaque."""
+    qt = offscreen_context(report, "transmission")
+    if not qt:
+        return
+    white = {"baseColorFactor": [1, 1, 1, 1], "metallicFactor": 0, "roughnessFactor": 0.5}
+    backdrop = {**pbr(baseColorFactor=[0, 0, 0, 1], metallicFactor=0), "emissiveFactor": [0, 1, 0]}
+    for path in PATHS:
+
+        def render(name, material, images=()):
+            document = quad_document([material], images)
+            document["extensionsUsed"] = ["KHR_materials_transmission"]
+            # The same quad again, behind the first and twice its size, so that both meshes have its bounds.
+            document["materials"].append(backdrop)
+            document["meshes"].append({"primitives": [{**document["meshes"][0]["primitives"][0], "material": 1}]})
+            document["nodes"].append({"mesh": 1, "translation": [-0.5, -0.5, -1], "scale": [2, 2, 1]})
+            document["scenes"][0]["nodes"].append(1)
+            asset = renderer.output / f"transmission_{name}.gltf"
+            asset.write_text(json.dumps(document), encoding="utf-8")
+            _, stage = renderer.session(f"transmission_{name}", asset, path, None)
+            image = engine_image(stage, [], Gf.Vec4f(0, 0, 0, 1))
+            image.save(str(renderer.output / f"transmission_{name}_{path}.png"))
+            return Render(f"transmission_{name} {path}", image, stage).sample(0)
+
+        def transmissive(base=white, **transmission):
+            return {**pbr(**base), "extensions": {"KHR_materials_transmission": transmission}}
+
+        opaque = render("opaque", pbr(**white))
+        report.same(f"{path} an opaque quad hides the backdrop", opaque, (0, 0, 0, 255))
+        report.same(f"{path} a transmission of 0 is none", render("zero", transmissive(transmissionFactor=0)), opaque)
+        report.same(f"{path} a metal transmits nothing",
+                    render("metal", transmissive({**white, "metallicFactor": 1}, transmissionFactor=1)), opaque)
+        full = render("full", transmissive(transmissionFactor=1))
+        half = render("half", transmissive(transmissionFactor=0.5))
+        report.same(f"{path} a transmission image of 188 is a factor of 0.737",
+                    render("image", transmissive(transmissionFactor=1, transmissionTexture={"index": 0}),
+                           [(188, 188, 188, 255)]),
+                    render("data", transmissive(transmissionFactor=DATA)))
+        red = render("red", transmissive({**white, "baseColorFactor": [1, 0, 0, 1]}, transmissionFactor=1))
+        if path == "mtlx":
+            report.expect(f"{path} a full transmission shows the backdrop", full[1] >= HIGH
+                          and max(full[0], full[2]) <= LOW, f"{full}")
+            report.expect(f"{path} half a transmission shows less", opaque[1] + DIFFERENT < half[1] < full[1] - DIFFERENT,
+                          f"{opaque}, {half} and {full}")
+            # glTF's red tint would pass none of the green; Storm's transparency averages the tint.
+            report.different(f"{path} Storm averages a red tint, passing some green", red, opaque)
+            report.expect(f"{path} a red tint passes less than white", red[1] < full[1] - DIFFERENT, f"{red} and {full}")
+        else:
+            report.same(f"{path} UsdPreviewSurface ignores the transmission", full, opaque)
+            report.same(f"{path} UsdPreviewSurface ignores half a transmission", half, opaque)
+            report.same(f"{path} UsdPreviewSurface ignores a tinted transmission", red, opaque)
+    qt[2].doneCurrent()
+
+
 def compare_paths(report, name, renders, samples, tolerance):
     if not all(renders.values()):
         return
@@ -775,9 +832,9 @@ def main():
 
     report = Report(arguments.verbose)
     renderer = Renderer(output, plugin, report)
-    for check in (check_reflections, check_lights, check_unlit, check_ior, check_clearcoat, check_alpha_modes,
-                  check_base_color_textures, check_pbr_textures, check_normal_textures, check_texture_transforms,
-                  check_ktx2_textures, check_measurements):
+    for check in (check_reflections, check_lights, check_unlit, check_ior, check_clearcoat, check_transmission,
+                  check_alpha_modes, check_base_color_textures, check_pbr_textures, check_normal_textures,
+                  check_texture_transforms, check_ktx2_textures, check_measurements):
         print(check.__name__.removeprefix("check_"), flush=True)
         check(renderer, report)
 

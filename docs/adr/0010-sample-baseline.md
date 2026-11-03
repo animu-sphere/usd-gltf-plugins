@@ -61,7 +61,9 @@ cutoff in both paths. For an [unlit](0015-unlit.md) material, its base color in 
 the inputs that zero both shaders' lighting, and that no fallback texture is authored. The
 [ior](0016-ior.md) of each material in both paths, or that none is authored at the default. For an
 enabled [clearcoat](0017-clearcoat.md), its weight and roughness in Preview, its texture slots in both
-networks, and its normal in MaterialX alone; otherwise, that no clearcoat is authored.
+networks, and its normal in MaterialX alone; otherwise, that no clearcoat is authored. For a
+[transmission](0018-transmission.md) above 0, its value and texture slot in MaterialX, and that Preview
+has neither; otherwise, that no transmission is authored.
 
 ## Evidence that it can fail
 

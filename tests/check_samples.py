@@ -35,8 +35,8 @@ import numpy
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 BASELINE = ROOT / "tests" / "sample_baseline.json"
 IMPLEMENTED_EXTENSIONS = {"EXT_texture_webp", "KHR_lights_punctual", "KHR_materials_clearcoat", "KHR_materials_ior",
-                          "KHR_materials_unlit", "KHR_mesh_quantization", "KHR_texture_basisu",
-                          "KHR_texture_transform"}
+                          "KHR_materials_transmission", "KHR_materials_unlit", "KHR_mesh_quantization",
+                          "KHR_texture_basisu", "KHR_texture_transform"}
 PATHS = ("mtlx", "preview")
 CAMERA = "/SampleCheckCamera"
 RESULT_MARKER = "SAMPLE_RESULT "
@@ -69,8 +69,12 @@ IMAGE_SIGNATURES = (b"\x89PNG\r\n\x1a\n", b"\xff\xd8\xff")
 # A glTF texture slot, and the prefix of the nodes that read it in each network.
 SLOTS = {"baseColorTexture": "baseColor", "metallicRoughnessTexture": "metallicRoughness",
          "normalTexture": "normal", "occlusionTexture": "occlusion", "emissiveTexture": "emissive",
-         "clearcoatTexture": "clearcoat", "clearcoatRoughnessTexture": "clearcoatRoughness"}
+         "clearcoatTexture": "clearcoat", "clearcoatRoughnessTexture": "clearcoatRoughness",
+         "transmissionTexture": "transmission"}
 CLEARCOAT_SLOTS = {"clearcoatTexture", "clearcoatRoughnessTexture"}
+TRANSMISSION_SLOTS = {"transmissionTexture"}
+# Slots that UsdPreviewSurface has no input for.
+MTLX_ONLY_SLOTS = {"transmissionTexture"}
 COLOR_SLOTS = {"baseColorTexture", "emissiveTexture"}
 PBR_SLOTS = {"baseColorTexture", "metallicRoughnessTexture"}
 
@@ -429,12 +433,20 @@ def check_texture(check, asset, stage, material_path, key, info, label, images):
     slot = SLOTS[key]
     preview = UsdShade.Shader(stage.GetPrimAtPath(f"{material_path}/preview/{slot}Texture"))
     mtlx = UsdShade.Shader(stage.GetPrimAtPath(f"{material_path}/mtlx/{slot}Image"))
-    if not check.expect(preview and mtlx, f"{label} {slot} texture is not authored in both networks"):
+    mtlx_only = key in MTLX_ONLY_SLOTS
+    if mtlx_only:
+        check.expect(not preview, f"{label} {slot} texture is authored in Preview, which has no input for it")
+        if not check.expect(mtlx, f"{label} {slot} texture is not authored in MaterialX"):
+            return None
+    elif not check.expect(preview and mtlx, f"{label} {slot} texture is not authored in both networks"):
         return None
     texture = asset.json["textures"][info["index"]]
-    data = resolved_image(check, preview, f"{label} {slot}", images)
     mtlx_data = resolved_image(check, mtlx, f"{label} {slot} MaterialX", images)
-    check.expect(data == mtlx_data, f"{label} {slot} networks read different images")
+    if mtlx_only:
+        data = mtlx_data
+    else:
+        data = resolved_image(check, preview, f"{label} {slot}", images)
+        check.expect(data == mtlx_data, f"{label} {slot} networks read different images")
     if data is not None:
         check.expect(data.startswith(IMAGE_SIGNATURES), f"{label} {slot} is not served as PNG or JPEG")
         source = asset.texture_source(texture)
@@ -445,10 +457,11 @@ def check_texture(check, asset, stage, material_path, key, info, label, images):
     transform = transform_of(info)
     number = transform.get("texCoord", info.get("texCoord", 0))
     primvar = "st" if number == 0 else f"st{number}"
-    reader = connected_shader(preview.GetInput("st"))
+    reader = None if mtlx_only else connected_shader(preview.GetInput("st"))
     mtlx_reader = connected_shader(mtlx.GetInput("texcoord"))
     if not is_identity(transform):
-        if check.expect(reader and reader.GetShaderId() == "UsdTransform2d", f"{label} {slot} Preview has no transform"):
+        if not mtlx_only and check.expect(reader and reader.GetShaderId() == "UsdTransform2d",
+                                          f"{label} {slot} Preview has no transform"):
             check_transform(check, transform, lambda st, node=reader: preview_st(node, st),
                             f"{label} {slot} Preview transform")
             reader = connected_shader(reader.GetInput("in"))
@@ -459,17 +472,20 @@ def check_texture(check, asset, stage, material_path, key, info, label, images):
             check_transform(check, transform, lambda st: mtlx_st((scale, rotate, translate), st),
                             f"{label} {slot} MaterialX transform")
             mtlx_reader = connected_shader(scale.GetInput("in1"))
-    check.expect(reader and reader.GetInput("varname") and reader.GetInput("varname").Get() == primvar,
+    check.expect(mtlx_only or (reader and reader.GetInput("varname") and reader.GetInput("varname").Get() == primvar),
                  f"{label} {slot} Preview UV set differs")
     check.expect(mtlx_reader and mtlx_reader.GetInput("geomprop") and mtlx_reader.GetInput("geomprop").Get() == primvar,
                  f"{label} {slot} MaterialX UV set differs")
 
     sampler = asset.json["samplers"][texture["sampler"]] if "sampler" in texture else {}
     wrap_s, wrap_t = sampler.get("wrapS", 10497), sampler.get("wrapT", 10497)
-    check.expect(preview.GetInput("wrapS").Get() == PREVIEW_WRAP[wrap_s], f"{label} {slot} Preview wrapS differs")
-    check.expect(preview.GetInput("wrapT").Get() == PREVIEW_WRAP[wrap_t], f"{label} {slot} Preview wrapT differs")
     check.expect(mtlx.GetInput("uaddressmode").Get() == MTLX_WRAP[wrap_s], f"{label} {slot} MaterialX wrapS differs")
     check.expect(mtlx.GetInput("vaddressmode").Get() == MTLX_WRAP[wrap_t], f"{label} {slot} MaterialX wrapT differs")
+    if mtlx_only:
+        check.expect(mtlx.GetIdAttr().Get() == "ND_image_vector4", f"{label} {slot} MaterialX image is not data")
+        return mtlx
+    check.expect(preview.GetInput("wrapS").Get() == PREVIEW_WRAP[wrap_s], f"{label} {slot} Preview wrapS differs")
+    check.expect(preview.GetInput("wrapT").Get() == PREVIEW_WRAP[wrap_t], f"{label} {slot} Preview wrapT differs")
 
     space = "sRGB" if key in COLOR_SLOTS else "raw"
     check.expect(preview.GetInput("sourceColorSpace").Get() == space, f"{label} {slot} color space is not {space}")
@@ -493,8 +509,18 @@ def check_material(check, asset, stage, path, material, has_colors, images):
     pbr = material.get("pbrMetallicRoughness", {})
     textures = {}
     clearcoat = material.get("extensions", {}).get("KHR_materials_clearcoat")
-    infos = {key: (pbr if key in PBR_SLOTS else clearcoat or {} if key in CLEARCOAT_SLOTS else material).get(key)
-             for key in SLOTS}
+    transmission = material.get("extensions", {}).get("KHR_materials_transmission")
+
+    def owner(key):
+        if key in PBR_SLOTS:
+            return pbr
+        if key in CLEARCOAT_SLOTS:
+            return clearcoat or {}
+        if key in TRANSMISSION_SLOTS:
+            return transmission or {}
+        return material
+
+    infos = {key: owner(key).get(key) for key in SLOTS}
     # An unlit material uses only its base color; the rest are fallbacks, which are not authored.
     unlit = "KHR_materials_unlit" in material.get("extensions", {})
     if unlit:
@@ -510,10 +536,18 @@ def check_material(check, asset, stage, path, material, has_colors, images):
     if not coated:
         for key in CLEARCOAT_SLOTS:
             infos[key] = None
+    # A transmission of factor 0 is none, and an unlit material has none.
+    transmits = transmission is not None and not unlit and transmission.get("transmissionFactor", 0) > 0
+    if not transmits:
+        for key in TRANSMISSION_SLOTS:
+            infos[key] = None
     names = {prim.GetName() for prim in Usd.PrimRange(stage.GetPrimAtPath(path))}
     if not coated:
         check.expect(not {name for name in names if name.startswith("clearcoat")},
                      f"{label} authors a clearcoat it does not have")
+    if not transmits:
+        check.expect(not {name for name in names if name.startswith("transmission")},
+                     f"{label} authors a transmission it does not have")
     for key, info in infos.items():
         if info:
             textures[key] = check_texture(check, asset, stage, path, key, info, label, images)
@@ -573,6 +607,7 @@ def check_material(check, asset, stage, path, material, has_colors, images):
             check_occlusion(check, textures.get("occlusionTexture"), strength, label)
 
     check_clearcoat(check, surface, pbr_surface, clearcoat if coated else None, textures, names, label)
+    check_transmission(check, surface, pbr_surface, transmission if transmits else None, textures, label)
 
     # Both shaders default to glTF's 1.5, an ior of 0 stands for a very large one, and an unlit material has none.
     ior = material.get("extensions", {}).get("KHR_materials_ior", {}).get("ior", 1.5)
@@ -624,6 +659,35 @@ def check_clearcoat(check, surface, pbr_surface, clearcoat, textures, names, lab
     has_normal = clearcoat is not None and "clearcoatNormalTexture" in clearcoat
     check.expect(bool(pbr_surface.GetInput("clearcoat_normal")) == has_normal and ("clearcoatNormalMap" in names)
                  == has_normal, f"{label} MaterialX clearcoat normal differs")
+
+
+def check_transmission(check, surface, pbr_surface, transmission, textures, label):
+    """The transmission in MaterialX only, its factor times its texture's R; Preview has none.
+
+    `transmission` is None for a material without a transmission above 0."""
+    check.expect(not surface.GetInput("transmission"), f"{label} Preview authors a transmission")
+    authored = pbr_surface.GetInput("transmission")
+    if transmission is None:
+        check.expect(not authored, f"{label} MaterialX authors a transmission it does not have")
+        return
+    if not check.expect(authored, f"{label} MaterialX transmission is not authored"):
+        return
+    factor = transmission.get("transmissionFactor", 0)
+    check.close(authored.Get(), factor, f"{label} MaterialX transmission")
+    image = textures.get("transmissionTexture")
+    if image:
+        source = connected_shader(authored)
+        # A factor of 1 reads the channel directly; otherwise a multiply scales it.
+        if source and source.GetShaderId() == "ND_multiply_float":
+            check.close(source.GetInput("in2").Get(), factor, f"{label} MaterialX transmission factor")
+            source = connected_shader(source.GetInput("in1"))
+        else:
+            check.expect(factor == 1, f"{label} MaterialX transmission is not scaled by its factor")
+        check.expect(source and source.GetInput("index") and source.GetInput("index").Get() == 0,
+                     f"{label} MaterialX transmission does not read channel R")
+        channel_image = connected_shader(source.GetInput("in")) if source and source.GetInput("in") else None
+        check.expect(channel_image and channel_image.GetPath() == image.GetPath(),
+                     f"{label} MaterialX transmission does not read its texture")
 
 
 def check_occlusion(check, shader, strength, label):

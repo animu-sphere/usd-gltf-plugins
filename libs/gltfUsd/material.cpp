@@ -74,6 +74,8 @@ struct PbrFactors
     float clearcoat;
     float clearcoatRoughness;
     float clearcoatNormalScale;
+    // KHR_materials_transmission, 0 without it.
+    float transmission;
 };
 
 // glTF's default, and the default of both shaders' ior inputs.
@@ -103,7 +105,8 @@ pbrFactors(const fastgltf::Material& source)
             source.clearcoat ? float(source.clearcoat->clearcoatRoughnessFactor) : 0.0f,
             source.clearcoat && source.clearcoat->clearcoatNormalTexture
                 ? float(source.clearcoat->clearcoatNormalTexture->scale)
-                : 1.0f};
+                : 1.0f,
+            source.transmission ? float(source.transmission->transmissionFactor) : 0.0f};
 }
 
 // glTF disables the clearcoat layer at a factor of 0, and an unlit material reflects nothing.
@@ -111,6 +114,13 @@ bool
 hasClearcoat(const PbrFactors& factors)
 {
     return !factors.unlit && factors.clearcoat > 0.0f;
+}
+
+// A transmission of 0 is none, and an unlit material transmits nothing.
+bool
+hasTransmission(const PbrFactors& factors)
+{
+    return !factors.unlit && factors.transmission > 0.0f;
 }
 
 // The ior to author, if it is not the shaders' default. An unlit material reflects nothing, so
@@ -230,6 +240,8 @@ struct MaterialTextures
     std::optional<TextureInput> clearcoatRoughness;
     // Read by MaterialX only: UsdPreviewSurface's clearcoat uses the base normal.
     std::optional<TextureInput> clearcoatNormal;
+    // Read by MaterialX only: UsdPreviewSurface has no transmission.
+    std::optional<TextureInput> transmission;
 };
 
 // Textures sharing a UV set share a reader: defining it again changes nothing.
@@ -757,7 +769,10 @@ connectMtlxTextures(const UsdShadeNodeGraph& graph, UsdShadeShader& surface,
             connectMtlxOcclusion(graph, surface, factors, *textures.occlusion)) &&
            (!textures.emissive ||
             connectMtlxEmissive(graph, surface, factors, *textures.emissive)) &&
-           (!hasClearcoat(factors) || connectMtlxClearcoat(graph, surface, factors, textures));
+           (!hasClearcoat(factors) || connectMtlxClearcoat(graph, surface, factors, textures)) &&
+           (!textures.transmission ||
+            connectMtlxChannel(graph, surface, "transmission", "transmission", 0,
+                               factors.transmission, *textures.transmission));
 }
 
 bool
@@ -830,6 +845,9 @@ authorMtlx(const UsdShadeMaterial& material, const PbrFactors& factors, bool ver
         ior ? surface.CreateInput(TfToken("ior"), SdfValueTypeNames->Float) : UsdShadeInput();
     // gltf_pbr layers a dielectric of ior 1.5 over the base, as glTF does.
     const bool clearcoat = hasClearcoat(factors);
+    // gltf_pbr mixes its diffuse term toward a transmission tinted by the base color, as glTF does.
+    // Without KHR_materials_volume the material is thin, and thickness keeps its default of 0.
+    const bool transmission = hasTransmission(factors);
     return surface.CreateIdAttr().Set(TfToken("ND_gltf_pbr_surfaceshader")) &&
            setInput(surface, "base_color", SdfValueTypeNames->Color3f,
                     unlit ? GfVec3f(0) : factors.baseColor) &&
@@ -845,6 +863,8 @@ authorMtlx(const UsdShadeMaterial& material, const PbrFactors& factors, bool ver
             (setInput(surface, "clearcoat", SdfValueTypeNames->Float, factors.clearcoat) &&
              setInput(surface, "clearcoat_roughness", SdfValueTypeNames->Float,
                       factors.clearcoatRoughness))) &&
+           (!transmission ||
+            setInput(surface, "transmission", SdfValueTypeNames->Float, factors.transmission)) &&
            alphaMode && alphaMode.GetAttr().SetVariability(SdfVariabilityUniform) &&
            alphaMode.Set(opaque ? 0 : (mask ? 1 : 2)) &&
            (opaque || setInput(surface, "alpha", SdfValueTypeNames->Float, factors.alpha)) &&
@@ -1044,12 +1064,14 @@ MaterialAuthor::Bind(std::size_t index, std::size_t uvSetCount, const pxr::VtVec
     const auto hasUvSet = [uvSetCount](const auto& info)
     { return !info || texCoordOf(*info) < uvSetCount; };
     const auto* clearcoat = source.clearcoat ? &*source.clearcoat : nullptr;
+    const auto* transmission = source.transmission ? &*source.transmission : nullptr;
     if (!hasUvSet(pbr.baseColorTexture) || !hasUvSet(pbr.metallicRoughnessTexture) ||
         !hasUvSet(source.normalTexture) || !hasUvSet(source.occlusionTexture) ||
         !hasUvSet(source.emissiveTexture) ||
         (clearcoat && (!hasUvSet(clearcoat->clearcoatTexture) ||
                        !hasUvSet(clearcoat->clearcoatRoughnessTexture) ||
-                       !hasUvSet(clearcoat->clearcoatNormalTexture))))
+                       !hasUvSet(clearcoat->clearcoatNormalTexture))) ||
+        (transmission && !hasUvSet(transmission->transmissionTexture)))
     {
         error = "material texture uses a texture coordinate set the primitive does not have";
         return false;
@@ -1102,6 +1124,11 @@ MaterialAuthor::Bind(std::size_t index, std::size_t uvSetCount, const pxr::VtVec
         error = "material clearcoat factor or roughness is non-finite or out of range";
         return false;
     }
+    if (transmission && !inUnitRange(transmission->transmissionFactor))
+    {
+        error = "material transmission factor is non-finite or out of range";
+        return false;
+    }
     auto& material = colors ? _vertexColorMaterials[index] : _materials[index];
     if (!material)
     {
@@ -1111,9 +1138,10 @@ MaterialAuthor::Bind(std::size_t index, std::size_t uvSetCount, const pxr::VtVec
                                            texture.emplace(), error);
         };
         // KHR_materials_unlit defines every other texture as a fallback for clients without it.
-        // A clearcoat of factor 0 is disabled, so its textures are not read either.
+        // A clearcoat or transmission of factor 0 is disabled, so its textures are not read either.
         const auto factors = pbrFactors(source);
         const bool coated = hasClearcoat(factors);
+        const bool transmits = hasTransmission(factors);
         MaterialTextures textures;
         if (!resolve(pbr.baseColorTexture, textures.baseColor) ||
             (!source.unlit && (!resolve(pbr.metallicRoughnessTexture, textures.metallicRoughness) ||
@@ -1123,7 +1151,8 @@ MaterialAuthor::Bind(std::size_t index, std::size_t uvSetCount, const pxr::VtVec
             (coated &&
              (!resolve(clearcoat->clearcoatTexture, textures.clearcoat) ||
               !resolve(clearcoat->clearcoatRoughnessTexture, textures.clearcoatRoughness) ||
-              !resolve(clearcoat->clearcoatNormalTexture, textures.clearcoatNormal))))
+              !resolve(clearcoat->clearcoatNormalTexture, textures.clearcoatNormal))) ||
+            (transmits && !resolve(transmission->transmissionTexture, textures.transmission)))
         {
             return false;
         }
@@ -1149,6 +1178,18 @@ MaterialAuthor::Bind(std::size_t index, std::size_t uvSetCount, const pxr::VtVec
         {
             TF_WARN("glTF material %zu: KHR_materials_clearcoat is ignored, because the material "
                     "is unlit",
+                    index);
+        }
+        if (source.unlit && transmission)
+        {
+            TF_WARN("glTF material %zu: KHR_materials_transmission is ignored, because the "
+                    "material is unlit",
+                    index);
+        }
+        if (transmits)
+        {
+            TF_WARN("glTF material %zu: UsdPreviewSurface has no transmission; its network ignores "
+                    "KHR_materials_transmission",
                     index);
         }
         if (textures.clearcoatNormal)

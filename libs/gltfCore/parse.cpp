@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <initializer_list>
+#include <string>
 #include <string_view>
 
 namespace gltfCore
@@ -168,43 +170,48 @@ overflowsFloat(double number)
     return !std::isfinite(float(number));
 }
 
-// Describes a field of KHR_materials_clearcoat that fastgltf rejects, or returns an empty string.
+// Describes a field of a material extension that fastgltf rejects, or returns an empty string.
+// `numbers` are its number fields, and `textures` its texture info fields.
 std::string
-describeMalformedClearcoat(const simdjson::dom::element& clearcoat)
+describeMalformedMaterialExtension(std::string_view name, const simdjson::dom::element& extension,
+                                   std::initializer_list<std::string_view> numbers,
+                                   std::initializer_list<std::string_view> textures)
 {
+    const auto describe = [name](const char* problem) { return std::string(name) + problem; };
     simdjson::dom::object object;
-    if (clearcoat.get_object().get(object) != simdjson::SUCCESS)
+    if (extension.get_object().get(object) != simdjson::SUCCESS)
     {
-        return "KHR_materials_clearcoat is not an object";
+        return describe(" is not an object");
     }
+    const auto contains = [](std::initializer_list<std::string_view> keys, std::string_view key)
+    { return std::find(keys.begin(), keys.end(), key) != keys.end(); };
     for (const auto field : object)
     {
         double number = 0;
-        if (field.key == "clearcoatFactor" || field.key == "clearcoatRoughnessFactor")
+        if (contains(numbers, field.key))
         {
             if (field.value.get_double().get(number) != simdjson::SUCCESS)
             {
-                return "KHR_materials_clearcoat has a field of the wrong type";
+                return describe(" has a field of the wrong type");
             }
             if (overflowsFloat(number))
             {
-                return "KHR_materials_clearcoat is out of range";
+                return describe(" is out of range");
             }
         }
-        else if (field.key == "clearcoatTexture" || field.key == "clearcoatRoughnessTexture" ||
-                 field.key == "clearcoatNormalTexture")
+        else if (contains(textures, field.key))
         {
             simdjson::dom::element value;
             if (!field.value.is_object() || !field.value["index"].is_uint64() ||
                 (field.value["texCoord"].get(value) == simdjson::SUCCESS && !value.is_uint64()) ||
                 (field.value["scale"].get(value) == simdjson::SUCCESS && !value.is_number()))
             {
-                return "KHR_materials_clearcoat has a field of the wrong type";
+                return describe(" has a field of the wrong type");
             }
             if (field.value["scale"].get_double().get(number) == simdjson::SUCCESS &&
                 overflowsFloat(number))
             {
-                return "KHR_materials_clearcoat is out of range";
+                return describe(" is out of range");
             }
         }
     }
@@ -261,7 +268,23 @@ describeMalformedMaterial(const std::byte* bytes, std::size_t size)
         if (material["extensions"][fastgltf::extensions::KHR_materials_clearcoat].get(clearcoat) ==
             simdjson::SUCCESS)
         {
-            if (auto description = describeMalformedClearcoat(clearcoat); !description.empty())
+            if (auto description = describeMalformedMaterialExtension(
+                    fastgltf::extensions::KHR_materials_clearcoat, clearcoat,
+                    {"clearcoatFactor", "clearcoatRoughnessFactor"},
+                    {"clearcoatTexture", "clearcoatRoughnessTexture", "clearcoatNormalTexture"});
+                !description.empty())
+            {
+                return description;
+            }
+        }
+        simdjson::dom::element transmission;
+        if (material["extensions"][fastgltf::extensions::KHR_materials_transmission].get(
+                transmission) == simdjson::SUCCESS)
+        {
+            if (auto description = describeMalformedMaterialExtension(
+                    fastgltf::extensions::KHR_materials_transmission, transmission,
+                    {"transmissionFactor"}, {"transmissionTexture"});
+                !description.empty())
             {
                 return description;
             }
@@ -279,6 +302,7 @@ IsImplementedExtension(std::string_view extension)
            extension == fastgltf::extensions::KHR_lights_punctual ||
            extension == fastgltf::extensions::KHR_materials_clearcoat ||
            extension == fastgltf::extensions::KHR_materials_ior ||
+           extension == fastgltf::extensions::KHR_materials_transmission ||
            extension == fastgltf::extensions::KHR_materials_unlit ||
            extension == fastgltf::extensions::KHR_mesh_quantization ||
            extension == fastgltf::extensions::KHR_texture_basisu ||
@@ -297,6 +321,7 @@ Parse(const std::byte* bytes, std::size_t size, std::string& error)
     fastgltf::Parser parser(
         fastgltf::Extensions::EXT_texture_webp | fastgltf::Extensions::KHR_lights_punctual |
         fastgltf::Extensions::KHR_materials_clearcoat | fastgltf::Extensions::KHR_materials_ior |
+        fastgltf::Extensions::KHR_materials_transmission |
         fastgltf::Extensions::KHR_materials_unlit | fastgltf::Extensions::KHR_mesh_quantization |
         fastgltf::Extensions::KHR_texture_basisu | fastgltf::Extensions::KHR_texture_transform);
     auto asset = parser.loadGltf(data.get(), {}, fastgltf::Options::None);
