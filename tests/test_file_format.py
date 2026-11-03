@@ -334,6 +334,40 @@ def ktx2_with_orientation(data, orientation):
     return bytes(result)
 
 
+def webp_fixture(name):
+    return (pathlib.Path(__file__).parent / "fixtures" / "textures" / (name + ".webp")).read_bytes()
+
+
+def webp_document(extension, image, data):
+    """A textured_document whose texture requires EXT_texture_webp."""
+    document, binary = textured_document(extension, image, data)
+    if image is None:
+        document["images"][0]["mimeType"] = "image/webp"
+    document["textures"] = [{"extensions": {"EXT_texture_webp": {"source": 0}}}]
+    document["extensionsUsed"] = ["EXT_texture_webp"]
+    document["extensionsRequired"] = ["EXT_texture_webp"]
+    return document, binary
+
+
+def riff(chunks):
+    """A WebP file of the given (tag, payload) chunks, each padded to an even size."""
+    body = b"WEBP"
+    for tag, payload in chunks:
+        body += tag + struct.pack("<I", len(payload)) + payload + b"\0" * (len(payload) % 2)
+    return b"RIFF" + struct.pack("<I", len(body)) + body
+
+
+def webp_without_tokens():
+    """lossy.webp with only its frame header and first partition, which the header still describes
+    consistently. The token partition is missing, so only decoding finds it."""
+    data = webp_fixture("lossy")
+    assert data[12:16] == b"VP8 "
+    payload = data[20:20 + struct.unpack_from("<I", data, 16)[0]]
+    first_partition = (payload[0] | payload[1] << 8 | payload[2] << 16) >> 5
+    assert 10 + first_partition < len(payload)
+    return riff([(b"VP8 ", payload[:10 + first_partition])])
+
+
 def read_png(data):
     """Returns the width, height and RGBA rows of a PNG without row filters."""
     width = height = None
@@ -1989,7 +2023,7 @@ class FileFormatTest(unittest.TestCase):
                     name = slots(pbr_document()[0]["materials"][0])[index][0]
                     for case, change, message in (
                         ("uv set", {"texCoord": 3}, "texture coordinate set the primitive does not have"),
-                        ("corrupt image", {"index": 1}, "embedded image is not PNG, JPEG or KTX2"),
+                        ("corrupt image", {"index": 1}, "embedded image is not PNG, JPEG, KTX2 or WebP"),
                     ):
                         with self.subTest(extension=extension, slot=name, case=case):
                             invalid, invalid_binary = pbr_document()
@@ -2714,6 +2748,147 @@ class FileFormatTest(unittest.TestCase):
             asset = base_color_file(Usd.Stage.Open(str(path)))
             self.assertIsNone(Ar.GetResolver().OpenAsset(Ar.ResolvedPath(asset.resolvedPath)))
 
+    def test_webp_images_are_served_as_png(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            for name, alpha in (("lossless", False), ("lossless_alpha", True), ("lossy", False),
+                                ("lossy_alpha", True)):
+                data = webp_fixture(name)
+                (root / (name + ".webp")).write_bytes(data)
+                encoded = base64.b64encode(data).decode()
+                for extension in ("gltf", "glb"):
+                    for source, image in (
+                        ("bufferView", None),
+                        ("data URI", {"uri": "data:image/webp;base64," + encoded}),
+                        ("file", {"uri": name + ".webp", "mimeType": "image/webp"}),
+                    ):
+                        with self.subTest(name=name, extension=extension, source=source):
+                            path = root / f"{name}_{source[0]}.{extension}"
+                            document, binary = webp_document(extension, image, data)
+                            write_asset(path, document, binary)
+                            stage = Usd.Stage.Open(str(path))
+                            asset = base_color_file(stage)
+                            self.assertEqual(asset.path, f"./{path.name}[images/0.png]")
+                            self.assert_quadrants(asset_bytes(asset.resolvedPath), alpha)
+
+    def test_webp_is_used_over_its_fallback_and_does_not_warn(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            for extension in ("gltf", "glb"):
+                with self.subTest(extension=extension):
+                    path = root / ("asset." + extension)
+                    document, binary = webp_document(extension, None, webp_fixture("lossy"))
+                    # Optional, with a plain source for clients without the extension.
+                    del document["extensionsRequired"]
+                    document["images"].append({"uri": "data:image/png;base64,"
+                                               + base64.b64encode(PNG).decode()})
+                    document["textures"][0]["source"] = 1
+                    write_asset(path, document, binary)
+                    stage = Usd.Stage.Open(str(path))
+                    asset = base_color_file(stage)
+                    self.assertEqual(asset.path, f"./{path.name}[images/0.png]")
+                    self.assert_quadrants(asset_bytes(asset.resolvedPath), False)
+                    result = subprocess.run(
+                        [sys.executable, "-c",
+                         "import sys\nfrom pxr import Usd\nUsd.Stage.Open(sys.argv[1])",
+                         str(path)],
+                        capture_output=True, text=True, check=False,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertNotIn("EXT_texture_webp", result.stderr)
+
+    def test_ktx2_is_preferred_over_webp(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            for extension in ("gltf", "glb"):
+                with self.subTest(extension=extension):
+                    path = root / ("asset." + extension)
+                    document, binary = ktx2_document(extension, None, ktx2_fixture("etc1s"))
+                    # An animation is not a valid WebP image here, so using it would fail.
+                    document["images"].append({"uri": "data:image/webp;base64,"
+                                               + base64.b64encode(webp_fixture("animated")).decode()})
+                    document["textures"][0]["extensions"]["EXT_texture_webp"] = {"source": 1}
+                    document["extensionsUsed"].append("EXT_texture_webp")
+                    write_asset(path, document, binary)
+                    asset = base_color_file(Usd.Stage.Open(str(path)))
+                    self.assertEqual(asset.path, f"./{path.name}[images/0.png]")
+                    self.assert_quadrants(asset_bytes(asset.resolvedPath), False)
+
+    def test_webp_file_resolves_after_moving_and_on_reload(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            source = root / "source"
+            source.mkdir()
+            (source / "image.webp").write_bytes(webp_fixture("lossy"))
+            document, binary = webp_document("gltf", {"uri": "image.webp"}, b"")
+            write_asset(source / "asset.gltf", document, binary)
+            moved = root / "moved"
+            source.rename(moved)
+            stage = Usd.Stage.Open(str(moved / "asset.gltf"))
+            asset = base_color_file(stage)
+            self.assertEqual(asset.path, "./asset.gltf[images/0.png]")
+            self.assert_quadrants(asset_bytes(asset.resolvedPath), False)
+
+            # The same request is answered from the file's current content.
+            (moved / "image.webp").write_bytes(webp_fixture("lossless_alpha"))
+            self.assert_quadrants(asset_bytes(asset.resolvedPath), True)
+
+    def test_webp_failures_preserve_layer(self):
+        valid = webp_fixture("lossy_alpha")
+        chunk_too_long = bytearray(valid)
+        struct.pack_into("<I", chunk_too_long, 16, len(valid))
+        bad_signature = bytearray(webp_fixture("lossy"))
+        bad_signature[23:26] = b"\0\0\0"
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            (root / "image.webp").write_bytes(webp_fixture("animated"))
+            for extension in ("gltf", "glb"):
+                path = root / ("asset." + extension)
+                document, binary = webp_document(extension, None, valid)
+                write_asset(path, document, binary)
+                stage = Usd.Stage.Open(str(path))
+                layer = stage.GetRootLayer()
+                before = layer_text(layer)
+                for case, data, message in (
+                    ("header only", b"RIFF\4\0\0\0WEBP", "WebP image is damaged"),
+                    ("truncated", valid[:len(valid) // 2], "WebP image is damaged"),
+                    ("chunk too long", bytes(chunk_too_long), "WebP image is damaged"),
+                    ("no image chunk", riff([(b"EXIF", b"\0" * 6)]), "WebP image is damaged"),
+                    ("bitstream signature", bytes(bad_signature), "WebP image is damaged"),
+                    ("animated", webp_fixture("animated"), "animated WebP image is not supported"),
+                ):
+                    with self.subTest(extension=extension, case=case):
+                        invalid, invalid_binary = webp_document(extension, None, data)
+                        write_asset(path, invalid, invalid_binary)
+                        with self.assertRaisesRegex(Tf.ErrorException, message):
+                            layer.Reload(True)
+                        self.assertEqual(layer_text(layer), before)
+                for case, change, message in (
+                    ("plain source", lambda d: d["textures"].__setitem__(0, {"source": 0}),
+                     "WebP image requires EXT_texture_webp"),
+                    ("not WebP", lambda d: d["images"].__setitem__(0, {
+                        "uri": "data:image/png;base64," + base64.b64encode(PNG).decode()}),
+                     "EXT_texture_webp image is not WebP"),
+                    ("animated file", lambda d: d["images"].__setitem__(0, {"uri": "image.webp"}),
+                     "animated WebP image is not supported"),
+                ):
+                    with self.subTest(extension=extension, case=case):
+                        invalid, invalid_binary = webp_document(extension, None, valid)
+                        change(invalid)
+                        write_asset(path, invalid, invalid_binary)
+                        with self.assertRaisesRegex(Tf.ErrorException, message):
+                            layer.Reload(True)
+                        self.assertEqual(layer_text(layer), before)
+
+    def test_damaged_webp_body_fails_when_read(self):
+        # The headers are valid, so import succeeds and the image's reader reports it.
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "asset.glb"
+            document, binary = webp_document("glb", None, webp_without_tokens())
+            write_asset(path, document, binary)
+            asset = base_color_file(Usd.Stage.Open(str(path)))
+            self.assertIsNone(Ar.GetResolver().OpenAsset(Ar.ResolvedPath(asset.resolvedPath)))
+
     def test_damaged_and_oversized_images_fail_import(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
@@ -2834,9 +3009,9 @@ class FileFormatTest(unittest.TestCase):
                 before = layer_text(layer)
                 for case, change, message in (
                     ("corrupt embedded", lambda d: d["images"].__setitem__(0, {
-                        "uri": "data:image/png;base64,AAAAAAAAAAAA"}), "embedded image is not PNG, JPEG or KTX2"),
+                        "uri": "data:image/png;base64,AAAAAAAAAAAA"}), "embedded image is not PNG, JPEG, KTX2 or WebP"),
                     ("webp data", lambda d: d["images"].__setitem__(0, {
-                        "uri": "data:image/webp;base64,UklGRg=="}), "embedded image is not PNG, JPEG or KTX2"),
+                        "uri": "data:image/webp;base64,UklGRg=="}), "embedded image is not PNG, JPEG, KTX2 or WebP"),
                     ("missing file", lambda d: d["images"].__setitem__(0, {"uri": "absent.png"}),
                      "cannot resolve external image"),
                     ("parent path", lambda d: d["images"].__setitem__(0, {"uri": "../outside.png"}),
@@ -2846,7 +3021,7 @@ class FileFormatTest(unittest.TestCase):
                     ("remote", lambda d: d["images"].__setitem__(0, {"uri": "https://example.com/a.png"}),
                      "unsafe or unsupported external image URI"),
                     ("not an image", lambda d: d["images"].__setitem__(0, {"uri": "not-image.png"}),
-                     "external image is not PNG, JPEG or KTX2"),
+                     "external image is not PNG, JPEG, KTX2 or WebP"),
                     ("damaged ktx2 file", lambda d: d["images"].__setitem__(0, {"uri": "image.ktx2"}),
                      "KTX2 image is damaged"),
                     ("basisu png", lambda d: d["textures"][0].__setitem__("extensions", {
@@ -3702,11 +3877,11 @@ class FileFormatTest(unittest.TestCase):
                                              "extensionsRequired": ["KHR_draco_mesh_compression"]},
                                             "unsupported required extensions: KHR_draco_mesh_compression"),
             "several required extensions": ({"asset": {"version": "2.0"}, "scenes": [{}],
-                                             "extensionsUsed": ["KHR_texture_basisu", "EXT_texture_webp",
+                                             "extensionsUsed": ["KHR_texture_basisu", "EXT_texture_avif",
                                                                 "UNKNOWN_extension"],
-                                             "extensionsRequired": ["KHR_texture_basisu", "EXT_texture_webp",
+                                             "extensionsRequired": ["KHR_texture_basisu", "EXT_texture_avif",
                                                                     "UNKNOWN_extension"]},
-                                            "unsupported required extensions: EXT_texture_webp, UNKNOWN_extension"),
+                                            "unsupported required extensions: EXT_texture_avif, UNKNOWN_extension"),
         }
         with tempfile.TemporaryDirectory() as directory:
             for extension in ("gltf", "glb"):

@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "externalBuffer.h"
 #include "image.h"
-#include "ktx2.h"
 #include "parse.h"
 
 #include "pxr/pxr.h"
@@ -64,7 +63,7 @@ openPackage(const std::string& resolvedPackagePath)
     return package;
 }
 
-// `bytes` refers to the package, or to `owned` for a KTX2 file.
+// `bytes` refers to the package, or to `owned` for a KTX2 or WebP file.
 struct PackagedImage
 {
     std::vector<std::byte> owned;
@@ -90,7 +89,7 @@ findImage(const std::shared_ptr<Package>& package, const std::string& entry, Pac
 
 } // namespace
 
-// Serves embedded images from the source file, and KTX2 images converted to PNG, so
+// Serves embedded images from the source file, and KTX2 and WebP images converted to PNG, so
 // an imported stage needs no extracted files. See docs/adr/0001-image-assets.md.
 class UsdGltfPackageResolver final : public ArPackageResolver
 {
@@ -120,17 +119,17 @@ class UsdGltfPackageResolver final : public ArPackageResolver
         }
         auto png = std::make_shared<std::vector<std::byte>>();
         std::string error;
+        const bool converted = gltfTexture::ServedFormat(image.format) != image.format;
         // The source can have changed since import, and the image loader must not see
         // a damaged image. See docs/adr/0006-image-failures.md.
         if (!gltfTexture::CheckImage(image.bytes, image.format, error) ||
-            (image.format == gltfTexture::ImageFormat::Ktx2 &&
-             !gltfTexture::DecodeKtx2ToPng(image.bytes, *png, error)))
+            (converted && !gltfTexture::ConvertToPng(image.bytes, image.format, *png, error)))
         {
             TF_WARN("Cannot read '%s' in '%s': %s", resolvedPackagedPath.c_str(),
                     resolvedPackagePath.c_str(), error.c_str());
             return nullptr;
         }
-        if (image.format != gltfTexture::ImageFormat::Ktx2)
+        if (!converted)
         {
             return ArInMemoryAsset::FromBuffer(
                 std::shared_ptr<const char>(package,

@@ -165,7 +165,8 @@ hasMalformedLight(const std::byte* bytes, std::size_t size)
 bool
 IsImplementedExtension(std::string_view extension)
 {
-    return extension == fastgltf::extensions::KHR_lights_punctual ||
+    return extension == fastgltf::extensions::EXT_texture_webp ||
+           extension == fastgltf::extensions::KHR_lights_punctual ||
            extension == fastgltf::extensions::KHR_mesh_quantization ||
            extension == fastgltf::extensions::KHR_texture_basisu ||
            extension == fastgltf::extensions::KHR_texture_transform;
@@ -181,8 +182,9 @@ Parse(const std::byte* bytes, std::size_t size, std::string& error)
         return data.error();
     }
     fastgltf::Parser parser(
-        fastgltf::Extensions::KHR_lights_punctual | fastgltf::Extensions::KHR_mesh_quantization |
-        fastgltf::Extensions::KHR_texture_basisu | fastgltf::Extensions::KHR_texture_transform);
+        fastgltf::Extensions::EXT_texture_webp | fastgltf::Extensions::KHR_lights_punctual |
+        fastgltf::Extensions::KHR_mesh_quantization | fastgltf::Extensions::KHR_texture_basisu |
+        fastgltf::Extensions::KHR_texture_transform);
     auto asset = parser.loadGltf(data.get(), {}, fastgltf::Options::None);
     auto result = asset.error();
     if (result == fastgltf::Error::None &&

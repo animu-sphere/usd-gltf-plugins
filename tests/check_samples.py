@@ -34,7 +34,7 @@ import numpy
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 BASELINE = ROOT / "tests" / "sample_baseline.json"
-IMPLEMENTED_EXTENSIONS = {"KHR_lights_punctual", "KHR_mesh_quantization", "KHR_texture_basisu", "KHR_texture_transform"}
+IMPLEMENTED_EXTENSIONS = {"EXT_texture_webp", "KHR_lights_punctual", "KHR_mesh_quantization", "KHR_texture_basisu", "KHR_texture_transform"}
 PATHS = ("mtlx", "preview")
 CAMERA = "/SampleCheckCamera"
 RESULT_MARKER = "SAMPLE_RESULT "
@@ -138,9 +138,11 @@ class Asset:
         return data if data.startswith(IMAGE_SIGNATURES) else None
 
     def texture_source(self, texture):
-        """Returns the image index a texture should show, with KTX2 preferred as the plugin documents."""
-        basisu = texture.get("extensions", {}).get("KHR_texture_basisu")
-        return basisu["source"] if basisu else texture.get("source")
+        """Returns the image index a texture should show, with KTX2 then WebP preferred as the plugin
+        documents."""
+        extensions = texture.get("extensions", {})
+        chosen = extensions.get("KHR_texture_basisu") or extensions.get("EXT_texture_webp")
+        return chosen["source"] if chosen else texture.get("source")
 
 
 class Check:

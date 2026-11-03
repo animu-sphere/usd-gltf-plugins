@@ -49,7 +49,7 @@ function(usd_gltf_add_fastgltf)
 endfunction()
 usd_gltf_add_fastgltf()
 
-# The Zstandard decoder is C, and both entry points otherwise enable only C++.
+# The Zstandard and WebP decoders are C, and both entry points otherwise enable only C++.
 enable_language(C)
 
 function(usd_gltf_add_basisu)
@@ -76,3 +76,33 @@ function(usd_gltf_add_basisu)
         VISIBILITY_INLINES_HIDDEN ON)
 endfunction()
 usd_gltf_add_basisu()
+
+function(usd_gltf_add_webp)
+    set(webp_dir "${USD_GLTF_REPOSITORY_ROOT}/third_party/libwebp")
+    file(GLOB webp_sources CONFIGURE_DEPENDS
+        "${webp_dir}/src/dec/*.c"
+        "${webp_dir}/src/dsp/*.c"
+        "${webp_dir}/src/utils/*.c")
+    add_library(usd_gltf_webp STATIC ${webp_sources})
+    # libwebp includes its own headers from the directory above src/, and consumers include
+    # webp/decode.h.
+    target_include_directories(usd_gltf_webp
+        PRIVATE "${webp_dir}"
+        PUBLIC "${webp_dir}/src")
+    # WEBP_EXTERN otherwise gives the API default visibility on GCC and Clang, and a host process
+    # can load its own libwebp, so these symbols must bind locally.
+    target_compile_definitions(usd_gltf_webp PUBLIC "WEBP_EXTERN=extern")
+    # As in upstream's own build. The resolver can decode on several threads at once, and this
+    # makes libwebp take a lock around its one-time initialization outside Windows.
+    find_package(Threads REQUIRED)
+    target_compile_definitions(usd_gltf_webp PRIVATE WEBP_USE_THREAD)
+    target_link_libraries(usd_gltf_webp PUBLIC Threads::Threads)
+    if(MSVC)
+        target_compile_options(usd_gltf_webp PRIVATE /utf-8)
+    endif()
+    set_target_properties(usd_gltf_webp PROPERTIES
+        POSITION_INDEPENDENT_CODE ON
+        C_VISIBILITY_PRESET hidden
+        VISIBILITY_INLINES_HIDDEN ON)
+endfunction()
+usd_gltf_add_webp()

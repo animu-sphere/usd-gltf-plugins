@@ -8,10 +8,6 @@ implementation order, which investigation may change. Each feature follows the
 
 ### Next
 
-- WebP images through `EXT_texture_webp`, reaching consumers as standard images under the
-  [image asset contract](../adr/0001-image-assets.md), with the decoder selected in an ADR. Covers
-  fallback selection, MIME type and signature, size limits, damaged data, embedded and external
-  images, moving, referencing and reloading, and third-party licenses.
 - `KHR_materials_unlit`, checked per renderer. A path that cannot express it warns or is recorded as
   a limit.
 - `KHR_materials_ior`, stating its relation to the existing PBR parameters, in both networks.
