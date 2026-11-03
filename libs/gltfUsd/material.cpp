@@ -70,6 +70,10 @@ struct PbrFactors
     bool unlit;
     // KHR_materials_ior, already validated; 0 stands for infinity.
     float ior;
+    // KHR_materials_clearcoat, 0 without it, which disables the layer.
+    float clearcoat;
+    float clearcoatRoughness;
+    float clearcoatNormalScale;
 };
 
 // glTF's default, and the default of both shaders' ior inputs.
@@ -94,7 +98,19 @@ pbrFactors(const fastgltf::Material& source)
             source.normalTexture ? float(source.normalTexture->scale) : 1.0f,
             source.alphaMode,
             source.unlit,
-            float(source.ior)};
+            float(source.ior),
+            source.clearcoat ? float(source.clearcoat->clearcoatFactor) : 0.0f,
+            source.clearcoat ? float(source.clearcoat->clearcoatRoughnessFactor) : 0.0f,
+            source.clearcoat && source.clearcoat->clearcoatNormalTexture
+                ? float(source.clearcoat->clearcoatNormalTexture->scale)
+                : 1.0f};
+}
+
+// glTF disables the clearcoat layer at a factor of 0, and an unlit material reflects nothing.
+bool
+hasClearcoat(const PbrFactors& factors)
+{
+    return !factors.unlit && factors.clearcoat > 0.0f;
 }
 
 // The ior to author, if it is not the shaders' default. An unlit material reflects nothing, so
@@ -210,6 +226,10 @@ struct MaterialTextures
     std::optional<TextureInput> normal;
     std::optional<TextureInput> occlusion;
     std::optional<TextureInput> emissive;
+    std::optional<TextureInput> clearcoat;
+    std::optional<TextureInput> clearcoatRoughness;
+    // Read by MaterialX only: UsdPreviewSurface's clearcoat uses the base normal.
+    std::optional<TextureInput> clearcoatNormal;
 };
 
 // Textures sharing a UV set share a reader: defining it again changes nothing.
@@ -363,6 +383,32 @@ connectPreviewEmissive(const UsdShadeNodeGraph& graph, UsdShadeShader& surface,
            connectPreviewOutput(image, "rgb", SdfValueTypeNames->Float3, surface, "emissiveColor");
 }
 
+// glTF's clearcoat is R and its roughness G, each times its factor.
+bool
+connectPreviewClearcoat(const UsdShadeNodeGraph& graph, UsdShadeShader& surface,
+                        const PbrFactors& factors, const MaterialTextures& textures)
+{
+    if (textures.clearcoat)
+    {
+        auto image = authorPreviewTexture(graph, "clearcoatTexture", *textures.clearcoat, "raw",
+                                          GfVec4f(factors.clearcoat, 1, 1, 1));
+        if (!image ||
+            !connectPreviewOutput(image, "r", SdfValueTypeNames->Float, surface, "clearcoat"))
+        {
+            return false;
+        }
+    }
+    if (textures.clearcoatRoughness)
+    {
+        auto image =
+            authorPreviewTexture(graph, "clearcoatRoughnessTexture", *textures.clearcoatRoughness,
+                                 "raw", GfVec4f(1, factors.clearcoatRoughness, 1, 1));
+        return image && connectPreviewOutput(image, "g", SdfValueTypeNames->Float, surface,
+                                             "clearcoatRoughness");
+    }
+    return true;
+}
+
 bool
 connectPreviewTextures(const UsdShadeNodeGraph& graph, UsdShadeShader& surface,
                        const PbrFactors& factors, const MaterialTextures& textures)
@@ -374,7 +420,8 @@ connectPreviewTextures(const UsdShadeNodeGraph& graph, UsdShadeShader& surface,
            (!textures.occlusion ||
             connectPreviewOcclusion(graph, surface, factors, *textures.occlusion)) &&
            (!textures.emissive ||
-            connectPreviewEmissive(graph, surface, factors, *textures.emissive));
+            connectPreviewEmissive(graph, surface, factors, *textures.emissive)) &&
+           (!hasClearcoat(factors) || connectPreviewClearcoat(graph, surface, factors, textures));
 }
 
 UsdShadeShader
@@ -607,22 +654,23 @@ connectMtlxMetallicRoughness(const UsdShadeNodeGraph& graph, UsdShadeShader& sur
                             factors.metallic);
 }
 
+// `name` prefixes the nodes, and `input` is the surface's normal input.
 bool
-connectMtlxNormal(const UsdShadeNodeGraph& graph, UsdShadeShader& surface,
-                  const PbrFactors& factors, const TextureInput& texture)
+connectMtlxNormal(const UsdShadeNodeGraph& graph, UsdShadeShader& surface, const std::string& name,
+                  const char* input, float scale, const TextureInput& texture)
 {
-    const auto image = authorMtlxImage(graph, "normalImage", texture, false);
-    const auto xyz = image
-                         ? authorMtlxImageChannel(graph, "normalXyz", "ND_convert_vector4_vector3",
-                                                  image, SdfValueTypeNames->Vector3f)
-                         : UsdShadeOutput();
-    auto map = xyz ? defineMtlxNode(graph, "normalMap", "ND_normalmap_float") : UsdShadeShader();
+    const auto image = authorMtlxImage(graph, (name + "Image").c_str(), texture, false);
+    const auto xyz =
+        image ? authorMtlxImageChannel(graph, (name + "Xyz").c_str(), "ND_convert_vector4_vector3",
+                                       image, SdfValueTypeNames->Vector3f)
+              : UsdShadeOutput();
+    auto map = xyz ? defineMtlxNode(graph, (name + "Map").c_str(), "ND_normalmap_float")
+                   : UsdShadeShader();
     const auto in =
         map ? map.CreateInput(TfToken("in"), SdfValueTypeNames->Vector3f) : UsdShadeInput();
-    const auto normal = surface.CreateInput(TfToken("normal"), SdfValueTypeNames->Vector3f);
+    const auto normal = surface.CreateInput(TfToken(input), SdfValueTypeNames->Vector3f);
     return in && normal && in.ConnectToSource(xyz) &&
-           (factors.normalScale == 1.0f ||
-            setInput(map, "scale", SdfValueTypeNames->Float, factors.normalScale)) &&
+           (scale == 1.0f || setInput(map, "scale", SdfValueTypeNames->Float, scale)) &&
            normal.ConnectToSource(map.CreateOutput(TfToken("out"), SdfValueTypeNames->Vector3f));
 }
 
@@ -668,16 +716,48 @@ connectMtlxEmissive(const UsdShadeNodeGraph& graph, UsdShadeShader& surface,
                                    SdfValueTypeNames->Color3f, factors.emissive);
 }
 
+// One channel of a non-color image times its factor.
+bool
+connectMtlxChannel(const UsdShadeNodeGraph& graph, UsdShadeShader& surface, const std::string& name,
+                   const char* input, int index, float factor, const TextureInput& texture)
+{
+    const auto image = authorMtlxImage(graph, (name + "Image").c_str(), texture, false);
+    const auto channel =
+        image ? authorMtlxImageComponent(graph, (name + "Channel").c_str(), image, index)
+              : UsdShadeOutput();
+    return channel && connectMtlxInput(graph, surface, input, channel, UsdShadeOutput(), nullptr,
+                                       (name + "Factor").c_str(), "ND_multiply_float",
+                                       SdfValueTypeNames->Float, factor);
+}
+
+// The clearcoat normal defaults to the geometric normal, as in glTF, not to the base normal map.
+bool
+connectMtlxClearcoat(const UsdShadeNodeGraph& graph, UsdShadeShader& surface,
+                     const PbrFactors& factors, const MaterialTextures& textures)
+{
+    return (!textures.clearcoat || connectMtlxChannel(graph, surface, "clearcoat", "clearcoat", 0,
+                                                      factors.clearcoat, *textures.clearcoat)) &&
+           (!textures.clearcoatRoughness ||
+            connectMtlxChannel(graph, surface, "clearcoatRoughness", "clearcoat_roughness", 1,
+                               factors.clearcoatRoughness, *textures.clearcoatRoughness)) &&
+           (!textures.clearcoatNormal ||
+            connectMtlxNormal(graph, surface, "clearcoatNormal", "clearcoat_normal",
+                              factors.clearcoatNormalScale, *textures.clearcoatNormal));
+}
+
 bool
 connectMtlxTextures(const UsdShadeNodeGraph& graph, UsdShadeShader& surface,
                     const PbrFactors& factors, const MaterialTextures& textures)
 {
     return (!textures.metallicRoughness ||
             connectMtlxMetallicRoughness(graph, surface, factors, *textures.metallicRoughness)) &&
-           (!textures.normal || connectMtlxNormal(graph, surface, factors, *textures.normal)) &&
+           (!textures.normal || connectMtlxNormal(graph, surface, "normal", "normal",
+                                                  factors.normalScale, *textures.normal)) &&
            (!textures.occlusion ||
             connectMtlxOcclusion(graph, surface, factors, *textures.occlusion)) &&
-           (!textures.emissive || connectMtlxEmissive(graph, surface, factors, *textures.emissive));
+           (!textures.emissive ||
+            connectMtlxEmissive(graph, surface, factors, *textures.emissive)) &&
+           (!hasClearcoat(factors) || connectMtlxClearcoat(graph, surface, factors, textures));
 }
 
 bool
@@ -697,6 +777,8 @@ authorPreview(const UsdShadeMaterial& material, const PbrFactors& factors, bool 
     const bool unlit = factors.unlit;
     // In the metallic workflow, a dielectric's F0 is ((1 - ior) / (1 + ior))^2, as in glTF.
     const auto ior = authoredIor(factors);
+    // The clearcoat's roughness defaults to 0.01, not glTF's 0.
+    const bool clearcoat = hasClearcoat(factors);
     return surface && surface.CreateIdAttr().Set(TfToken("UsdPreviewSurface")) &&
            setInput(surface, "diffuseColor", SdfValueTypeNames->Color3f,
                     unlit ? GfVec3f(0) : factors.baseColor) &&
@@ -707,6 +789,10 @@ authorPreview(const UsdShadeMaterial& material, const PbrFactors& factors, bool 
            setInput(surface, "emissiveColor", SdfValueTypeNames->Color3f,
                     unlit ? factors.baseColor : factors.emissive) &&
            (!ior || setInput(surface, "ior", SdfValueTypeNames->Float, *ior)) &&
+           (!clearcoat ||
+            (setInput(surface, "clearcoat", SdfValueTypeNames->Float, factors.clearcoat) &&
+             setInput(surface, "clearcoatRoughness", SdfValueTypeNames->Float,
+                      factors.clearcoatRoughness))) &&
            (!opacity || setInput(surface, "opacity", SdfValueTypeNames->Float, factors.alpha)) &&
            (!opacity || factors.alphaMode != fastgltf::AlphaMode::Mask ||
             setInput(surface, "opacityThreshold", SdfValueTypeNames->Float, factors.alphaCutoff)) &&
@@ -742,6 +828,8 @@ authorMtlx(const UsdShadeMaterial& material, const PbrFactors& factors, bool ver
     const auto ior = authoredIor(factors);
     const auto iorInput =
         ior ? surface.CreateInput(TfToken("ior"), SdfValueTypeNames->Float) : UsdShadeInput();
+    // gltf_pbr layers a dielectric of ior 1.5 over the base, as glTF does.
+    const bool clearcoat = hasClearcoat(factors);
     return surface.CreateIdAttr().Set(TfToken("ND_gltf_pbr_surfaceshader")) &&
            setInput(surface, "base_color", SdfValueTypeNames->Color3f,
                     unlit ? GfVec3f(0) : factors.baseColor) &&
@@ -753,6 +841,10 @@ authorMtlx(const UsdShadeMaterial& material, const PbrFactors& factors, bool ver
                     unlit ? factors.baseColor : factors.emissive) &&
            (!ior || (iorInput && iorInput.GetAttr().SetVariability(SdfVariabilityUniform) &&
                      iorInput.Set(*ior))) &&
+           (!clearcoat ||
+            (setInput(surface, "clearcoat", SdfValueTypeNames->Float, factors.clearcoat) &&
+             setInput(surface, "clearcoat_roughness", SdfValueTypeNames->Float,
+                      factors.clearcoatRoughness))) &&
            alphaMode && alphaMode.GetAttr().SetVariability(SdfVariabilityUniform) &&
            alphaMode.Set(opaque ? 0 : (mask ? 1 : 2)) &&
            (opaque || setInput(surface, "alpha", SdfValueTypeNames->Float, factors.alpha)) &&
@@ -951,9 +1043,13 @@ MaterialAuthor::Bind(std::size_t index, std::size_t uvSetCount, const pxr::VtVec
     const auto& pbr = source.pbrData;
     const auto hasUvSet = [uvSetCount](const auto& info)
     { return !info || texCoordOf(*info) < uvSetCount; };
+    const auto* clearcoat = source.clearcoat ? &*source.clearcoat : nullptr;
     if (!hasUvSet(pbr.baseColorTexture) || !hasUvSet(pbr.metallicRoughnessTexture) ||
         !hasUvSet(source.normalTexture) || !hasUvSet(source.occlusionTexture) ||
-        !hasUvSet(source.emissiveTexture))
+        !hasUvSet(source.emissiveTexture) ||
+        (clearcoat && (!hasUvSet(clearcoat->clearcoatTexture) ||
+                       !hasUvSet(clearcoat->clearcoatRoughnessTexture) ||
+                       !hasUvSet(clearcoat->clearcoatNormalTexture))))
     {
         error = "material texture uses a texture coordinate set the primitive does not have";
         return false;
@@ -1000,6 +1096,12 @@ MaterialAuthor::Bind(std::size_t index, std::size_t uvSetCount, const pxr::VtVec
         error = "material ior is neither 0 nor at least 1";
         return false;
     }
+    if (clearcoat && (!inUnitRange(clearcoat->clearcoatFactor) ||
+                      !inUnitRange(clearcoat->clearcoatRoughnessFactor)))
+    {
+        error = "material clearcoat factor or roughness is non-finite or out of range";
+        return false;
+    }
     auto& material = colors ? _vertexColorMaterials[index] : _materials[index];
     if (!material)
     {
@@ -1009,19 +1111,29 @@ MaterialAuthor::Bind(std::size_t index, std::size_t uvSetCount, const pxr::VtVec
                                            texture.emplace(), error);
         };
         // KHR_materials_unlit defines every other texture as a fallback for clients without it.
+        // A clearcoat of factor 0 is disabled, so its textures are not read either.
+        const auto factors = pbrFactors(source);
+        const bool coated = hasClearcoat(factors);
         MaterialTextures textures;
         if (!resolve(pbr.baseColorTexture, textures.baseColor) ||
             (!source.unlit && (!resolve(pbr.metallicRoughnessTexture, textures.metallicRoughness) ||
                                !resolve(source.normalTexture, textures.normal) ||
                                !resolve(source.occlusionTexture, textures.occlusion) ||
-                               !resolve(source.emissiveTexture, textures.emissive))))
+                               !resolve(source.emissiveTexture, textures.emissive))) ||
+            (coated &&
+             (!resolve(clearcoat->clearcoatTexture, textures.clearcoat) ||
+              !resolve(clearcoat->clearcoatRoughnessTexture, textures.clearcoatRoughness) ||
+              !resolve(clearcoat->clearcoatNormalTexture, textures.clearcoatNormal))))
         {
             return false;
         }
-        if (const auto& normal = textures.normal;
-            normal && normal->transform &&
-            (normal->transform->rotationDegrees != 0.0f || normal->transform->scale[0] < 0.0f ||
-             normal->transform->scale[1] < 0.0f))
+        const auto turnsFrame = [](const std::optional<TextureInput>& normal)
+        {
+            return normal && normal->transform &&
+                   (normal->transform->rotationDegrees != 0.0f ||
+                    normal->transform->scale[0] < 0.0f || normal->transform->scale[1] < 0.0f);
+        };
+        if (turnsFrame(textures.normal) || turnsFrame(textures.clearcoatNormal))
         {
             TF_WARN("glTF material %zu: a MaterialX renderer may derive the normal map's tangent "
                     "frame without its rotation or mirroring by KHR_texture_transform",
@@ -1032,6 +1144,24 @@ MaterialAuthor::Bind(std::size_t index, std::size_t uvSetCount, const pxr::VtVec
             TF_WARN(
                 "glTF material %zu: KHR_materials_ior is ignored, because the material is unlit",
                 index);
+        }
+        if (source.unlit && clearcoat)
+        {
+            TF_WARN("glTF material %zu: KHR_materials_clearcoat is ignored, because the material "
+                    "is unlit",
+                    index);
+        }
+        if (textures.clearcoatNormal)
+        {
+            TF_WARN("glTF material %zu: UsdPreviewSurface has no clearcoat normal; its network "
+                    "ignores clearcoatNormalTexture",
+                    index);
+        }
+        if (coated && source.ior != kDefaultIor)
+        {
+            TF_WARN("glTF material %zu: UsdPreviewSurface computes the clearcoat's Fresnel term "
+                    "from the material's ior, not from glTF's 1.5",
+                    index);
         }
         if (pbr.baseColorTexture && colors)
         {

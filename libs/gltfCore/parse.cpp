@@ -161,6 +161,56 @@ hasMalformedLight(const std::byte* bytes, std::size_t size)
     return false;
 }
 
+// Whether a number fastgltf reads as a float would overflow it.
+bool
+overflowsFloat(double number)
+{
+    return !std::isfinite(float(number));
+}
+
+// Describes a field of KHR_materials_clearcoat that fastgltf rejects, or returns an empty string.
+std::string
+describeMalformedClearcoat(const simdjson::dom::element& clearcoat)
+{
+    simdjson::dom::object object;
+    if (clearcoat.get_object().get(object) != simdjson::SUCCESS)
+    {
+        return "KHR_materials_clearcoat is not an object";
+    }
+    for (const auto field : object)
+    {
+        double number = 0;
+        if (field.key == "clearcoatFactor" || field.key == "clearcoatRoughnessFactor")
+        {
+            if (field.value.get_double().get(number) != simdjson::SUCCESS)
+            {
+                return "KHR_materials_clearcoat has a field of the wrong type";
+            }
+            if (overflowsFloat(number))
+            {
+                return "KHR_materials_clearcoat is out of range";
+            }
+        }
+        else if (field.key == "clearcoatTexture" || field.key == "clearcoatRoughnessTexture" ||
+                 field.key == "clearcoatNormalTexture")
+        {
+            simdjson::dom::element value;
+            if (!field.value.is_object() || !field.value["index"].is_uint64() ||
+                (field.value["texCoord"].get(value) == simdjson::SUCCESS && !value.is_uint64()) ||
+                (field.value["scale"].get(value) == simdjson::SUCCESS && !value.is_number()))
+            {
+                return "KHR_materials_clearcoat has a field of the wrong type";
+            }
+            if (field.value["scale"].get_double().get(number) == simdjson::SUCCESS &&
+                overflowsFloat(number))
+            {
+                return "KHR_materials_clearcoat is out of range";
+            }
+        }
+    }
+    return {};
+}
+
 // fastgltf rejects a material extension of the wrong type without saying why. Returns an empty
 // string if no such extension is found.
 std::string
@@ -201,10 +251,19 @@ describeMalformedMaterial(const std::byte* bytes, std::size_t size)
                     return "KHR_materials_ior has a field of the wrong type";
                 }
                 // fastgltf reads it as a float.
-                if (!std::isfinite(float(number)))
+                if (overflowsFloat(number))
                 {
                     return "KHR_materials_ior is out of range";
                 }
+            }
+        }
+        simdjson::dom::element clearcoat;
+        if (material["extensions"][fastgltf::extensions::KHR_materials_clearcoat].get(clearcoat) ==
+            simdjson::SUCCESS)
+        {
+            if (auto description = describeMalformedClearcoat(clearcoat); !description.empty())
+            {
+                return description;
             }
         }
     }
@@ -218,6 +277,7 @@ IsImplementedExtension(std::string_view extension)
 {
     return extension == fastgltf::extensions::EXT_texture_webp ||
            extension == fastgltf::extensions::KHR_lights_punctual ||
+           extension == fastgltf::extensions::KHR_materials_clearcoat ||
            extension == fastgltf::extensions::KHR_materials_ior ||
            extension == fastgltf::extensions::KHR_materials_unlit ||
            extension == fastgltf::extensions::KHR_mesh_quantization ||
@@ -236,9 +296,9 @@ Parse(const std::byte* bytes, std::size_t size, std::string& error)
     }
     fastgltf::Parser parser(
         fastgltf::Extensions::EXT_texture_webp | fastgltf::Extensions::KHR_lights_punctual |
-        fastgltf::Extensions::KHR_materials_ior | fastgltf::Extensions::KHR_materials_unlit |
-        fastgltf::Extensions::KHR_mesh_quantization | fastgltf::Extensions::KHR_texture_basisu |
-        fastgltf::Extensions::KHR_texture_transform);
+        fastgltf::Extensions::KHR_materials_clearcoat | fastgltf::Extensions::KHR_materials_ior |
+        fastgltf::Extensions::KHR_materials_unlit | fastgltf::Extensions::KHR_mesh_quantization |
+        fastgltf::Extensions::KHR_texture_basisu | fastgltf::Extensions::KHR_texture_transform);
     auto asset = parser.loadGltf(data.get(), {}, fastgltf::Options::None);
     auto result = asset.error();
     if (result == fastgltf::Error::None &&

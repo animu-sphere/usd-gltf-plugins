@@ -34,8 +34,9 @@ import numpy
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 BASELINE = ROOT / "tests" / "sample_baseline.json"
-IMPLEMENTED_EXTENSIONS = {"EXT_texture_webp", "KHR_lights_punctual", "KHR_materials_ior", "KHR_materials_unlit",
-                          "KHR_mesh_quantization", "KHR_texture_basisu", "KHR_texture_transform"}
+IMPLEMENTED_EXTENSIONS = {"EXT_texture_webp", "KHR_lights_punctual", "KHR_materials_clearcoat", "KHR_materials_ior",
+                          "KHR_materials_unlit", "KHR_mesh_quantization", "KHR_texture_basisu",
+                          "KHR_texture_transform"}
 PATHS = ("mtlx", "preview")
 CAMERA = "/SampleCheckCamera"
 RESULT_MARKER = "SAMPLE_RESULT "
@@ -67,7 +68,9 @@ MTLX_WRAP = {10497: "periodic", 33648: "mirror", 33071: "clamp"}
 IMAGE_SIGNATURES = (b"\x89PNG\r\n\x1a\n", b"\xff\xd8\xff")
 # A glTF texture slot, and the prefix of the nodes that read it in each network.
 SLOTS = {"baseColorTexture": "baseColor", "metallicRoughnessTexture": "metallicRoughness",
-         "normalTexture": "normal", "occlusionTexture": "occlusion", "emissiveTexture": "emissive"}
+         "normalTexture": "normal", "occlusionTexture": "occlusion", "emissiveTexture": "emissive",
+         "clearcoatTexture": "clearcoat", "clearcoatRoughnessTexture": "clearcoatRoughness"}
+CLEARCOAT_SLOTS = {"clearcoatTexture", "clearcoatRoughnessTexture"}
 COLOR_SLOTS = {"baseColorTexture", "emissiveTexture"}
 PBR_SLOTS = {"baseColorTexture", "metallicRoughnessTexture"}
 
@@ -475,7 +478,7 @@ def check_texture(check, asset, stage, material_path, key, info, label, images):
 
 def check_material(check, asset, stage, path, material, has_colors, images):
     """Compares a bound material's Preview factors and both networks' textures with the glTF."""
-    from pxr import UsdShade
+    from pxr import Usd, UsdShade
 
     label = path.rsplit("/", 1)[1]
     surface = UsdShade.Shader(stage.GetPrimAtPath(f"{path}/preview/surface"))
@@ -489,7 +492,9 @@ def check_material(check, asset, stage, path, material, has_colors, images):
 
     pbr = material.get("pbrMetallicRoughness", {})
     textures = {}
-    infos = {key: (pbr if key in PBR_SLOTS else material).get(key) for key in SLOTS}
+    clearcoat = material.get("extensions", {}).get("KHR_materials_clearcoat")
+    infos = {key: (pbr if key in PBR_SLOTS else clearcoat or {} if key in CLEARCOAT_SLOTS else material).get(key)
+             for key in SLOTS}
     # An unlit material uses only its base color; the rest are fallbacks, which are not authored.
     unlit = "KHR_materials_unlit" in material.get("extensions", {})
     if unlit:
@@ -500,6 +505,15 @@ def check_material(check, asset, stage, path, material, has_colors, images):
                              and not stage.GetPrimAtPath(f"{path}/mtlx/{slot}Image"),
                              f"{label} is unlit but authors its fallback {slot} texture")
                 infos[key] = None
+    # A clearcoat of factor 0 is disabled, and an unlit material has none.
+    coated = clearcoat is not None and not unlit and clearcoat.get("clearcoatFactor", 0) > 0
+    if not coated:
+        for key in CLEARCOAT_SLOTS:
+            infos[key] = None
+    names = {prim.GetName() for prim in Usd.PrimRange(stage.GetPrimAtPath(path))}
+    if not coated:
+        check.expect(not {name for name in names if name.startswith("clearcoat")},
+                     f"{label} authors a clearcoat it does not have")
     for key, info in infos.items():
         if info:
             textures[key] = check_texture(check, asset, stage, path, key, info, label, images)
@@ -558,6 +572,8 @@ def check_material(check, asset, stage, path, material, has_colors, images):
             strength = infos["occlusionTexture"].get("strength", 1)
             check_occlusion(check, textures.get("occlusionTexture"), strength, label)
 
+    check_clearcoat(check, surface, pbr_surface, clearcoat if coated else None, textures, names, label)
+
     # Both shaders default to glTF's 1.5, an ior of 0 stands for a very large one, and an unlit material has none.
     ior = material.get("extensions", {}).get("KHR_materials_ior", {}).get("ior", 1.5)
     expected_ior = None if unlit or ior == 1.5 else (1e6 if ior == 0 else ior)
@@ -584,6 +600,30 @@ def check_material(check, asset, stage, path, material, has_colors, images):
     opacity = surface.GetInput("opacity")
     if mode == "OPAQUE":
         check.expect(not opacity or opacity.Get() in (None, 1.0), f"{label} is OPAQUE but its Preview opacity is not 1")
+
+
+def check_clearcoat(check, surface, pbr_surface, clearcoat, textures, names, label):
+    """The clearcoat and its roughness in both paths, and its normal in MaterialX only.
+
+    `clearcoat` is None for a material without an enabled clearcoat."""
+    preview_inputs = {"clearcoatTexture": ("clearcoat", "clearcoatFactor", 0),
+                      "clearcoatRoughnessTexture": ("clearcoatRoughness", "clearcoatRoughnessFactor", 1)}
+    for key, (name, field, channel) in preview_inputs.items():
+        value = surface.GetInput(name).Get() if surface.GetInput(name) else None
+        if clearcoat is None:
+            check.expect(value is None, f"{label} Preview authors {name} without a clearcoat")
+        elif check.expect(value is not None, f"{label} Preview {name} is not authored"):
+            # Preview's clearcoat roughness defaults to 0.01, so even glTF's default of 0 is authored.
+            factor = clearcoat.get(field, 0)
+            check.close(value, factor, f"{label} Preview {name}")
+            if textures.get(key):
+                check.close(textures[key].GetInput("scale").Get()[channel], factor, f"{label} Preview {name} scale")
+    for name in ("clearcoat", "clearcoat_roughness"):
+        check.expect(bool(pbr_surface.GetInput(name)) == (clearcoat is not None),
+                     f"{label} MaterialX {name} differs from the clearcoat")
+    has_normal = clearcoat is not None and "clearcoatNormalTexture" in clearcoat
+    check.expect(bool(pbr_surface.GetInput("clearcoat_normal")) == has_normal and ("clearcoatNormalMap" in names)
+                 == has_normal, f"{label} MaterialX clearcoat normal differs")
 
 
 def check_occlusion(check, shader, strength, label):
