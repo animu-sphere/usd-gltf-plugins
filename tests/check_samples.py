@@ -34,7 +34,7 @@ import numpy
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 BASELINE = ROOT / "tests" / "sample_baseline.json"
-IMPLEMENTED_EXTENSIONS = {"KHR_texture_basisu", "KHR_texture_transform"}
+IMPLEMENTED_EXTENSIONS = {"KHR_mesh_quantization", "KHR_texture_basisu", "KHR_texture_transform"}
 PATHS = ("mtlx", "preview")
 CAMERA = "/SampleCheckCamera"
 RESULT_MARKER = "SAMPLE_RESULT "
@@ -260,8 +260,9 @@ def check_primitive(check, asset, prim, primitive, label):
 
 def check_generated_normals(check, mesh, normals, positions, triangles, label):
     """A primitive without NORMAL is flat shaded: each face's normal follows from its corners."""
-    a, b, c = (positions[triangles[:, corner]] for corner in range(3))
-    faces = numpy.cross(numpy.asarray(b - a, numpy.float64), numpy.asarray(c - a, numpy.float64))
+    # As floats first, because subtracting quantized positions would wrap around.
+    a, b, c = (numpy.asarray(positions[triangles[:, corner]], numpy.float64) for corner in range(3))
+    faces = numpy.cross(b - a, c - a)
     lengths = numpy.linalg.norm(faces, axis=1, keepdims=True)
     # A degenerate triangle has no normal to compare.
     valid = lengths[:, 0] > 1e-12

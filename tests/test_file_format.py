@@ -124,6 +124,50 @@ def uv_document(extension, external=False):
     return document, binary
 
 
+QUANTIZED_BOUNDS = {5120: (-128, -127, 127), 5121: (0, 1, 255), 5122: (-32768, -32767, 32767), 5123: (0, 1, 65535)}
+FLOAT_POSITIONS = (5126, False, ((0, 0, 0), (1, 0, 0), (0, 1, 0)))
+
+
+def quantized_document(extension, attributes):
+    """A non-indexed triangle whose attributes are name: (componentType, normalized, rows),
+    each in a bufferView of its own, padded to the stride that alignment needs."""
+    binary = b""
+    views, accessors = [], []
+    for component_type, normalized, rows in attributes.values():
+        code = {5120: "b", 5121: "B", 5122: "h", 5123: "H", 5126: "f"}[component_type]
+        width = len(rows[0])
+        size = struct.calcsize("<" + code)
+        stride = (size * width + 3) // 4 * 4
+        data = b"".join(struct.pack(f"<{width}{code}", *row).ljust(stride, b"\0") for row in rows)
+        views.append({"buffer": 0, "byteOffset": len(binary), "byteLength": len(data), "byteStride": stride})
+        accessors.append({"bufferView": len(views) - 1, "componentType": component_type, "count": len(rows),
+                          "type": f"VEC{width}", "normalized": normalized})
+        binary += data
+    buffer = {"byteLength": len(binary)}
+    if extension == "gltf":
+        buffer["uri"] = "data:application/octet-stream;base64," + base64.b64encode(binary).decode()
+    document = {
+        "asset": {"version": "2.0"},
+        "extensionsUsed": ["KHR_mesh_quantization"],
+        "extensionsRequired": ["KHR_mesh_quantization"],
+        "scene": 0,
+        "scenes": [{"nodes": [0]}],
+        "nodes": [{"mesh": 0}],
+        "meshes": [{"primitives": [{"attributes": {name: i for i, name in enumerate(attributes)}}]}],
+        "buffers": [buffer],
+        "bufferViews": views,
+        "accessors": accessors,
+    }
+    return document, binary if extension == "glb" else None
+
+
+def decoded_component(component_type, normalized, value):
+    if not normalized:
+        return float(value)
+    scale = {5120: 127.0, 5121: 255.0, 5122: 32767.0, 5123: 65535.0}[component_type]
+    return max(value / scale, -1.0)
+
+
 def png_chunk(kind, data):
     return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
 
@@ -822,8 +866,8 @@ class FileFormatTest(unittest.TestCase):
         cases = {
             "count": "texture coordinate and position counts differ",
             "type": "invalid type",
-            "normalized integer": "invalid type",
-            "component": "unsupported component type",
+            "normalized integer": "requires KHR_mesh_quantization",
+            "component": "requires KHR_mesh_quantization",
             "missing set": "consecutive",
             "accessor": "accessor index",
             "bounds": "bufferView",
@@ -1023,7 +1067,7 @@ class FileFormatTest(unittest.TestCase):
             "buffer bounds": "bufferView",
             "buffer index": "buffer index",
             "bufferView index": "bufferView index",
-            "component type": "invalid type",
+            "component type": "requires KHR_mesh_quantization",
             "alignment": "alignment",
             "normalized": "cannot parse",
             "sparse": "sparse",
@@ -2165,6 +2209,196 @@ class FileFormatTest(unittest.TestCase):
             self.assertNotEqual(UsdShade.Shader(prim).GetShaderId() if prim.IsA(UsdShade.Shader) else "", "UsdTransform2d")
         self.assertTrue(any(UsdShade.Shader(prim).GetShaderId() == "UsdTransform2d"
                             for prim in stage.Traverse() if prim.IsA(UsdShade.Shader)))
+
+    def test_quantized_attribute_formats(self):
+        def rows(component_type, width):
+            a, b, c = QUANTIZED_BOUNDS[component_type]
+            return tuple((row * 2)[:width] for row in ((a, b, c), (b, c, a), (c, a, b)))
+
+        formats = {
+            "POSITION": [(c, n) for c in QUANTIZED_BOUNDS for n in (False, True)],
+            "NORMAL": [(5120, True), (5122, True)],
+            "TANGENT": [(5120, True), (5122, True)],
+            "TEXCOORD_0": [(5120, False), (5120, True), (5121, False), (5122, False), (5122, True), (5123, False)],
+        }
+        widths = {"POSITION": 3, "NORMAL": 3, "TANGENT": 4, "TEXCOORD_0": 2}
+        with tempfile.TemporaryDirectory() as directory:
+            for extension in ("gltf", "glb"):
+                for name, cases in formats.items():
+                    for component_type, normalized in cases:
+                        with self.subTest(extension=extension, name=name, component_type=component_type,
+                                          normalized=normalized):
+                            path = pathlib.Path(directory) / f"{name}_{component_type}_{normalized}.{extension}"
+                            raw = rows(component_type, widths[name])
+                            attributes = {"POSITION": FLOAT_POSITIONS}
+                            attributes[name] = (component_type, normalized, raw)
+                            write_asset(path, *quantized_document(extension, attributes))
+                            stage = Usd.Stage.Open(str(path))
+                            prim = stage.GetPrimAtPath("/Asset/geo/Node_0/Mesh_0/Primitive_0")
+                            mesh = UsdGeom.Mesh(prim)
+                            api = UsdGeom.PrimvarsAPI(prim)
+                            values = {
+                                "POSITION": lambda: mesh.GetPointsAttr().Get(),
+                                "NORMAL": lambda: mesh.GetNormalsAttr().Get(),
+                                "TANGENT": lambda: api.GetPrimvar("gltf_tangent").Get(),
+                                "TEXCOORD_0": lambda: api.GetPrimvar("st").Get(),
+                            }[name]()
+                            self.assertEqual(len(values), 3)
+                            for value, row in zip(values, raw):
+                                expected = [decoded_component(component_type, normalized, c) for c in row]
+                                if name == "TEXCOORD_0":
+                                    expected[1] = 1 - expected[1]
+                                for got, wanted in zip(value, expected):
+                                    self.assertAlmostEqual(got, wanted, delta=1e-6 * max(1, abs(wanted)))
+                            self.assertTrue(stage.GetRootLayer().Reload(True))
+
+    def test_quantized_values_keep_their_range_and_precision(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for extension in ("gltf", "glb"):
+                with self.subTest(extension=extension):
+                    path = pathlib.Path(directory) / ("precision." + extension)
+                    # Every unsigned short is exact in a float, and differences of these would wrap
+                    # around if they were computed before converting.
+                    positions = ((0, 0, 65535), (65535, 0, 65535), (0, 65534, 65535))
+                    write_asset(path, *quantized_document(extension, {
+                        "POSITION": (5123, False, positions),
+                        "TANGENT": (5120, True, ((127, 0, 0, 127), (0, 127, 0, -127), (0, 0, 127, -128))),
+                    }))
+                    stage = Usd.Stage.Open(str(path))
+                    prim = stage.GetPrimAtPath("/Asset/geo/Node_0/Mesh_0/Primitive_0")
+                    mesh = UsdGeom.Mesh(prim)
+                    self.assertEqual([tuple(point) for point in mesh.GetPointsAttr().Get()], list(positions))
+                    self.assertEqual(mesh.GetNormalsInterpolation(), UsdGeom.Tokens.uniform)
+                    self.assertEqual(list(mesh.GetNormalsAttr().Get()), [Gf.Vec3f(0, 0, 1)])
+                    self.assertEqual([Gf.Vec3f(*corner) for corner in mesh.GetExtentAttr().Get()],
+                                     [Gf.Vec3f(0, 0, 65535), Gf.Vec3f(65535, 65534, 65535)])
+                    # Both of the lowest values mean -1, so W stays a sign.
+                    tangents = UsdGeom.PrimvarsAPI(prim).GetPrimvar("gltf_tangent").Get()
+                    self.assertEqual([tangent[3] for tangent in tangents], [1, -1, -1])
+
+    def test_quantized_attributes_interleaved_with_node_transform(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for extension in ("gltf", "glb"):
+                with self.subTest(extension=extension):
+                    path = pathlib.Path(directory) / ("interleaved." + extension)
+                    binary = b"".join(struct.pack("<3Hxx3bx2H", *vertex) for vertex in (
+                        (0, 0, 0, 0, 0, 127, 0, 65535),
+                        (65535, 0, 0, 0, 0, 127, 65535, 65535),
+                        (0, 65535, 0, 0, 0, -127, 0, 0),
+                    ))
+                    document, _ = quantized_document(extension, {"POSITION": FLOAT_POSITIONS})
+                    document["buffers"][0]["byteLength"] = len(binary)
+                    if extension == "gltf":
+                        document["buffers"][0]["uri"] = "data:application/octet-stream;base64," + (
+                            base64.b64encode(binary).decode())
+                    document["bufferViews"] = [{"buffer": 0, "byteLength": len(binary), "byteStride": 16}]
+                    document["accessors"] = [
+                        {"bufferView": 0, "componentType": 5123, "count": 3, "type": "VEC3"},
+                        {"bufferView": 0, "byteOffset": 8, "componentType": 5120, "normalized": True, "count": 3,
+                         "type": "VEC3"},
+                        {"bufferView": 0, "byteOffset": 12, "componentType": 5123, "count": 3, "type": "VEC2"},
+                    ]
+                    document["meshes"][0]["primitives"][0]["attributes"] = {"POSITION": 0, "NORMAL": 1, "TEXCOORD_0": 2}
+                    # A dequantization transform, as the extension's specification suggests.
+                    document["nodes"][0].update({"scale": [2 / 65535] * 3, "translation": [-1, -1, 0]})
+                    write_asset(path, document, binary if extension == "glb" else None)
+                    stage = Usd.Stage.Open(str(path))
+                    prim = stage.GetPrimAtPath("/Asset/geo/Node_0/Mesh_0/Primitive_0")
+                    mesh = UsdGeom.Mesh(prim)
+                    self.assertEqual(list(mesh.GetNormalsAttr().Get()),
+                                     [Gf.Vec3f(0, 0, 1), Gf.Vec3f(0, 0, 1), Gf.Vec3f(0, 0, -1)])
+                    self.assertEqual(list(UsdGeom.PrimvarsAPI(prim).GetPrimvar("st").Get()),
+                                     [Gf.Vec2f(0, -65534), Gf.Vec2f(65535, -65534), Gf.Vec2f(0, 1)])
+                    world = UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+                    for point, expected in zip(mesh.GetPointsAttr().Get(), ((-1, -1, 0), (1, -1, 0), (-1, 1, 0))):
+                        self.assertTrue(Gf.IsClose(world.Transform(Gf.Vec3d(point)), Gf.Vec3d(*expected), 1e-9))
+
+    def test_quantization_declared_without_quantized_data(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for extension in ("gltf", "glb"):
+                for required in (False, True):
+                    with self.subTest(extension=extension, required=required):
+                        path = pathlib.Path(directory) / f"{required}.{extension}"
+                        document, binary = uv_document(extension)
+                        document["extensionsUsed"] = ["KHR_mesh_quantization"]
+                        if required:
+                            document["extensionsRequired"] = ["KHR_mesh_quantization"]
+                        write_asset(path, document, binary if extension == "glb" else None)
+                        result = subprocess.run(
+                            [sys.executable, "-c",
+                             "from pxr import Usd; import sys; assert Usd.Stage.Open(sys.argv[1])", str(path)],
+                            capture_output=True, text=True, check=False,
+                        )
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertNotIn("KHR_mesh_quantization", result.stderr)
+
+    def test_quantized_failures_preserve_layer(self):
+        def base(extension):
+            return quantized_document(extension, {
+                "POSITION": (5123, False, ((0, 0, 0), (9, 0, 0), (0, 9, 0))),
+                "NORMAL": (5120, True, ((0, 0, 127),) * 3),
+                "TANGENT": (5122, True, ((32767, 0, 0, 32767),) * 3),
+                "TEXCOORD_0": (5123, False, ((0, 0), (9, 0), (0, 9))),
+            })
+
+        def edit(field, value, target="accessors", index=0):
+            def apply(document):
+                document[target][index][field] = value
+            return apply
+
+        def undeclared(document):
+            del document["extensionsUsed"], document["extensionsRequired"]
+
+        def optional(document):
+            del document["extensionsRequired"]
+
+        def without_stride(index):
+            def apply(document):
+                del document["bufferViews"][index]["byteStride"]
+            return apply
+
+        cases = {
+            "undeclared": (undeclared, "requires KHR_mesh_quantization"),
+            "optional": (optional, "requires KHR_mesh_quantization"),
+            "position unsigned int": (edit("componentType", 5125), "invalid type"),
+            "position type": (edit("type", "VEC2"), "invalid type"),
+            "normal not normalized": (edit("normalized", False, index=1), "invalid type"),
+            "normal unsigned": (edit("componentType", 5121, index=1), "invalid type"),
+            "tangent not normalized": (edit("normalized", False, index=2), "invalid type"),
+            "tangent unsigned": (edit("componentType", 5123, index=2), "invalid type"),
+            "texture coordinate unsigned int": (edit("componentType", 5125, index=3), "invalid type"),
+            "count": (edit("count", 2, index=1), "normal and position counts differ"),
+            "short without padding": (without_stride(0), "invalid stride"),
+            "byte without padding": (without_stride(1), "invalid stride"),
+            "stride not a multiple of 4": (edit("byteStride", 6, "bufferViews"), "invalid stride"),
+            "offset of a component": (edit("byteOffset", 1), "alignment"),
+            "offset not a multiple of 4": (edit("byteOffset", 2), "alignment"),
+            # The last element needs no padding, so it needs 22 of the 24 bytes.
+            "view too short": (edit("byteLength", 21, "bufferViews"), "bufferView"),
+            "sparse": (edit("sparse", {"count": 1, "indices": {"bufferView": 1, "componentType": 5121},
+                                       "values": {"bufferView": 1}}), "sparse"),
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            for extension in ("gltf", "glb"):
+                path = pathlib.Path(directory) / ("quantized." + extension)
+                write_asset(path, *base(extension))
+                stage = Usd.Stage.Open(str(path))
+                layer = stage.GetRootLayer()
+                before = layer_text(layer)
+                for name, (mutate, message) in cases.items():
+                    with self.subTest(extension=extension, name=name):
+                        document, binary = base(extension)
+                        mutate(document)
+                        write_asset(path, document, binary)
+                        with self.assertRaisesRegex(Tf.ErrorException, message):
+                            layer.Reload(True)
+                        self.assertEqual(layer_text(layer), before)
+                with self.subTest(extension=extension, name="color is not extended"):
+                    write_asset(path, *quantized_document(extension, {
+                        "POSITION": FLOAT_POSITIONS, "COLOR_0": (5120, True, ((1, 1, 1),) * 3)}))
+                    with self.assertRaisesRegex(Tf.ErrorException, "unsupported component type"):
+                        layer.Reload(True)
+                    self.assertEqual(layer_text(layer), before)
 
     def test_tangents_are_retained(self):
         values = ((1, 0, 0, 1), (0, 1, 0, -1), (0, 0, 1, 1))
