@@ -23,8 +23,7 @@ see [TEXTURES](../design/TEXTURES.md) for their lifecycle and portability.
 
 Reject unsupported content rather than silently dropping it or presenting an
 incorrect scene. Unsupported required extensions fail during parsing, and the diagnostic names each
-of them. A selected node's light reference is rejected, which is why `KHR_lights_punctual` is parsed;
-parsing it does not enable support for the extension.
+of them.
 
 An optional extension takes one of three outcomes, and none of them is silent:
 

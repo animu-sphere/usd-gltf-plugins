@@ -49,7 +49,8 @@ a change is an edit that a pull request shows.
 ## Compared for meaning
 
 For the selected scene: stage metrics; prim paths and the mesh count; world transforms; each camera's
-view and projection, as a renderer combines them; points,
+view and projection, as a renderer combines them; each light's position, direction, color,
+intensity and cone, through the UsdLux definitions in [ADR 0013](0013-lights.md); points,
 triangles (in any rotation that keeps winding), normals including generated ones, UV sets with V
 flipped, tangents and vertex colors; bindings and `doubleSided`. For each bound material: which
 shader each path resolves to; for each texture in both networks, that it resolves, UV set, its
@@ -75,6 +76,10 @@ applied without normalizing it.
 - It finds only what is compared. Not compared: MaterialX factors combined with a texture, Preview
   alpha connections, the vertex color products for Preview, the content of decoded KTX2 images, and
   sampler filters, which are not applied.
+- Values agree within 1e-5 of their size. A camera's view is compared within 1e-5 of the camera's
+  distance from the origin instead, because the parser reads the node's rotation as floats, which the
+  view multiplies by its translation: NodePerformanceTest's camera, about 680 units away, differs by
+  1.3e-4 in a value of 8.6.
 - `verified` is not a claim of correct appearance, and `drawn` does not judge a pixel. A file can
   be drawn wrongly and still pass.
 - The results are from one machine. Another platform may need its own diagnostics or renders

@@ -2,6 +2,7 @@
 #include "scene.h"
 
 #include "camera.h"
+#include "light.h"
 #include "material.h"
 #include "mesh.h"
 #include "parse.h"
@@ -50,10 +51,6 @@ unsupportedNodeContent(const fastgltf::Node& node)
     if (node.skinIndex)
     {
         return "skins are";
-    }
-    if (node.lightIndex)
-    {
-        return "KHR_lights_punctual lights are";
     }
     return node.weights.empty() ? nullptr : "morph weights are";
 }
@@ -199,6 +196,10 @@ authorScene(const fastgltf::Asset& asset, const std::string& sourcePath,
         const GfMatrix4d world = matrix * parentWorld;
         if (node.cameraIndex &&
             !AuthorCamera(asset, index, *node.cameraIndex, xform.GetPrim(), world))
+        {
+            return {};
+        }
+        if (node.lightIndex && !AuthorLight(asset, index, *node.lightIndex, xform.GetPrim(), world))
         {
             return {};
         }

@@ -34,7 +34,7 @@ import numpy
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 BASELINE = ROOT / "tests" / "sample_baseline.json"
-IMPLEMENTED_EXTENSIONS = {"KHR_mesh_quantization", "KHR_texture_basisu", "KHR_texture_transform"}
+IMPLEMENTED_EXTENSIONS = {"KHR_lights_punctual", "KHR_mesh_quantization", "KHR_texture_basisu", "KHR_texture_transform"}
 PATHS = ("mtlx", "preview")
 CAMERA = "/SampleCheckCamera"
 RESULT_MARKER = "SAMPLE_RESULT "
@@ -49,7 +49,6 @@ OPTIONAL_WARNING = re.compile(r"glTF optional extension '(.*)' is not supported"
 DIAGNOSTIC_CAUSES = {
     "animations are not supported": ("animations",),
     "skins are not supported": ("skin",),
-    "lights are not supported": ("light",),
     "morph weights are not supported": ("morph targets",),
     "morph targets are not supported": ("morph targets",),
     "primitive mode": ("points or lines",),
@@ -153,14 +152,16 @@ class Check:
             self.mismatches.append(message)
         return passed
 
-    def close(self, actual, expected, message):
+    def close(self, actual, expected, message, magnitude=None):
+        """Compares within TOLERANCE of the magnitude, which defaults to the expected values. A product's
+        rounding scales with its terms, which can be far larger than a result they cancel to."""
         actual = numpy.asarray(actual, numpy.float64)
         expected = numpy.asarray(expected, numpy.float64)
         if actual.size == 0 and expected.size == 0:
             return True
         if actual.shape != expected.shape:
             return self.expect(False, f"{message}: shape {actual.shape}, expected {expected.shape}")
-        limit = TOLERANCE * numpy.maximum(1.0, numpy.abs(expected))
+        limit = TOLERANCE * numpy.maximum(1.0, numpy.abs(expected) if magnitude is None else magnitude)
         return self.expect(bool(numpy.all(numpy.abs(actual - expected) <= limit)), f"{message}: values differ")
 
 
@@ -213,6 +214,47 @@ def camera_view(world):
     result = numpy.array(world, numpy.float64)
     result[:3, :3] /= numpy.linalg.norm(result[:3, :3], axis=1, keepdims=True)
     return result
+
+
+def check_light(check, prim, light, world, label):
+    """Compares a light with glTF's definition: at the node's origin, along its -Z axis, with intensity
+    in candela or lux. UsdLux defines a sphere's intensity as luminance, which times its projected area
+    is candela, and a normalized distant light of angle 0 as illuminance."""
+    from pxr import Usd, UsdGeom, UsdLux
+
+    kind = light["type"]
+    schema = UsdLux.DistantLight if kind == "directional" else UsdLux.SphereLight
+    if not check.expect(prim and prim.IsA(schema), f"{label} is not a {schema.__name__}"):
+        return
+    actual = numpy.array(UsdGeom.XformCache(Usd.TimeCode.Default()).GetLocalToWorldTransform(prim))
+    rotation = actual[:3, :3]
+    check.close(rotation @ rotation.T, numpy.identity(3), f"{label} is scaled or sheared")
+    check.close(numpy.linalg.det(rotation), 1.0, f"{label} is reflected")
+    check.close(actual[3, :3], world[3, :3], f"{label} position")
+    direction = -world[2, :3] / numpy.linalg.norm(world[2, :3])
+    check.close(-actual[2, :3], direction, f"{label} direction")
+    api = UsdLux.LightAPI(prim)
+    check.close(api.GetColorAttr().Get(), light.get("color", (1, 1, 1)), f"{label} color")
+    intensity = api.GetIntensityAttr().Get()
+    expected = light.get("intensity", 1.0)
+    if kind == "directional":
+        check.expect(UsdLux.DistantLight(prim).GetAngleAttr().Get() == 0, f"{label} angle")
+        check.expect(api.GetNormalizeAttr().Get(), f"{label} is not normalized")
+        check.close(intensity, expected, f"{label} illuminance")
+        return
+    check.expect(not api.GetNormalizeAttr().Get(), f"{label} is normalized")
+    radius = UsdLux.SphereLight(prim).GetRadiusAttr().Get()
+    check.close(intensity * math.pi * radius * radius, expected, f"{label} candela")
+    if not check.expect(prim.HasAPI(UsdLux.ShapingAPI) == (kind == "spot"), f"{label} shaping"):
+        return
+    if kind == "spot":
+        shaping = UsdLux.ShapingAPI(prim)
+        angle = shaping.GetShapingConeAngleAttr().Get()
+        softness = shaping.GetShapingConeSoftnessAttr().Get()
+        spot = light.get("spot", {})
+        check.close(angle, math.degrees(spot.get("outerConeAngle", math.pi / 4)), f"{label} outer cone")
+        # UsdLux starts to soften the cone at (1 - softness) times its angle.
+        check.close((1 - softness) * angle, math.degrees(spot.get("innerConeAngle", 0)), f"{label} inner cone")
 
 
 def expected_triangles(asset, primitive, vertices):
@@ -512,7 +554,7 @@ def check_occlusion(check, shader, strength, label):
 
 def check_meaning(stage, asset):
     """Returns what differs between the stage and the file, walking the selected scene."""
-    from pxr import Usd, UsdGeom
+    from pxr import Usd, UsdGeom, UsdLux
 
     check = Check()
     document = asset.json
@@ -523,6 +565,8 @@ def check_meaning(stage, asset):
     cache = UsdGeom.XformCache(Usd.TimeCode.Default())
     expected_paths = set()
     expected_cameras = set()
+    expected_lights = set()
+    lights = document.get("extensions", {}).get("KHR_lights_punctual", {}).get("lights", [])
     materials = {}
 
     def walk(index, parent_path, parent_world):
@@ -552,8 +596,21 @@ def check_meaning(stage, asset):
                 # Hydra views through the inverse of the prim's whole transform.
                 actual = numpy.linalg.inv(numpy.array(cache.GetLocalToWorldTransform(camera_prim))) @ numpy.array(
                     UsdGeom.Camera(camera_prim).GetCamera().frustum.ComputeProjectionMatrix())
-                expected = numpy.linalg.inv(camera_view(world)) @ gltf_projection(document["cameras"][camera_index])
-                check.close(actual, expected, f"camera {camera_index} on Node_{index}")
+                placement = camera_view(world)
+                view = numpy.linalg.inv(placement)
+                projection = gltf_projection(document["cameras"][camera_index])
+                # The view's last row multiplies the rotation, read as floats, by the translation, so
+                # its rounding grows with the camera's distance from the origin.
+                magnitude = numpy.ones((4, 4))
+                magnitude[3, :3] += numpy.abs(placement[3, :3]).sum()
+                check.close(actual, view @ projection, f"camera {camera_index} on Node_{index}",
+                            magnitude @ numpy.abs(projection))
+        if "KHR_lights_punctual" in node.get("extensions", {}):
+            light_index = node["extensions"]["KHR_lights_punctual"]["light"]
+            light_path = f"{path}/Light_{light_index}"
+            expected_lights.add(light_path)
+            check_light(check, stage.GetPrimAtPath(light_path), lights[light_index], world,
+                        f"light {light_index} on Node_{index}")
         for child in node.get("children", []):
             walk(child, path, world)
 
@@ -563,6 +620,9 @@ def check_meaning(stage, asset):
     check.expect(actual == expected_paths, f"{len(actual)} meshes authored, expected {len(expected_paths)}")
     cameras = {str(prim.GetPath()) for prim in stage.Traverse() if prim.IsA(UsdGeom.Camera)}
     check.expect(cameras == expected_cameras, f"{len(cameras)} cameras authored, expected {len(expected_cameras)}")
+    authored_lights = {str(prim.GetPath()) for prim in stage.Traverse() if prim.HasAPI(UsdLux.LightAPI)}
+    check.expect(authored_lights == expected_lights,
+                 f"{len(authored_lights)} lights authored, expected {len(expected_lights)}")
     images = {}
     for path, (material, has_colors) in sorted(materials.items()):
         check_material(check, asset, stage, path, material, has_colors, images)
@@ -720,8 +780,6 @@ def rejection_causes(document):
         pending += node.get("children", [])
         if "skin" in node:
             causes.add("skin")
-        if "KHR_lights_punctual" in node.get("extensions", {}):
-            causes.add("light")
         if "weights" in node:
             causes.add("morph targets")
         if "mesh" in node:

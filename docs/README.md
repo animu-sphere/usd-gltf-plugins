@@ -41,6 +41,7 @@ available when the decision was made; they are not progress reports:
 - [0010: Sample asset baseline](adr/0010-sample-baseline.md)
 - [0011: Texture transforms](adr/0011-texture-transform.md)
 - [0012: Cameras](adr/0012-cameras.md)
+- [0013: Lights](adr/0013-lights.md)
 
 New decisions go in `docs/adr/NNNN-title.md`.
 
