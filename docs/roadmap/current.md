@@ -8,8 +8,6 @@ implementation order, which investigation may change. Each feature follows the
 
 ### First
 
-- Cameras: perspective and orthographic through `UsdGeomCamera`, under the existing scene selection,
-  transform, naming and reflection rules.
 - `KHR_lights_punctual`: directional, point and spot through `UsdLux`, stating units, intensity,
   attenuation and cone conversion. USD data tests and display tests are separate.
 

@@ -10,3 +10,4 @@
 /plugins/usdGltfFileFormat/plugin/resources/usdGltfFileFormat/LICENSE
 /plugins/usdGltfFileFormat/dist/
 CMakeUserPresets.json
+__pycache__/

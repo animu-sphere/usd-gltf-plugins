@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 add_library(usd_gltf_usd STATIC
+    camera.cpp
     material.cpp
     mesh.cpp
     scene.cpp)
