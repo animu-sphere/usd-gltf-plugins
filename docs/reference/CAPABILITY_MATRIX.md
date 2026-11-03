@@ -39,13 +39,14 @@ CI success is not evidence of display compatibility.
 | Coordinate system and units | Verified (USD data, CI) | Y-up and meters authored on direct open and reload; referencing into a Z-up centimeter stage. Not every transform combination. | `tests/test_file_format.py::test_coordinate_system_and_reference_composition` |
 | Reflections, winding and normals | Verified (USD data, CI) | Indexed and non-indexed triangles with odd and even reflections in hierarchical transforms and a mirrored reference. | `tests/test_file_format.py::test_hierarchical_reflection_winding_and_normals`, `tests/test_file_format.py::test_reflection_view_fixture` |
 | Failure and reload behavior | Verified (USD data, CI) | Tested failures emit a diagnostic and do not publish a partial layer. Not proven for every USD error; [the transfer itself is not atomic](../architecture/LAYER_AUTHORING.md#decision). | `tests/test_file_format.py::test_failed_reload_does_not_publish_partial_stage`, `tests/test_file_format.py::test_mesh_failures_and_reload_preservation`, `tests/test_file_format.py::test_nonfinite_position_is_rejected` |
-| Extensions | Experimental | `EXT_texture_webp`, `KHR_lights_punctual`, `KHR_mesh_quantization`, `KHR_texture_basisu` and `KHR_texture_transform` are implemented; see their rows. Any other required extension fails, and the diagnostic names it. Other optional extensions warn and are ignored. See the [policy](../architecture/IMPORT_PIPELINE.md#failure-policy). | `tests/test_file_format.py::test_failures_report_diagnostics`, `tests/test_file_format.py::test_node_order_and_optional_extension_warning`, `tests/test_file_format.py::test_unsupported_features_fail_without_publishing` |
+| Extensions | Experimental | `EXT_texture_webp`, `KHR_lights_punctual`, `KHR_materials_unlit`, `KHR_mesh_quantization`, `KHR_texture_basisu` and `KHR_texture_transform` are implemented; see their rows. Any other required extension fails, and the diagnostic names it. Other optional extensions warn and are ignored. See the [policy](../architecture/IMPORT_PIPELINE.md#failure-policy). | `tests/test_file_format.py::test_failures_report_diagnostics`, `tests/test_file_format.py::test_node_order_and_optional_extension_warning`, `tests/test_file_format.py::test_unsupported_features_fail_without_publishing` |
 | usdview/Storm display | Experimental | The [display check](#display-checks) of simple fixtures through both shader paths, run on one Windows machine. Not general renderer support. | `tests/check_display.py`, `tests/fixtures/reflections.gltf`, `tests/fixtures/alpha_modes.gltf`, `tests/fixtures/base_color_textures.gltf`, `tests/fixtures/pbr_textures.gltf`, `tests/fixtures/normal_textures.gltf`, `tests/fixtures/texture_transforms.gltf`, `tests/fixtures/ktx2_textures.gltf` |
 | OpenStrata workspace build and tests | Verified (Windows x86-64, Linux x86-64, macOS arm64; OpenUSD 26.08) | The environments listed under [tested environments](#tested-environments). | [tag workflow 41388405224](https://github.com/animu-sphere/usd-gltf-plugins/actions/runs/41388405224) |
 | Standalone OpenStrata bundle | Verified (Windows x86-64, Linux x86-64, macOS arm64; OpenUSD 26.08) | `ost plugin test` confirms discovery of the file format, not a successful import. | `plugins/usdGltfFileFormat/openstrata.plugin.yaml`, [tag workflow 41388405224](https://github.com/animu-sphere/usd-gltf-plugins/actions/runs/41388405224) |
 | Root CMake build, install and registration | Verified (Windows x86-64, Linux x86-64, macOS arm64; OpenUSD 26.08) | A separate process registers the installed plugin and opens a stage. | `tests/test_install_smoke.py::test_installed_plugin_registers_and_opens_a_stage`, [tag workflow 41388405224](https://github.com/animu-sphere/usd-gltf-plugins/actions/runs/41388405224) |
 | Release package | Verified (Windows x86-64, Linux x86-64, macOS arm64; OpenUSD 26.08) | A bundle package extracted outside the repository registers, opens fixtures, serves KTX2 images and carries its licenses, and packaging twice gives one digest. It works only with the exact runtime it was built for. | `tests/check_package.py`, [tag workflow 41388405224](https://github.com/animu-sphere/usd-gltf-plugins/actions/runs/41388405224) |
 | Materials and bindings | Experimental | Default materials and explicit factor-only metallic-roughness materials, with OPAQUE, MASK or BLEND alpha and optional vertex colors: Preview and MaterialX networks and bindings, including `doubleSided`. Network structure is tested in CI; display has the [display check](#display-checks) of alpha and vertex colors. See the [decision record](../architecture/MATERIAL_FACTORS.md). | `tests/test_file_format.py::test_default_material_with_and_without_vertex_color`, `tests/test_file_format.py::test_factor_materials_and_bindings`, `tests/test_file_format.py::test_alpha_modes`, `tests/test_file_format.py::test_explicit_material_vertex_colors`, `tests/test_file_format.py::test_alpha_modes_view_fixture`, `tests/test_file_format.py::test_material_failures_preserve_layer` |
+| Unlit materials (`KHR_materials_unlit`) | Experimental | Optional or required. The base color term, with its factor, texture, vertex colors and alpha, is emitted through both networks, which reflect nothing: Preview is a black metal and MaterialX `gltf_pbr` a black dielectric with `specular` 0. Alpha modes, cutoff and `doubleSided` apply. Fallback metallic-roughness, normal, occlusion and emissive properties are not authored, and their images not read; their values and UV sets are still checked. Through Storm's UsdPreviewSurface a dome light still adds a reflection, read from its shader source. A value that is not an object fails. Tested in CI; the [display check](#display-checks) has unlit cases that have not been run. See the [decision record](../adr/0015-unlit.md). | `tests/test_file_format.py::test_unlit_materials`, `tests/test_file_format.py::test_unlit_textures_and_vertex_colors`, `tests/test_file_format.py::test_unlit_failures_preserve_layer`, `tests/check_display.py` |
 | Base color textures | Experimental | Factor, alpha modes, UV set and wrap modes in both networks. Filters are not applied. With COLOR_0, Preview omits the vertex color and warns. Tested in CI, with the [display check](#display-checks) on Windows. See the [decision record](../adr/0002-base-color-texture-networks.md). | `tests/test_file_format.py::test_base_color_image_sources_and_networks`, `tests/test_file_format.py::test_base_color_sampler_uv_set_factor_and_alpha`, `tests/test_file_format.py::test_base_color_texture_with_vertex_colors`, `tests/test_file_format.py::test_base_color_textures_view_fixture`, `tests/test_file_format.py::test_material_failures_preserve_layer` |
 | Metallic-roughness, occlusion and emissive textures | Experimental | G = roughness, B = metallic and occlusion R as non-color data, and emissive as color, with factors, strength, UV sets and wrap modes in both networks. Filters are not applied. Occlusion has no visible effect through MaterialX `gltf_pbr` and also darkens direct light through Storm's UsdPreviewSurface. Tested in CI, with the [display check](#display-checks) on Windows. See the [decision record](../adr/0003-pbr-texture-networks.md). | `tests/test_file_format.py::test_metallic_roughness_occlusion_and_emissive_networks`, `tests/test_file_format.py::test_pbr_textures_without_terms_they_do_not_need`, `tests/test_file_format.py::test_pbr_textures_view_fixture`, `tests/test_file_format.py::test_pbr_texture_failures_preserve_layer`, `tests/test_file_format.py::test_material_failures_preserve_layer` |
 | Normal textures and tangents | Experimental | Scale, UV sets and wrap modes in both networks, as non-color data. Renderers derive the tangent frame, so a map baked against other tangents can differ, and filters are not applied. TANGENT is validated and retained as a primvar that no network reads. Tested in CI, with the [display check](#display-checks) on Windows of uniform images on flat quads. See the [decision record](../adr/0004-normal-textures-and-tangents.md). | `tests/test_file_format.py::test_normal_texture_networks`, `tests/test_file_format.py::test_materials_without_a_normal_texture_author_no_normal`, `tests/test_file_format.py::test_normal_textures_view_fixture`, `tests/test_file_format.py::test_pbr_texture_failures_preserve_layer`, `tests/test_file_format.py::test_tangents_are_retained`, `tests/test_file_format.py::test_tangent_failures_preserve_layer` |
@@ -203,6 +204,12 @@ MaterialX, and 247 to 248 and 248 to 252 through UsdPreviewSurface. The two alph
 agree within 3. Swapping their materials once showed that the part above 1 follows position,
 through the light, and not the codec.
 
+Unlit materials are checked on a generated quad of base color 0.5, through the same engine call as
+lights and without usdview's light at the camera, where a pixel is the linear value. Expected: 128
+in darkness, the same under a point light, the same with fallback properties that would make a lit
+quad red, metallic, smooth and bumped, and an image of 188 equal to a factor of 0.503. These
+comparisons were added after the last result and have not been run.
+
 Multiple primitives sharing one POSITION accessor, on a generated asset, display correctly.
 Storm warns, because each mesh authors the accessor's whole vertex array and its topology uses
 only part of it.
@@ -224,33 +231,33 @@ not in this repository: 339 files in 150 models. The result for each file is in
 [`tests/sample_baseline.json`](../../tests/sample_baseline.json), and
 [ADR 0010](../adr/0010-sample-baseline.md) explains what is compared and its limits.
 
-Last result for opening and meaning: on `368e730` with WebP added, on Linux x86-64 with OpenUSD 26.08
-from the `usd-core` wheel, without rendering. Every file whose result WebP does not change matched the
-previous result, on `7de8b8f` on Windows with OpenUSD 26.08, the OpenStrata lookdev runtime and an
-NVIDIA RTX A5000, which is also the last render. Repeated runs there gave the same result for every
-file. It is not part of CI.
+Last result for opening and meaning: on `d1facba` with unlit materials added, on Linux x86-64 with
+OpenUSD 26.08 from the `usd-core` wheel, without rendering. Every file whose result WebP or unlit
+materials do not change matched the previous result, on `7de8b8f` on Windows with OpenUSD 26.08,
+the OpenStrata lookdev runtime and an NVIDIA RTX A5000, which is also the last render. Repeated runs
+there gave the same result for every file. It is not part of CI.
 NodePerformanceTest's GLB times out, because its 10,000 materials read 20,000 embedded images, and
 outside a resolver cache scope each read parses the 38 MB file again, about 0.1 second each.
 
 | Result | Files | What it means |
 | --- | --- | --- |
-| Opened | 233 | The stage opens. No file crashed, and one timed out after 600 seconds. |
-| Rejected | 105 | Each has a diagnostic naming a cause the file really has. |
-| Meaning verified | 111 | USD agrees with values decoded from the file, in all that is compared, and the file uses no ignored extension. |
+| Opened | 237 | The stage opens. No file crashed, and one timed out after 600 seconds. |
+| Rejected | 101 | Each has a diagnostic naming a cause the file really has. |
+| Meaning verified | 115 | USD agrees with values decoded from the file, in all that is compared, and the file uses no ignored extension. |
 | Meaning partial | 122 | The same, but the file uses an optional extension that is ignored, with a warning. What it changes is not compared. |
 | Meaning differs | 0 | |
-| Rendered | 230 | Storm drew something through both shader paths. No pixel was judged, so this is not evidence of correct display. The 3 files that WebP opens have not been rendered. |
+| Rendered | 230 | Storm drew something through both shader paths. No pixel was judged, so this is not evidence of correct display. The 7 files that WebP and unlit materials open have not been rendered. |
 
 Why files are rejected, read from each file. Most files have several causes, so a count of files that
 have a cause is not what supporting it would open:
 
 | Cause | Files with it | Files with only it |
 | --- | --- | --- |
-| Animations | 69 | 23 |
+| Animations | 69 | 25 |
 | Skin | 24 | 0 |
 | Requires `KHR_draco_mesh_compression` | 18 | 11 |
 | Morph targets | 10 | 2 |
-| Requires a material extension | 23 | 15 |
+| Requires a material extension | 17 | 11 |
 | Requires `KHR_node_visibility` | 4 | 0 |
 | Requires meshopt compression | 5 | 2 |
 | Points or lines | 3 | 3 |

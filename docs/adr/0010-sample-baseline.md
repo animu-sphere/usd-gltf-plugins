@@ -57,7 +57,8 @@ shader each path resolves to; for each texture in both networks, that it resolve
 [transform](0011-texture-transform.md), wrap modes and image bytes (PNG and JPEG sources must be
 identical, and KTX2 must be served as an image);
 Preview's color space, factors, scales, normal scale and occlusion strength; and alpha mode and
-cutoff in both paths.
+cutoff in both paths. For an [unlit](0015-unlit.md) material, its base color in Preview's emission,
+the inputs that zero both shaders' lighting, and that no fallback texture is authored.
 
 ## Evidence that it can fail
 

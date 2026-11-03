@@ -34,7 +34,8 @@ import numpy
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 BASELINE = ROOT / "tests" / "sample_baseline.json"
-IMPLEMENTED_EXTENSIONS = {"EXT_texture_webp", "KHR_lights_punctual", "KHR_mesh_quantization", "KHR_texture_basisu", "KHR_texture_transform"}
+IMPLEMENTED_EXTENSIONS = {"EXT_texture_webp", "KHR_lights_punctual", "KHR_materials_unlit", "KHR_mesh_quantization",
+                          "KHR_texture_basisu", "KHR_texture_transform"}
 PATHS = ("mtlx", "preview")
 CAMERA = "/SampleCheckCamera"
 RESULT_MARKER = "SAMPLE_RESULT "
@@ -489,6 +490,16 @@ def check_material(check, asset, stage, path, material, has_colors, images):
     pbr = material.get("pbrMetallicRoughness", {})
     textures = {}
     infos = {key: (pbr if key in PBR_SLOTS else material).get(key) for key in SLOTS}
+    # An unlit material uses only its base color; the rest are fallbacks, which are not authored.
+    unlit = "KHR_materials_unlit" in material.get("extensions", {})
+    if unlit:
+        for key in SLOTS.keys() - {"baseColorTexture"}:
+            if infos[key]:
+                slot = SLOTS[key]
+                check.expect(not stage.GetPrimAtPath(f"{path}/preview/{slot}Texture")
+                             and not stage.GetPrimAtPath(f"{path}/mtlx/{slot}Image"),
+                             f"{label} is unlit but authors its fallback {slot} texture")
+                infos[key] = None
     for key, info in infos.items():
         if info:
             textures[key] = check_texture(check, asset, stage, path, key, info, label, images)
@@ -509,25 +520,43 @@ def check_material(check, asset, stage, path, material, has_colors, images):
             values = shader.GetInput("scale").Get()
             check.close([values[channel] for channel in channels], expected, f"{label} Preview {description}")
 
-    if infos["baseColorTexture"]:
-        scale("baseColorTexture", (0, 1, 2), base[:3], "base color scale")
-    elif not has_colors:
-        factor("diffuseColor", base[:3], "base color")
-    if infos["metallicRoughnessTexture"]:
-        scale("metallicRoughnessTexture", (2, 1), (metallic, roughness), "metallic and roughness scale")
+    if unlit:
+        # The base color is emitted, by a black metal in Preview and a dielectric without specular in MaterialX.
+        factor("diffuseColor", (0, 0, 0), "unlit diffuse color")
+        factor("metallic", 1, "unlit metallic")
+        factor("roughness", 1, "unlit roughness")
+        if infos["baseColorTexture"]:
+            scale("baseColorTexture", (0, 1, 2), base[:3], "base color scale")
+            emitted = connected_shader(surface.GetInput("emissiveColor"))
+            image = textures.get("baseColorTexture")
+            check.expect(emitted and image and emitted.GetPath() == image.GetPath(),
+                         f"{label} Preview does not emit its base color texture")
+        elif not has_colors:
+            factor("emissiveColor", base[:3], "unlit base color")
+        for name, expected in (("base_color", (0, 0, 0)), ("metallic", 0), ("specular", 0)):
+            value = pbr_surface.GetInput(name).Get() if pbr_surface.GetInput(name) else None
+            if check.expect(value is not None, f"{label} MaterialX unlit {name} is not authored"):
+                check.close(value, expected, f"{label} MaterialX unlit {name}")
     else:
-        factor("metallic", metallic, "metallic")
-        factor("roughness", roughness, "roughness")
-    if infos["emissiveTexture"]:
-        scale("emissiveTexture", (0, 1, 2), emissive, "emissive scale")
-    elif any(emissive):
-        factor("emissiveColor", emissive, "emissive")
-    if infos["normalTexture"]:
-        amount = infos["normalTexture"].get("scale", 1)
-        scale("normalTexture", (0, 1, 2), (2 * amount, 2 * amount, 2), "normal scale")
-    if infos["occlusionTexture"]:
-        strength = infos["occlusionTexture"].get("strength", 1)
-        check_occlusion(check, textures.get("occlusionTexture"), strength, label)
+        if infos["baseColorTexture"]:
+            scale("baseColorTexture", (0, 1, 2), base[:3], "base color scale")
+        elif not has_colors:
+            factor("diffuseColor", base[:3], "base color")
+        if infos["metallicRoughnessTexture"]:
+            scale("metallicRoughnessTexture", (2, 1), (metallic, roughness), "metallic and roughness scale")
+        else:
+            factor("metallic", metallic, "metallic")
+            factor("roughness", roughness, "roughness")
+        if infos["emissiveTexture"]:
+            scale("emissiveTexture", (0, 1, 2), emissive, "emissive scale")
+        elif any(emissive):
+            factor("emissiveColor", emissive, "emissive")
+        if infos["normalTexture"]:
+            amount = infos["normalTexture"].get("scale", 1)
+            scale("normalTexture", (0, 1, 2), (2 * amount, 2 * amount, 2), "normal scale")
+        if infos["occlusionTexture"]:
+            strength = infos["occlusionTexture"].get("strength", 1)
+            check_occlusion(check, textures.get("occlusionTexture"), strength, label)
 
     mode = material.get("alphaMode", "OPAQUE")
     modes = {"OPAQUE": 0, "MASK": 1, "BLEND": 2}

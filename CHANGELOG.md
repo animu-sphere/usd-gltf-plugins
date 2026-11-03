@@ -20,6 +20,8 @@ here.
 - `KHR_lights_punctual`: directional, point and spot lights, as UsdLux lights below their nodes.
 - `EXT_texture_webp`: still lossy and lossless WebP images, with or without alpha, served as PNG
   through the package resolver by a vendored libwebp decoder.
+- `KHR_materials_unlit`, optional or required: the base color, with its alpha, is emitted through both
+  shader paths, and the fallback properties are not authored.
 
 ### Changed
 

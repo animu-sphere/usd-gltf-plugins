@@ -8,8 +8,6 @@ implementation order, which investigation may change. Each feature follows the
 
 ### Next
 
-- `KHR_materials_unlit`, checked per renderer. A path that cannot express it warns or is recorded as
-  a limit.
 - `KHR_materials_ior`, stating its relation to the existing PBR parameters, in both networks.
 
 ### If measurements and time allow
