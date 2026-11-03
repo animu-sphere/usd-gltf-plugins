@@ -4,6 +4,7 @@ import faulthandler
 import json
 import math
 import pathlib
+import re
 import struct
 import subprocess
 import sys
@@ -13,7 +14,7 @@ import unittest
 import urllib.parse
 import zlib
 
-from pxr import Ar, Gf, Sdf, Sdr, Tf, Usd, UsdGeom, UsdShade
+from pxr import Ar, Gf, Sdf, Sdr, Tf, Usd, UsdGeom, UsdLux, UsdShade
 
 # A crash in native code would otherwise not say which test caused it.
 faulthandler.enable()
@@ -436,10 +437,6 @@ def unsupported_document(extension, feature):
             item["attributes"].update({"JOINTS_0": joints, "WEIGHTS_0": weights})
         node["skin"] = 0
         document["skins"] = [{"joints": [0]}]
-    elif feature == "light":
-        document["extensionsUsed"] = ["KHR_lights_punctual"]
-        document["extensions"] = {"KHR_lights_punctual": {"lights": [{"type": "point"}]}}
-        node["extensions"] = {"KHR_lights_punctual": {"light": 0}}
     elif feature in ("morph target", "mesh weights", "node weights"):
         delta = add_accessor(struct.pack("<9f", *([0.0] * 9)), 5126, 3, "VEC3",
                              min=[0, 0, 0], max=[0, 0, 0])
@@ -488,6 +485,36 @@ def camera_document(extension):
         {"type": "perspective", "perspective": {"yfov": 1.2, "znear": 0.5}},
         {"type": "orthographic", "orthographic": {"xmag": 2, "ymag": 1.5, "zfar": 50, "znear": 0}},
     ]
+    return document, binary
+
+
+def light_extension(index):
+    return {"KHR_lights_punctual": {"light": index}}
+
+
+def light_document(extension):
+    """Lights under rotated, scaled, sheared and reflected nodes, with light 1 used twice."""
+    document, binary = mesh_document(extension)
+    document["extensionsUsed"] = ["KHR_lights_punctual"]
+    document["scenes"][0]["nodes"] = [0, 1, 3]
+    document["nodes"] = [
+        {"mesh": 0, "extensions": light_extension(0), "translation": [2, 0, 0],
+         "rotation": [-HALF_TURN_SINE, 0, 0, HALF_TURN_SINE]},
+        {"extensions": light_extension(1), "translation": [0, 1, 5], "scale": [2, 1, 1], "children": [2]},
+        # A rotation inside an unequal scale, which shears the node.
+        {"extensions": light_extension(2), "translation": [1, 0, 0],
+         "rotation": [0, 0.3826834323650898, 0, 0.9238795325112867]},
+        {"extensions": light_extension(1), "matrix": [-1, 0, 0, 0, 0, 0, 1, 0, 0, -1, 0, 0, 0, 0, 10, 1],
+         "children": [4]},
+        {"extensions": light_extension(3)},
+    ]
+    document["extensions"] = {"KHR_lights_punctual": {"lights": [
+        {"name": "Sun", "type": "directional", "intensity": 2, "color": [1, 0.5, 0.25]},
+        {"type": "point", "intensity": 50},
+        {"type": "spot", "intensity": 30, "color": [0, 1, 0],
+         "spot": {"innerConeAngle": 0.2, "outerConeAngle": 0.6}},
+        {"type": "spot", "spot": {}},
+    ]}}
     return document, binary
 
 
@@ -2914,33 +2941,6 @@ class FileFormatTest(unittest.TestCase):
                         self.assertEqual(layer_text(layer), before)
                         self.assertTrue(UsdShade.Material.Get(stage, "/Asset/mtl/Material_0"))
 
-    def test_optional_lights_outside_selected_scene_and_required_lights(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = pathlib.Path(directory)
-            for extension in ("gltf", "glb"):
-                with self.subTest(extension=extension):
-                    document, binary = unsupported_document(extension, "light")
-                    document["scenes"][0]["nodes"] = [0]
-                    document["nodes"][0]["mesh"] = 0
-                    path = root / ("optional." + extension)
-                    write_asset(path, document, binary)
-                    stage = Usd.Stage.Open(str(path))
-                    self.assertTrue(stage.GetPrimAtPath("/Asset/geo/Node_0"))
-                    self.assertFalse(stage.GetPrimAtPath("/Asset/geo/Node_1"))
-                    layer = stage.GetRootLayer()
-                    before = layer_text(layer)
-
-                    document["extensionsRequired"] = ["KHR_lights_punctual"]
-                    required_path = root / ("required." + extension)
-                    write_asset(required_path, document, binary)
-                    with self.assertRaisesRegex(Tf.ErrorException, "cannot parse"):
-                        Usd.Stage.Open(str(required_path))
-                    write_asset(path, document, binary)
-                    with self.assertRaisesRegex(Tf.ErrorException, "cannot parse"):
-                        layer.Reload(True)
-                    self.assertEqual(layer_text(layer), before)
-                    self.assertTrue(stage.GetPrimAtPath("/Asset/geo/Node_0"))
-
     def test_animation_outside_selected_scene_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             for extension in ("gltf", "glb"):
@@ -2955,7 +2955,6 @@ class FileFormatTest(unittest.TestCase):
     def test_unsupported_features_fail_without_publishing(self):
         cases = {
             "skin": "node 1: skins are not supported",
-            "light": "node 1: KHR_lights_punctual lights are not supported",
             "morph target": "morph targets are not supported",
             "mesh weights": "mesh 0: morph weights are not supported",
             "node weights": "node 1: morph weights are not supported",
@@ -3139,6 +3138,201 @@ class FileFormatTest(unittest.TestCase):
                     stage = Usd.Stage.Open(str(path))
                     authored = [str(prim.GetPath()) for prim in stage.Traverse() if prim.IsA(UsdGeom.Camera)]
                     self.assertEqual(authored, ["/Asset/geo/Node_3/Camera_0"])
+
+    def test_lights(self):
+        # Each light prim, its glTF light, its position, and the direction glTF gives it: the node's
+        # transform applied to -Z.
+        sheared = Gf.Vec3d(-2 * HALF_TURN_SINE, 0, -HALF_TURN_SINE).GetNormalized()
+        expected = {
+            "Node_0/Light_0": (0, (2, 0, 0), (0, -1, 0)),
+            "Node_1/Light_1": (1, (0, 1, 5), (0, 0, -1)),
+            "Node_1/Node_2/Light_2": (2, (2, 1, 5), sheared),
+            "Node_3/Light_1": (1, (0, 0, 10), (0, 1, 0)),
+            "Node_3/Node_4/Light_3": (3, (0, 0, 10), (0, 1, 0)),
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            for extension in ("gltf", "glb"):
+                with self.subTest(extension=extension):
+                    path = pathlib.Path(directory) / ("lights." + extension)
+                    document, binary = light_document(extension)
+                    write_asset(path, document, binary)
+                    stage = Usd.Stage.Open(str(path))
+                    cache = UsdGeom.XformCache()
+                    authored = {str(prim.GetPath()) for prim in stage.Traverse() if prim.HasAPI(UsdLux.LightAPI)}
+                    self.assertEqual(authored, {"/Asset/geo/" + key for key in expected})
+                    self.assertTrue(stage.GetPrimAtPath("/Asset/geo/Node_0/Mesh_0/Primitive_0"))
+                    sources = document["extensions"]["KHR_lights_punctual"]["lights"]
+                    for key, (index, position, direction) in expected.items():
+                        prim = stage.GetPrimAtPath("/Asset/geo/" + key)
+                        source = sources[index]
+                        light = UsdLux.LightAPI(prim)
+                        self.assertEqual(prim.GetDisplayName(), source.get("name", ""))
+                        self.assertEqual(light.GetColorAttr().Get(), Gf.Vec3f(*source.get("color", [1, 1, 1])), key)
+                        # Only a light under an unscaled node needs no transform.
+                        self.assertEqual(bool(UsdGeom.Xformable(prim).GetOrderedXformOps()),
+                                         key != "Node_0/Light_0", key)
+                        # A renderer applies the whole transform, which must not scale the light.
+                        world = cache.GetLocalToWorldTransform(prim)
+                        rotation = world.ExtractRotationMatrix()
+                        self.assertTrue(Gf.IsClose(rotation * rotation.GetTranspose(), Gf.Matrix3d(1), 1e-6), key)
+                        self.assertAlmostEqual(rotation.GetDeterminant(), 1, places=6)
+                        self.assertTrue(Gf.IsClose(world.ExtractTranslation(), Gf.Vec3d(*position), 1e-9), key)
+                        self.assertTrue(Gf.IsClose(world.TransformDir(Gf.Vec3d(0, 0, -1)), Gf.Vec3d(*direction),
+                                                   1e-6), key)
+                        intensity = light.GetIntensityAttr().Get()
+                        if source["type"] == "directional":
+                            # A normalized distant light of angle 0 has its intensity in lux.
+                            self.assertTrue(prim.IsA(UsdLux.DistantLight))
+                            self.assertEqual(UsdLux.DistantLight(prim).GetAngleAttr().Get(), 0)
+                            self.assertTrue(light.GetNormalizeAttr().Get())
+                            self.assertAlmostEqual(intensity, source.get("intensity", 1), places=5)
+                            continue
+                        # An unnormalized sphere's intensity in candela is its luminance times its
+                        # projected area.
+                        self.assertTrue(prim.IsA(UsdLux.SphereLight))
+                        sphere = UsdLux.SphereLight(prim)
+                        self.assertTrue(sphere.GetTreatAsPointAttr().Get())
+                        self.assertFalse(light.GetNormalizeAttr().Get())
+                        radius = sphere.GetRadiusAttr().Get()
+                        self.assertAlmostEqual(radius, 0.001, places=9)
+                        self.assertAlmostEqual(intensity * math.pi * radius * radius / source.get("intensity", 1), 1,
+                                               places=5)
+                        self.assertEqual(prim.HasAPI(UsdLux.ShapingAPI), source["type"] == "spot", key)
+                        if source["type"] == "spot":
+                            shaping = UsdLux.ShapingAPI(prim)
+                            outer = math.degrees(source["spot"].get("outerConeAngle", math.pi / 4))
+                            inner = math.degrees(source["spot"].get("innerConeAngle", 0))
+                            angle = shaping.GetShapingConeAngleAttr().Get()
+                            softness = shaping.GetShapingConeSoftnessAttr().Get()
+                            # UsdLux starts to soften the cone at (1 - softness) times its angle.
+                            self.assertAlmostEqual(angle, outer, places=4)
+                            self.assertAlmostEqual((1 - softness) * angle, inner, places=4)
+
+    def test_lights_reference_into_a_scaled_stage(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "lights.gltf"
+            document, binary = light_document("gltf")
+            write_asset(path, document, binary)
+            stage = Usd.Stage.CreateInMemory()
+            host = UsdGeom.Xform.Define(stage, "/Host")
+            host.AddScaleOp().Set(Gf.Vec3f(100))
+            host.GetPrim().GetReferences().AddReference(str(path))
+            prim = stage.GetPrimAtPath("/Host/geo/Node_1/Light_1")
+            # The host's scale acts as a change of units, so the sphere grows with the scene.
+            world = UsdGeom.XformCache().GetLocalToWorldTransform(prim)
+            wanted = Gf.Matrix4d().SetTranslate(Gf.Vec3d(0, 1, 5)) * Gf.Matrix4d().SetScale(100)
+            self.assertTrue(Gf.IsClose(world, wanted, 1e-9), f"{world} != {wanted}")
+
+    def test_light_range_is_ignored_with_a_warning(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for extension in ("gltf", "glb"):
+                with self.subTest(extension=extension):
+                    document, binary = light_document(extension)
+                    lights = document["extensions"]["KHR_lights_punctual"]["lights"]
+                    lights[0]["range"] = 1
+                    lights[1]["range"] = 4
+                    path = pathlib.Path(directory) / ("range." + extension)
+                    write_asset(path, document, binary)
+                    result = subprocess.run(
+                        [sys.executable, "-c",
+                         "from pxr import Usd, UsdLux; import sys; "
+                         "s = Usd.Stage.Open(sys.argv[1]); "
+                         "assert s.GetPrimAtPath('/Asset/geo/Node_1/Light_1').HasAPI(UsdLux.LightAPI)",
+                         str(path)],
+                        capture_output=True, text=True, check=False,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    warnings = re.findall(r"glTF node \d+: the range of light \d+ is ignored", result.stderr)
+                    # Light 1 is on two nodes. A directional light's range has no meaning in glTF.
+                    self.assertEqual(sorted(warnings), ["glTF node 1: the range of light 1 is ignored",
+                                                        "glTF node 3: the range of light 1 is ignored"])
+
+    def test_light_failures_preserve_layer(self):
+        def mutate(document, name):
+            lights = document["extensions"]["KHR_lights_punctual"]["lights"]
+            spot = lights[2]["spot"]
+            if name == "light index":
+                document["nodes"][0]["extensions"] = light_extension(4)
+            elif name == "color above 1":
+                lights[0]["color"] = [1, 1.5, 1]
+            elif name == "negative color":
+                lights[1]["color"] = [1, -0.5, 1]
+            elif name == "negative intensity":
+                lights[1]["intensity"] = -1
+            elif name == "range of 0":
+                lights[1]["range"] = 0
+            elif name == "negative inner cone":
+                spot["innerConeAngle"] = -0.1
+            elif name == "inner cone not below outer":
+                spot["innerConeAngle"] = spot["outerConeAngle"]
+            elif name == "outer cone beyond pi / 2":
+                spot["outerConeAngle"] = 1.6
+            elif name == "beyond a float":
+                lights[1]["intensity"] = 1e34
+            elif name == "intensity of the wrong type":
+                lights[1]["intensity"] = "50"
+            elif name == "range of the wrong type":
+                lights[1]["range"] = [4]
+            elif name == "unknown type":
+                lights[1]["type"] = "area"
+            elif name == "spot without its object":
+                del lights[2]["spot"]
+            elif name == "degenerate":
+                document["nodes"][1]["scale"] = [2, 0, 1]
+            elif name == "flattened":
+                # No axis is zero, but two coincide.
+                document["nodes"][3]["matrix"] = [1, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 10, 1]
+
+        cases = {
+            "light index": "light index 4 is out of range",
+            "color above 1": "light 0: color components must be from 0 to 1",
+            "negative color": "light 1: color components must be from 0 to 1",
+            "negative intensity": "light 1: intensity must not be negative",
+            "range of 0": "light 1: range must be greater than 0",
+            "negative inner cone": "light 2: cone angles must satisfy 0 <= innerConeAngle < outerConeAngle <= pi / 2",
+            "inner cone not below outer": "light 2: cone angles must satisfy",
+            "outer cone beyond pi / 2": "light 2: cone angles must satisfy",
+            "beyond a float": "light 1: its intensity is beyond a float",
+            "intensity of the wrong type": "KHR_lights_punctual has a field of the wrong type",
+            "range of the wrong type": "KHR_lights_punctual has a field of the wrong type",
+            "unknown type": "cannot parse",
+            "spot without its object": "cannot parse",
+            "degenerate": "node 1: light 1 has no position or direction",
+            "flattened": "node 3: light 1 has no position or direction",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            for extension in ("gltf", "glb"):
+                path = pathlib.Path(directory) / ("lights." + extension)
+                document, binary = light_document(extension)
+                write_asset(path, document, binary)
+                stage = Usd.Stage.Open(str(path))
+                layer = stage.GetRootLayer()
+                before = layer_text(layer)
+                for name, message in cases.items():
+                    with self.subTest(extension=extension, name=name):
+                        invalid, invalid_binary = light_document(extension)
+                        mutate(invalid, name)
+                        write_asset(path, invalid, invalid_binary)
+                        with self.assertRaisesRegex(Tf.ErrorException, message):
+                            layer.Reload(True)
+                        self.assertEqual(layer_text(layer), before)
+                write_asset(path, document, binary)
+                self.assertTrue(layer.Reload(True))
+
+    def test_lights_required_and_outside_selected_scene(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for extension in ("gltf", "glb"):
+                with self.subTest(extension=extension):
+                    document, binary = light_document(extension)
+                    document["extensionsRequired"] = ["KHR_lights_punctual"]
+                    document["scenes"][0]["nodes"] = [0]
+                    # Light 2 is invalid, but no selected node uses it.
+                    document["extensions"]["KHR_lights_punctual"]["lights"][2]["spot"]["outerConeAngle"] = 2
+                    path = pathlib.Path(directory) / ("unselected." + extension)
+                    write_asset(path, document, binary)
+                    stage = Usd.Stage.Open(str(path))
+                    authored = [str(prim.GetPath()) for prim in stage.Traverse() if prim.HasAPI(UsdLux.LightAPI)]
+                    self.assertEqual(authored, ["/Asset/geo/Node_0/Light_0"])
 
     def test_external_buffers_and_reload(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -3503,10 +3697,6 @@ class FileFormatTest(unittest.TestCase):
                                     "extensionsUsed": ["UNKNOWN_extension"],
                                     "extensionsRequired": ["UNKNOWN_extension"]},
                                    "cannot parse .*unsupported required extensions: UNKNOWN_extension"),
-            "known required extension": ({"asset": {"version": "2.0"}, "scenes": [{}],
-                                          "extensionsUsed": ["KHR_lights_punctual"],
-                                          "extensionsRequired": ["KHR_lights_punctual"]},
-                                         "unsupported required extensions: KHR_lights_punctual"),
             "disabled required extension": ({"asset": {"version": "2.0"}, "scenes": [{}],
                                              "extensionsUsed": ["KHR_draco_mesh_compression"],
                                              "extensionsRequired": ["KHR_draco_mesh_compression"]},

@@ -17,6 +17,7 @@ here.
   including its `texCoord` override.
 - `KHR_mesh_quantization`: non-float POSITION, NORMAL, TANGENT and TEXCOORD, authored as floats.
 - Perspective and orthographic cameras, as `UsdGeomCamera` prims below their nodes.
+- `KHR_lights_punctual`: directional, point and spot lights, as UsdLux lights below their nodes.
 
 ### Changed
 

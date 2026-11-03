@@ -13,6 +13,7 @@ implemented.
       /Mesh_0                  Xform
         /Primitive_0           Mesh
       /Camera_0                Camera
+      /Light_0                 SphereLight or DistantLight
   /mtl                         Scope
     /Material_0                Material
 ```
@@ -25,7 +26,7 @@ but must not preclude a future shared USD representation.
 Each mesh is an Xform below its node, containing one USD Mesh per glTF
 primitive. This retains the primitive boundaries needed for material bindings.
 Use stable index-based prim names such as `Node_12`, `Mesh_3`, `Primitive_0`,
-`Camera_1` and `Material_2`. glTF names can be empty, repeated, or invalid in a USD path;
+`Camera_1`, `Light_4` and `Material_2`. glTF names can be empty, repeated, or invalid in a USD path;
 retain original names as display names or equivalent metadata. Test name
 stability. Do not prescribe `/Asset/rig` or `/Asset/anim` as mandatory:
 their placement must be decided when UsdSkel and animation are designed.
@@ -161,6 +162,38 @@ Values the specification forbids are rejected, as are a `yfov` of pi or more, wh
 a negative magnification, which would mirror the view, a `znear` that is not below the far plane of
 an infinite projection, and values beyond a float. A camera that no selected node uses is not
 checked.
+
+## Lights
+
+A node's `KHR_lights_punctual` light is a UsdLux light named after the light's index, below the node,
+so a light that several nodes use is authored under each. Both shine along local -Z, so no axis
+changes. See the [decision record](../adr/0013-lights.md).
+
+glTF places a light at its node's origin and shines it along the node's transform applied to -Z,
+without scaling its properties. When the node's transform, accumulated from the asset's root, holds
+a scale, shear or reflection, the light prim has a transform that cancels it, keeping that axis. A
+scale that the assembler applies above the asset is a change of units, and scales the sphere with
+the scene. A node whose axes are zero or lie in one plane is rejected.
+
+| glTF | USD |
+| --- | --- |
+| `directional` | `DistantLight`, with `inputs:angle = 0` and `inputs:normalize = true` |
+| `point` | `SphereLight`, with `inputs:radius = 0.001`, `treatAsPoint = true` and `inputs:normalize = false` |
+| `spot` | The same, with `ShapingAPI` |
+| `intensity` of a directional light, in lux | `inputs:intensity`, unchanged: UsdLux defines a normalized distant light of angle 0 by its illuminance |
+| `intensity` of a point or spot light, in candela | `inputs:intensity = intensity / (pi radius^2)`: UsdLux defines a sphere by its luminance, which times its projected area is candela |
+| `color` | `inputs:color`, linear |
+| `range` | Not authored, with a warning. The light falls off with the inverse square of distance and does not reach zero. |
+| `outerConeAngle` | `inputs:shaping:cone:angle`, in degrees |
+| `innerConeAngle` | `inputs:shaping:cone:softness = 1 - innerConeAngle / outerConeAngle`, so that the falloff starts at the inner angle. Its curve differs from the one glTF recommends. |
+| `name` | The prim's display name |
+
+Values the specification forbids are rejected: a color component outside 0 to 1, a negative
+intensity, a range that is not positive, and cone angles other than
+`0 <= innerConeAngle < outerConeAngle <= pi / 2`. So are an intensity or range of the wrong type,
+which the parser would otherwise read as 1 or as absent, and an intensity beyond a float once divided
+by the area. A light that no
+selected node uses is not checked.
 
 ## Scene selection
 

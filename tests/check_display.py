@@ -12,6 +12,7 @@ compares and why, and the capability matrix for what has been run.
 import argparse
 import base64
 import json
+import math
 import pathlib
 import os
 import shutil
@@ -475,55 +476,69 @@ def check_measurements(renderer, report):
             report.color("second primitive sharing POSITION", positions, 1, (0.8, 0.5), "B")
 
 
-def check_reflections(renderer, report):
-    """Repeats usdview's backface culling, which usdrecord cannot do, with the same engine call."""
+def offscreen_context(report, label):
+    """Makes Qt's default OpenGL context current: a 4.5 core profile raised OpenGL errors from Storm.
+    Returns what must stay alive while it is used, or None."""
     application = QtGui.QGuiApplication.instance() or QtGui.QGuiApplication(["check_display"])
     surface = QtGui.QOffscreenSurface()
     surface.create()
     context = QtGui.QOpenGLContext()
     if not context.create() or not context.makeCurrent(surface):
-        report.expect("reflections", False, "no OpenGL context")
+        report.expect(label, False, "no OpenGL context")
+        return None
+    return application, surface, context
+
+
+def engine_image(stage, lights, ambient, cull=UsdImagingGL.CullStyle.CULL_STYLE_NOTHING):
+    """Renders through CAMERA with UsdImagingGL.Engine, as usdview does, in the current context."""
+    camera = UsdGeom.Camera(stage.GetPrimAtPath(CAMERA)).GetCamera()
+    width, height = IMAGE_WIDTH, round(IMAGE_WIDTH / camera.aspectRatio)
+    framebuffer_format = QtOpenGL.QOpenGLFramebufferObjectFormat()
+    framebuffer_format.setAttachment(QtOpenGL.QOpenGLFramebufferObject.Attachment.Depth)
+    framebuffer = QtOpenGL.QOpenGLFramebufferObject(width, height, framebuffer_format)
+    framebuffer.bind()
+    functions = QtGui.QOpenGLContext.currentContext().functions()
+    functions.glViewport(0, 0, width, height)
+    functions.glClearColor(0, 0, 0, 1)
+    functions.glClear(0x4100)  # Color and depth.
+
+    engine = UsdImagingGL.Engine()
+    engine.SetRendererAov("color")
+    engine.SetRenderBufferSize(Gf.Vec2i(width, height))
+    engine.SetFraming(CameraUtil.Framing(Gf.Rect2i(Gf.Vec2i(0, 0), width, height)))
+    engine.SetCameraPath(CAMERA)
+    engine.SetLightingState(lights, Glf.SimpleMaterial(), ambient)
+    parameters = UsdImagingGL.RenderParams()
+    parameters.cullStyle = cull
+    parameters.gammaCorrectColors = False
+    parameters.enableSampleAlphaToCoverage = False
+    parameters.clearColor = Gf.Vec4f(0, 0, 0, 1)
+    engine.Render(stage.GetPseudoRoot(), parameters)
+    framebuffer.bind()
+    image = framebuffer.toImage()
+    del engine
+    return image
+
+
+def check_reflections(renderer, report):
+    """Repeats usdview's backface culling, which usdrecord cannot do, with the same engine call."""
+    qt = offscreen_context(report, "reflections")
+    if not qt:
         return
-    print(f"OpenGL renderer: {context.functions().glGetString(0x1F01)}", flush=True)
+    print(f"OpenGL renderer: {qt[2].functions().glGetString(0x1F01)}", flush=True)
 
     session = Sdf.Layer.CreateAnonymous(".usda")
     stage = Usd.Stage.Open(Sdf.Layer.FindOrOpen(str(FIXTURES / "reflections.gltf")), session)
     stage.SetEditTarget(session)
     author_framing_camera(stage)
-    camera = UsdGeom.Camera(stage.GetPrimAtPath(CAMERA)).GetCamera()
-    width, height = IMAGE_WIDTH, round(IMAGE_WIDTH / camera.aspectRatio)
+    light = Glf.SimpleLight()
+    position = UsdGeom.Camera(stage.GetPrimAtPath(CAMERA)).GetCamera().transform.ExtractTranslation()
+    light.position = Gf.Vec4f(position[0], position[1], position[2], 1)
 
     for cull, name in ((UsdImagingGL.CullStyle.CULL_STYLE_BACK_UNLESS_DOUBLE_SIDED, "culled"),
                        (UsdImagingGL.CullStyle.CULL_STYLE_NOTHING, "unculled")):
-        framebuffer_format = QtOpenGL.QOpenGLFramebufferObjectFormat()
-        framebuffer_format.setAttachment(QtOpenGL.QOpenGLFramebufferObject.Attachment.Depth)
-        framebuffer = QtOpenGL.QOpenGLFramebufferObject(width, height, framebuffer_format)
-        framebuffer.bind()
-        functions = context.functions()
-        functions.glViewport(0, 0, width, height)
-        functions.glClearColor(0, 0, 0, 1)
-        functions.glClear(0x4100)  # Color and depth.
-
-        engine = UsdImagingGL.Engine()
-        engine.SetRendererAov("color")
-        engine.SetRenderBufferSize(Gf.Vec2i(width, height))
-        engine.SetFraming(CameraUtil.Framing(Gf.Rect2i(Gf.Vec2i(0, 0), width, height)))
-        engine.SetCameraPath(CAMERA)
-        light = Glf.SimpleLight()
-        position = camera.transform.ExtractTranslation()
-        light.position = Gf.Vec4f(position[0], position[1], position[2], 1)
-        engine.SetLightingState([light], Glf.SimpleMaterial(), Gf.Vec4f(0.1, 0.1, 0.1, 1))
-        parameters = UsdImagingGL.RenderParams()
-        parameters.cullStyle = cull
-        parameters.gammaCorrectColors = False
-        parameters.enableSampleAlphaToCoverage = False
-        parameters.clearColor = Gf.Vec4f(0, 0, 0, 1)
-        engine.Render(stage.GetPseudoRoot(), parameters)
-        framebuffer.bind()
-        image = framebuffer.toImage()
+        image = engine_image(stage, [light], Gf.Vec4f(0.1, 0.1, 0.1, 1), cull)
         image.save(str(renderer.output / f"reflections_{name}.png"))
-        del engine
-
         render = Render(f"reflections {name}", image, stage)
         # The first four triangles face the camera, and the fifth is reversed.
         for mesh in range(4):
@@ -537,8 +552,60 @@ def check_reflections(renderer, report):
             report.expect(f"{render.label} reversed control disappears", control == 0, f"{render.sample(4)}")
         else:
             report.expect(f"{render.label} reversed control is visible", control >= LOW, f"{render.sample(4)}")
-    context.doneCurrent()
-    del application
+    qt[2].doneCurrent()
+
+
+# The illuminance, in lux, at the center of the quad, which a matte gray reads well below white.
+ILLUMINANCE = 1.5
+
+
+def check_lights(renderer, report):
+    """Renders a quad lit only by a glTF light, without usdview's light at the camera, and compares
+    lights that glTF says give the quad's center the same illuminance."""
+    qt = offscreen_context(report, "lights")
+    if not qt:
+        return
+    for path in PATHS:
+
+        def render(name, light=None, height=1.0, rotation=(0, 0, 0, 1)):
+            document = quad_document([pbr(**ROUGH_DIELECTRIC, **GRAY_BASE)])
+            if light:
+                document["extensionsUsed"] = ["KHR_lights_punctual"]
+                document["extensions"] = {"KHR_lights_punctual": {"lights": [light]}}
+                document["nodes"].append({"translation": [0.5, 0.5, height], "rotation": list(rotation),
+                                          "extensions": {"KHR_lights_punctual": {"light": 0}}})
+                document["scenes"][0]["nodes"].append(1)
+            asset = renderer.output / f"light_{name}.gltf"
+            asset.write_text(json.dumps(document), encoding="utf-8")
+            _, stage = renderer.session(f"light_{name}", asset, path, None)
+            image = engine_image(stage, [], Gf.Vec4f(0, 0, 0, 1))
+            image.save(str(renderer.output / f"light_{name}_{path}.png"))
+            return Render(f"light_{name} {path}", image, stage)
+
+        def point(intensity=ILLUMINANCE, **values):
+            return {"type": "point", "intensity": intensity, **values}
+
+        dark = render("none").sample(0)
+        near = render("point", point()).sample(0)
+        report.expect(f"{path} without a light the quad is black", max(dark[:3]) <= SAME, f"{dark}")
+        report.different(f"{path} a point light lights the quad", near, dark)
+        # A matte surface reflects albedo times illuminance over pi, and UsdLux makes 1 nit a pixel of 1.
+        lambert = round(255 * GRAY_BASE["baseColorFactor"][0] * ILLUMINANCE / math.pi)
+        report.same(f"{path} a point light gives the quad its illuminance", near, (lambert, lambert, lambert, 255))
+        # Four times the candela at twice the distance.
+        report.same(f"{path} a point light falls off with the square of distance",
+                    render("point_far", point(ILLUMINANCE * 4), 2).sample(0), near)
+        report.different(f"{path} a point light's distance changes the result",
+                         render("point_dim", point(), 2).sample(0), near)
+        report.same(f"{path} lux and candela agree",
+                    render("directional", {"type": "directional", "intensity": ILLUMINANCE}).sample(0), near)
+        cone = {"type": "spot", "intensity": ILLUMINANCE, "spot": {"outerConeAngle": 0.5}}
+        report.same(f"{path} a spot light lights its axis as a point light does", render("spot", cone).sample(0), near)
+        # A half turn about X, so that the spot light faces away from the quad.
+        report.same(f"{path} Storm does not apply a spot light's cone",
+                    render("spot_away", cone, rotation=(1, 0, 0, 0)).sample(0), near)
+        report.color("light color", render("red", point(ILLUMINANCE * 2, color=[1, 0, 0])), 0, (0.5, 0.5), "R")
+    qt[2].doneCurrent()
 
 
 def compare_paths(report, name, renders, samples, tolerance):
@@ -564,8 +631,9 @@ def main():
 
     report = Report(arguments.verbose)
     renderer = Renderer(output, plugin, report)
-    for check in (check_reflections, check_alpha_modes, check_base_color_textures, check_pbr_textures,
-                  check_normal_textures, check_texture_transforms, check_ktx2_textures, check_measurements):
+    for check in (check_reflections, check_lights, check_alpha_modes, check_base_color_textures,
+                  check_pbr_textures, check_normal_textures, check_texture_transforms, check_ktx2_textures,
+                  check_measurements):
         print(check.__name__.removeprefix("check_"), flush=True)
         check(renderer, report)
 

@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 add_library(usd_gltf_usd STATIC
     camera.cpp
+    light.cpp
     material.cpp
     mesh.cpp
     scene.cpp)
@@ -11,10 +12,10 @@ set_target_properties(usd_gltf_usd PROPERTIES POSITION_INDEPENDENT_CODE ON CXX_E
 
 if(TARGET usd_ms)
     target_link_libraries(usd_gltf_usd PUBLIC usd_ms)
-elseif(TARGET usdShade AND TARGET usdGeom AND TARGET usd AND TARGET sdf AND TARGET ar AND TARGET tf)
-    target_link_libraries(usd_gltf_usd PUBLIC usdShade usdGeom usd sdf ar tf)
-elseif(TARGET pxr::usdShade AND TARGET pxr::usdGeom AND TARGET pxr::usd AND TARGET pxr::sdf AND TARGET pxr::ar AND TARGET pxr::tf)
-    target_link_libraries(usd_gltf_usd PUBLIC pxr::usdShade pxr::usdGeom pxr::usd pxr::sdf pxr::ar pxr::tf)
+elseif(TARGET usdShade AND TARGET usdLux AND TARGET usdGeom AND TARGET usd AND TARGET sdf AND TARGET ar AND TARGET tf)
+    target_link_libraries(usd_gltf_usd PUBLIC usdShade usdLux usdGeom usd sdf ar tf)
+elseif(TARGET pxr::usdShade AND TARGET pxr::usdLux AND TARGET pxr::usdGeom AND TARGET pxr::usd AND TARGET pxr::sdf AND TARGET pxr::ar AND TARGET pxr::tf)
+    target_link_libraries(usd_gltf_usd PUBLIC pxr::usdShade pxr::usdLux pxr::usdGeom pxr::usd pxr::sdf pxr::ar pxr::tf)
 else()
-    message(FATAL_ERROR "OpenUSD must provide usd_ms or the usdShade, usdGeom, usd, sdf, ar and tf targets.")
+    message(FATAL_ERROR "OpenUSD must provide usd_ms or the usdShade, usdLux, usdGeom, usd, sdf, ar and tf targets.")
 endif()

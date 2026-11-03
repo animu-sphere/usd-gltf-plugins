@@ -6,11 +6,6 @@ implementation order, which investigation may change. Each feature follows the
 
 ## v0.2.0: wider static scene support
 
-### First
-
-- `KHR_lights_punctual`: directional, point and spot through `UsdLux`, stating units, intensity,
-  attenuation and cone conversion. USD data tests and display tests are separate.
-
 ### Next
 
 - WebP images through `EXT_texture_webp`, reaching consumers as standard images under the

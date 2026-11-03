@@ -131,12 +131,42 @@ hasMalformedTextureTransform(const std::byte* bytes, std::size_t size)
            !textureTransformsAreWellFormed(materials);
 }
 
+// fastgltf reads an intensity or range of the wrong type as if it were absent, which would
+// show the light at intensity 1 or without its range.
+bool
+hasMalformedLight(const std::byte* bytes, std::size_t size)
+{
+    const auto json = jsonOf(bytes, size);
+    simdjson::dom::parser parser;
+    simdjson::dom::element root;
+    simdjson::dom::array lights;
+    if (parser.parse(json.data(), json.size()).get(root) != simdjson::SUCCESS ||
+        root["extensions"][fastgltf::extensions::KHR_lights_punctual]["lights"].get_array().get(
+            lights) != simdjson::SUCCESS)
+    {
+        return false;
+    }
+    for (const auto light : lights)
+    {
+        for (const char* field : {"intensity", "range"})
+        {
+            simdjson::dom::element value;
+            if (light[field].get(value) == simdjson::SUCCESS && !value.is_number())
+            {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 } // namespace
 
 bool
 IsImplementedExtension(std::string_view extension)
 {
-    return extension == fastgltf::extensions::KHR_mesh_quantization ||
+    return extension == fastgltf::extensions::KHR_lights_punctual ||
+           extension == fastgltf::extensions::KHR_mesh_quantization ||
            extension == fastgltf::extensions::KHR_texture_basisu ||
            extension == fastgltf::extensions::KHR_texture_transform;
 }
@@ -150,8 +180,6 @@ Parse(const std::byte* bytes, std::size_t size, std::string& error)
         error = fastgltf::getErrorMessage(data.error());
         return data.error();
     }
-    // Parse light references so the scene converter can reject selected lights.
-    // Enabling parsing does not mean the extension is supported.
     fastgltf::Parser parser(
         fastgltf::Extensions::KHR_lights_punctual | fastgltf::Extensions::KHR_mesh_quantization |
         fastgltf::Extensions::KHR_texture_basisu | fastgltf::Extensions::KHR_texture_transform);
@@ -169,6 +197,11 @@ Parse(const std::byte* bytes, std::size_t size, std::string& error)
         if (hasMalformedTextureTransform(bytes, size))
         {
             error = "KHR_texture_transform has a field of the wrong type";
+            return fastgltf::Error::InvalidGltf;
+        }
+        if (hasMalformedLight(bytes, size))
+        {
+            error = "KHR_lights_punctual has a field of the wrong type";
             return fastgltf::Error::InvalidGltf;
         }
         return asset;
