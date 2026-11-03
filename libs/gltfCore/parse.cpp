@@ -170,12 +170,13 @@ overflowsFloat(double number)
     return !std::isfinite(float(number));
 }
 
-// Describes a field of a material extension that fastgltf rejects, or returns an empty string.
-// `numbers` are its number fields, and `textures` its texture info fields.
+// Describes a malformed field of a material extension, or returns an empty string. `numbers` are
+// its number fields, `textures` its texture info fields and `colors` its fields of three numbers.
 std::string
 describeMalformedMaterialExtension(std::string_view name, const simdjson::dom::element& extension,
                                    std::initializer_list<std::string_view> numbers,
-                                   std::initializer_list<std::string_view> textures)
+                                   std::initializer_list<std::string_view> textures,
+                                   std::initializer_list<std::string_view> colors = {})
 {
     const auto describe = [name](const char* problem) { return std::string(name) + problem; };
     simdjson::dom::object object;
@@ -213,6 +214,64 @@ describeMalformedMaterialExtension(std::string_view name, const simdjson::dom::e
             {
                 return describe(" is out of range");
             }
+        }
+        else if (contains(colors, field.key))
+        {
+            simdjson::dom::array color;
+            if (field.value.get_array().get(color) != simdjson::SUCCESS || color.size() != 3)
+            {
+                return describe(" has a field of the wrong type");
+            }
+            for (const auto component : color)
+            {
+                if (component.get_double().get(number) != simdjson::SUCCESS)
+                {
+                    return describe(" has a field of the wrong type");
+                }
+                if (overflowsFloat(number))
+                {
+                    return describe(" is out of range");
+                }
+            }
+        }
+    }
+    return {};
+}
+
+// Describes a malformed KHR_materials_volume of a material, or returns an empty string.
+std::string
+describeMalformedVolume(const simdjson::dom::element& material)
+{
+    simdjson::dom::element volume;
+    if (material["extensions"][fastgltf::extensions::KHR_materials_volume].get(volume) !=
+        simdjson::SUCCESS)
+    {
+        return {};
+    }
+    return describeMalformedMaterialExtension(fastgltf::extensions::KHR_materials_volume, volume,
+                                              {"thicknessFactor", "attenuationDistance"},
+                                              {"thicknessTexture"}, {"attenuationColor"});
+}
+
+// fastgltf reads an attenuationColor of fewer than three numbers, keeping 1 for the rest, so a
+// volume it accepts is checked too. Returns an empty string if every volume is well formed.
+std::string
+describeMalformedVolumes(const std::byte* bytes, std::size_t size)
+{
+    const auto json = jsonOf(bytes, size);
+    simdjson::dom::parser parser;
+    simdjson::dom::element root;
+    simdjson::dom::array materials;
+    if (parser.parse(json.data(), json.size()).get(root) != simdjson::SUCCESS ||
+        root["materials"].get_array().get(materials) != simdjson::SUCCESS)
+    {
+        return {};
+    }
+    for (const auto material : materials)
+    {
+        if (auto description = describeMalformedVolume(material); !description.empty())
+        {
+            return description;
         }
     }
     return {};
@@ -289,6 +348,10 @@ describeMalformedMaterial(const std::byte* bytes, std::size_t size)
                 return description;
             }
         }
+        if (auto description = describeMalformedVolume(material); !description.empty())
+        {
+            return description;
+        }
     }
     return {};
 }
@@ -304,6 +367,7 @@ IsImplementedExtension(std::string_view extension)
            extension == fastgltf::extensions::KHR_materials_ior ||
            extension == fastgltf::extensions::KHR_materials_transmission ||
            extension == fastgltf::extensions::KHR_materials_unlit ||
+           extension == fastgltf::extensions::KHR_materials_volume ||
            extension == fastgltf::extensions::KHR_mesh_quantization ||
            extension == fastgltf::extensions::KHR_texture_basisu ||
            extension == fastgltf::extensions::KHR_texture_transform;
@@ -322,8 +386,9 @@ Parse(const std::byte* bytes, std::size_t size, std::string& error)
         fastgltf::Extensions::EXT_texture_webp | fastgltf::Extensions::KHR_lights_punctual |
         fastgltf::Extensions::KHR_materials_clearcoat | fastgltf::Extensions::KHR_materials_ior |
         fastgltf::Extensions::KHR_materials_transmission |
-        fastgltf::Extensions::KHR_materials_unlit | fastgltf::Extensions::KHR_mesh_quantization |
-        fastgltf::Extensions::KHR_texture_basisu | fastgltf::Extensions::KHR_texture_transform);
+        fastgltf::Extensions::KHR_materials_unlit | fastgltf::Extensions::KHR_materials_volume |
+        fastgltf::Extensions::KHR_mesh_quantization | fastgltf::Extensions::KHR_texture_basisu |
+        fastgltf::Extensions::KHR_texture_transform);
     auto asset = parser.loadGltf(data.get(), {}, fastgltf::Options::None);
     auto result = asset.error();
     if (result == fastgltf::Error::None &&
@@ -343,6 +408,11 @@ Parse(const std::byte* bytes, std::size_t size, std::string& error)
         if (hasMalformedLight(bytes, size))
         {
             error = "KHR_lights_punctual has a field of the wrong type";
+            return fastgltf::Error::InvalidGltf;
+        }
+        if (auto description = describeMalformedVolumes(bytes, size); !description.empty())
+        {
+            error = description;
             return fastgltf::Error::InvalidGltf;
         }
         return asset;

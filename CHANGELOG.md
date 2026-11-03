@@ -28,6 +28,9 @@ here.
   both shader paths, and its normal texture in MaterialX only.
 - `KHR_materials_transmission`, optional or required: the transmission and its texture in MaterialX,
   which Storm draws as transparency; UsdPreviewSurface has none and ignores it with a warning.
+- `KHR_materials_volume`, optional or required: the thickness, its texture and the attenuation as
+  `gltf_pbr`'s volume inputs in MaterialX, which its graph does not connect, so every path draws a thin
+  material; UsdPreviewSurface has none and ignores it with a warning.
 
 ### Changed
 

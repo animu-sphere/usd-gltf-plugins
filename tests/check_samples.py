@@ -35,8 +35,8 @@ import numpy
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 BASELINE = ROOT / "tests" / "sample_baseline.json"
 IMPLEMENTED_EXTENSIONS = {"EXT_texture_webp", "KHR_lights_punctual", "KHR_materials_clearcoat", "KHR_materials_ior",
-                          "KHR_materials_transmission", "KHR_materials_unlit", "KHR_mesh_quantization",
-                          "KHR_texture_basisu", "KHR_texture_transform"}
+                          "KHR_materials_transmission", "KHR_materials_unlit", "KHR_materials_volume",
+                          "KHR_mesh_quantization", "KHR_texture_basisu", "KHR_texture_transform"}
 PATHS = ("mtlx", "preview")
 CAMERA = "/SampleCheckCamera"
 RESULT_MARKER = "SAMPLE_RESULT "
@@ -70,11 +70,12 @@ IMAGE_SIGNATURES = (b"\x89PNG\r\n\x1a\n", b"\xff\xd8\xff")
 SLOTS = {"baseColorTexture": "baseColor", "metallicRoughnessTexture": "metallicRoughness",
          "normalTexture": "normal", "occlusionTexture": "occlusion", "emissiveTexture": "emissive",
          "clearcoatTexture": "clearcoat", "clearcoatRoughnessTexture": "clearcoatRoughness",
-         "transmissionTexture": "transmission"}
+         "transmissionTexture": "transmission", "thicknessTexture": "thickness"}
 CLEARCOAT_SLOTS = {"clearcoatTexture", "clearcoatRoughnessTexture"}
 TRANSMISSION_SLOTS = {"transmissionTexture"}
+VOLUME_SLOTS = {"thicknessTexture"}
 # Slots that UsdPreviewSurface has no input for.
-MTLX_ONLY_SLOTS = {"transmissionTexture"}
+MTLX_ONLY_SLOTS = {"transmissionTexture", "thicknessTexture"}
 COLOR_SLOTS = {"baseColorTexture", "emissiveTexture"}
 PBR_SLOTS = {"baseColorTexture", "metallicRoughnessTexture"}
 
@@ -510,6 +511,7 @@ def check_material(check, asset, stage, path, material, has_colors, images):
     textures = {}
     clearcoat = material.get("extensions", {}).get("KHR_materials_clearcoat")
     transmission = material.get("extensions", {}).get("KHR_materials_transmission")
+    volume = material.get("extensions", {}).get("KHR_materials_volume")
 
     def owner(key):
         if key in PBR_SLOTS:
@@ -518,6 +520,8 @@ def check_material(check, asset, stage, path, material, has_colors, images):
             return clearcoat or {}
         if key in TRANSMISSION_SLOTS:
             return transmission or {}
+        if key in VOLUME_SLOTS:
+            return volume or {}
         return material
 
     infos = {key: owner(key).get(key) for key in SLOTS}
@@ -541,6 +545,11 @@ def check_material(check, asset, stage, path, material, has_colors, images):
     if not transmits:
         for key in TRANSMISSION_SLOTS:
             infos[key] = None
+    # A volume of thickness 0 is thin, and a material that transmits nothing has none.
+    thick = volume is not None and transmits and volume.get("thicknessFactor", 0) > 0
+    if not thick:
+        for key in VOLUME_SLOTS:
+            infos[key] = None
     names = {prim.GetName() for prim in Usd.PrimRange(stage.GetPrimAtPath(path))}
     if not coated:
         check.expect(not {name for name in names if name.startswith("clearcoat")},
@@ -548,6 +557,9 @@ def check_material(check, asset, stage, path, material, has_colors, images):
     if not transmits:
         check.expect(not {name for name in names if name.startswith("transmission")},
                      f"{label} authors a transmission it does not have")
+    if not thick:
+        check.expect(not {name for name in names if name.startswith("thickness")},
+                     f"{label} authors a thickness it does not have")
     for key, info in infos.items():
         if info:
             textures[key] = check_texture(check, asset, stage, path, key, info, label, images)
@@ -608,6 +620,7 @@ def check_material(check, asset, stage, path, material, has_colors, images):
 
     check_clearcoat(check, surface, pbr_surface, clearcoat if coated else None, textures, names, label)
     check_transmission(check, surface, pbr_surface, transmission if transmits else None, textures, label)
+    check_volume(check, surface, pbr_surface, volume if thick else None, textures, label)
 
     # Both shaders default to glTF's 1.5, an ior of 0 stands for a very large one, and an unlit material has none.
     ior = material.get("extensions", {}).get("KHR_materials_ior", {}).get("ior", 1.5)
@@ -672,22 +685,53 @@ def check_transmission(check, surface, pbr_surface, transmission, textures, labe
         return
     if not check.expect(authored, f"{label} MaterialX transmission is not authored"):
         return
-    factor = transmission.get("transmissionFactor", 0)
-    check.close(authored.Get(), factor, f"{label} MaterialX transmission")
-    image = textures.get("transmissionTexture")
-    if image:
-        source = connected_shader(authored)
-        # A factor of 1 reads the channel directly; otherwise a multiply scales it.
-        if source and source.GetShaderId() == "ND_multiply_float":
-            check.close(source.GetInput("in2").Get(), factor, f"{label} MaterialX transmission factor")
-            source = connected_shader(source.GetInput("in1"))
-        else:
-            check.expect(factor == 1, f"{label} MaterialX transmission is not scaled by its factor")
-        check.expect(source and source.GetInput("index") and source.GetInput("index").Get() == 0,
-                     f"{label} MaterialX transmission does not read channel R")
-        channel_image = connected_shader(source.GetInput("in")) if source and source.GetInput("in") else None
-        check.expect(channel_image and channel_image.GetPath() == image.GetPath(),
-                     f"{label} MaterialX transmission does not read its texture")
+    check_mtlx_channel(check, authored, transmission.get("transmissionFactor", 0),
+                       textures.get("transmissionTexture"), 0, f"{label} MaterialX transmission")
+
+
+def check_volume(check, surface, pbr_surface, volume, textures, label):
+    """The volume in MaterialX only: its thickness times its texture's G, and its attenuation where
+    the distance is finite. Preview has none.
+
+    `volume` is None for a material without a transmission and a thickness above 0."""
+    names = ("thickness", "attenuation_distance", "attenuation_color")
+    check.expect(not any(surface.GetInput(name) for name in names), f"{label} Preview authors a volume")
+    authored = pbr_surface.GetInput("thickness")
+    distance = volume.get("attenuationDistance") if volume is not None else None
+    if volume is None:
+        check.expect(not any(pbr_surface.GetInput(name) for name in names),
+                     f"{label} MaterialX authors a volume it does not have")
+        return
+    if check.expect(authored, f"{label} MaterialX thickness is not authored"):
+        check_mtlx_channel(check, authored, volume.get("thicknessFactor", 0), textures.get("thicknessTexture"), 1,
+                           f"{label} MaterialX thickness")
+    # An infinite distance, glTF's default, attenuates nothing.
+    for name, expected in (("attenuation_distance", distance),
+                           ("attenuation_color", volume.get("attenuationColor", (1, 1, 1)) if distance else None)):
+        attribute = pbr_surface.GetInput(name)
+        if expected is None:
+            check.expect(not attribute, f"{label} MaterialX authors {name} without an attenuation distance")
+        elif check.expect(attribute, f"{label} MaterialX {name} is not authored"):
+            check.close(attribute.Get(), expected, f"{label} MaterialX {name}")
+
+
+def check_mtlx_channel(check, authored, factor, image, index, description):
+    """A MaterialX input of a factor, times one channel of its texture if it has one."""
+    check.close(authored.Get(), factor, description)
+    if not image:
+        return
+    source = connected_shader(authored)
+    # A factor of 1 reads the channel directly; otherwise a multiply scales it.
+    if source and source.GetShaderId() == "ND_multiply_float":
+        check.close(source.GetInput("in2").Get(), factor, f"{description} factor")
+        source = connected_shader(source.GetInput("in1"))
+    else:
+        check.expect(factor == 1, f"{description} is not scaled by its factor")
+    check.expect(source and source.GetInput("index") and source.GetInput("index").Get() == index,
+                 f"{description} does not read channel {'RGBA'[index]}")
+    channel_image = connected_shader(source.GetInput("in")) if source and source.GetInput("in") else None
+    check.expect(channel_image and channel_image.GetPath() == image.GetPath(),
+                 f"{description} does not read its texture")
 
 
 def check_occlusion(check, shader, strength, label):

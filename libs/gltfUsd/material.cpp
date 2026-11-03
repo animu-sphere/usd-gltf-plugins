@@ -19,6 +19,7 @@
 #include "pxr/usd/usdShade/shader.h"
 
 #include <cmath>
+#include <limits>
 #include <optional>
 #include <string>
 #include <type_traits>
@@ -76,6 +77,11 @@ struct PbrFactors
     float clearcoatNormalScale;
     // KHR_materials_transmission, 0 without it.
     float transmission;
+    // KHR_materials_volume: a thickness of 0, its default, is a thin material, and an infinite
+    // attenuation distance, its default, attenuates nothing.
+    float thickness;
+    float attenuationDistance;
+    GfVec3f attenuationColor;
 };
 
 // glTF's default, and the default of both shaders' ior inputs.
@@ -106,7 +112,14 @@ pbrFactors(const fastgltf::Material& source)
             source.clearcoat && source.clearcoat->clearcoatNormalTexture
                 ? float(source.clearcoat->clearcoatNormalTexture->scale)
                 : 1.0f,
-            source.transmission ? float(source.transmission->transmissionFactor) : 0.0f};
+            source.transmission ? float(source.transmission->transmissionFactor) : 0.0f,
+            source.volume ? float(source.volume->thicknessFactor) : 0.0f,
+            source.volume ? float(source.volume->attenuationDistance)
+                          : std::numeric_limits<float>::infinity(),
+            source.volume
+                ? GfVec3f(source.volume->attenuationColor[0], source.volume->attenuationColor[1],
+                          source.volume->attenuationColor[2])
+                : GfVec3f(1)};
 }
 
 // glTF disables the clearcoat layer at a factor of 0, and an unlit material reflects nothing.
@@ -121,6 +134,14 @@ bool
 hasTransmission(const PbrFactors& factors)
 {
     return !factors.unlit && factors.transmission > 0.0f;
+}
+
+// A volume is the medium that transmitted light passes through, so a material that transmits none
+// has no use for it, and a thickness of 0 is a thin material.
+bool
+hasVolume(const PbrFactors& factors)
+{
+    return hasTransmission(factors) && factors.thickness > 0.0f;
 }
 
 // The ior to author, if it is not the shaders' default. An unlit material reflects nothing, so
@@ -242,6 +263,8 @@ struct MaterialTextures
     std::optional<TextureInput> clearcoatNormal;
     // Read by MaterialX only: UsdPreviewSurface has no transmission.
     std::optional<TextureInput> transmission;
+    // Read by MaterialX only: UsdPreviewSurface has no volume.
+    std::optional<TextureInput> thickness;
 };
 
 // Textures sharing a UV set share a reader: defining it again changes nothing.
@@ -772,7 +795,9 @@ connectMtlxTextures(const UsdShadeNodeGraph& graph, UsdShadeShader& surface,
            (!hasClearcoat(factors) || connectMtlxClearcoat(graph, surface, factors, textures)) &&
            (!textures.transmission ||
             connectMtlxChannel(graph, surface, "transmission", "transmission", 0,
-                               factors.transmission, *textures.transmission));
+                               factors.transmission, *textures.transmission)) &&
+           (!textures.thickness || connectMtlxChannel(graph, surface, "thickness", "thickness", 1,
+                                                      factors.thickness, *textures.thickness));
 }
 
 bool
@@ -848,6 +873,16 @@ authorMtlx(const UsdShadeMaterial& material, const PbrFactors& factors, bool ver
     // gltf_pbr mixes its diffuse term toward a transmission tinted by the base color, as glTF does.
     // Without KHR_materials_volume the material is thin, and thickness keeps its default of 0.
     const bool transmission = hasTransmission(factors);
+    // gltf_pbr's volume inputs are glTF's, and the attenuation ones are uniform. An infinite
+    // distance attenuates nothing, and is left out, because gltf_pbr has no default for it.
+    const bool volume = hasVolume(factors);
+    const bool attenuation = volume && std::isfinite(factors.attenuationDistance);
+    const auto attenuationDistance =
+        attenuation ? surface.CreateInput(TfToken("attenuation_distance"), SdfValueTypeNames->Float)
+                    : UsdShadeInput();
+    const auto attenuationColor =
+        attenuation ? surface.CreateInput(TfToken("attenuation_color"), SdfValueTypeNames->Color3f)
+                    : UsdShadeInput();
     return surface.CreateIdAttr().Set(TfToken("ND_gltf_pbr_surfaceshader")) &&
            setInput(surface, "base_color", SdfValueTypeNames->Color3f,
                     unlit ? GfVec3f(0) : factors.baseColor) &&
@@ -865,6 +900,14 @@ authorMtlx(const UsdShadeMaterial& material, const PbrFactors& factors, bool ver
                       factors.clearcoatRoughness))) &&
            (!transmission ||
             setInput(surface, "transmission", SdfValueTypeNames->Float, factors.transmission)) &&
+           (!volume ||
+            setInput(surface, "thickness", SdfValueTypeNames->Float, factors.thickness)) &&
+           (!attenuation ||
+            (attenuationDistance &&
+             attenuationDistance.GetAttr().SetVariability(SdfVariabilityUniform) &&
+             attenuationDistance.Set(factors.attenuationDistance) && attenuationColor &&
+             attenuationColor.GetAttr().SetVariability(SdfVariabilityUniform) &&
+             attenuationColor.Set(factors.attenuationColor))) &&
            alphaMode && alphaMode.GetAttr().SetVariability(SdfVariabilityUniform) &&
            alphaMode.Set(opaque ? 0 : (mask ? 1 : 2)) &&
            (opaque || setInput(surface, "alpha", SdfValueTypeNames->Float, factors.alpha)) &&
@@ -1065,13 +1108,15 @@ MaterialAuthor::Bind(std::size_t index, std::size_t uvSetCount, const pxr::VtVec
     { return !info || texCoordOf(*info) < uvSetCount; };
     const auto* clearcoat = source.clearcoat ? &*source.clearcoat : nullptr;
     const auto* transmission = source.transmission ? &*source.transmission : nullptr;
+    const auto* volume = source.volume ? &*source.volume : nullptr;
     if (!hasUvSet(pbr.baseColorTexture) || !hasUvSet(pbr.metallicRoughnessTexture) ||
         !hasUvSet(source.normalTexture) || !hasUvSet(source.occlusionTexture) ||
         !hasUvSet(source.emissiveTexture) ||
         (clearcoat && (!hasUvSet(clearcoat->clearcoatTexture) ||
                        !hasUvSet(clearcoat->clearcoatRoughnessTexture) ||
                        !hasUvSet(clearcoat->clearcoatNormalTexture))) ||
-        (transmission && !hasUvSet(transmission->transmissionTexture)))
+        (transmission && !hasUvSet(transmission->transmissionTexture)) ||
+        (volume && !hasUvSet(volume->thicknessTexture)))
     {
         error = "material texture uses a texture coordinate set the primitive does not have";
         return false;
@@ -1129,6 +1174,25 @@ MaterialAuthor::Bind(std::size_t index, std::size_t uvSetCount, const pxr::VtVec
         error = "material transmission factor is non-finite or out of range";
         return false;
     }
+    if (volume && !(std::isfinite(volume->thicknessFactor) && volume->thicknessFactor >= 0))
+    {
+        error = "material thickness factor is non-finite or negative";
+        return false;
+    }
+    // The default is infinite, which JSON cannot express, so an infinite value is the default.
+    if (volume && !(volume->attenuationDistance > 0))
+    {
+        error = "material attenuation distance is not positive";
+        return false;
+    }
+    for (std::size_t i = 0; volume && i < 3; ++i)
+    {
+        if (!inUnitRange(volume->attenuationColor[i]))
+        {
+            error = "material attenuation color is non-finite or out of range";
+            return false;
+        }
+    }
     auto& material = colors ? _vertexColorMaterials[index] : _materials[index];
     if (!material)
     {
@@ -1138,10 +1202,12 @@ MaterialAuthor::Bind(std::size_t index, std::size_t uvSetCount, const pxr::VtVec
                                            texture.emplace(), error);
         };
         // KHR_materials_unlit defines every other texture as a fallback for clients without it.
-        // A clearcoat or transmission of factor 0 is disabled, so its textures are not read either.
+        // A clearcoat or transmission of factor 0 is disabled, and so is a volume without
+        // transmission or thickness, so their textures are not read either.
         const auto factors = pbrFactors(source);
         const bool coated = hasClearcoat(factors);
         const bool transmits = hasTransmission(factors);
+        const bool thick = hasVolume(factors);
         MaterialTextures textures;
         if (!resolve(pbr.baseColorTexture, textures.baseColor) ||
             (!source.unlit && (!resolve(pbr.metallicRoughnessTexture, textures.metallicRoughness) ||
@@ -1152,7 +1218,8 @@ MaterialAuthor::Bind(std::size_t index, std::size_t uvSetCount, const pxr::VtVec
              (!resolve(clearcoat->clearcoatTexture, textures.clearcoat) ||
               !resolve(clearcoat->clearcoatRoughnessTexture, textures.clearcoatRoughness) ||
               !resolve(clearcoat->clearcoatNormalTexture, textures.clearcoatNormal))) ||
-            (transmits && !resolve(transmission->transmissionTexture, textures.transmission)))
+            (transmits && !resolve(transmission->transmissionTexture, textures.transmission)) ||
+            (thick && !resolve(volume->thicknessTexture, textures.thickness)))
         {
             return false;
         }
@@ -1186,10 +1253,22 @@ MaterialAuthor::Bind(std::size_t index, std::size_t uvSetCount, const pxr::VtVec
                     "material is unlit",
                     index);
         }
+        if (source.unlit && volume)
+        {
+            TF_WARN("glTF material %zu: KHR_materials_volume is ignored, because the material is "
+                    "unlit",
+                    index);
+        }
         if (transmits)
         {
             TF_WARN("glTF material %zu: UsdPreviewSurface has no transmission; its network ignores "
                     "KHR_materials_transmission",
+                    index);
+        }
+        if (thick)
+        {
+            TF_WARN("glTF material %zu: UsdPreviewSurface has no volume; its network ignores "
+                    "KHR_materials_volume",
                     index);
         }
         if (textures.clearcoatNormal)

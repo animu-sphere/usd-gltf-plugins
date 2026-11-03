@@ -3976,6 +3976,274 @@ class FileFormatTest(unittest.TestCase):
                             layer.Reload(True)
                         self.assertEqual(layer_text(layer), before)
 
+    def test_volume_materials(self):
+        def open_with_stderr(path):
+            return subprocess.run(
+                [sys.executable, "-c",
+                 "from pxr import Usd; import sys; assert Usd.Stage.Open(sys.argv[1])", str(path)],
+                capture_output=True, text=True, check=False,
+            )
+
+        ignored = "KHR_materials_volume is ignored, because the material is unlit"
+        preview_warning = "UsdPreviewSurface has no volume; its network ignores KHR_materials_volume"
+        transmits = {"KHR_materials_transmission": {"transmissionFactor": 1}}
+        attenuated = {"thicknessFactor": 2, "attenuationDistance": 0.5, "attenuationColor": [0.9, 0.5, 0.25]}
+        # The thickness and attenuation authored in MaterialX, or None where there are none.
+        cases = (
+            ("thick", {"thicknessFactor": 0.25}, transmits, 0.25, None),
+            ("attenuated", attenuated, transmits, 2, (0.5, (0.9, 0.5, 0.25))),
+            ("white", {"thicknessFactor": 1, "attenuationDistance": 3}, transmits, 1, (3, (1, 1, 1))),
+            ("thin", {"attenuationDistance": 0.5, "attenuationColor": [0.5, 0.5, 0.5]}, transmits, None, None),
+            ("empty", {}, transmits, None, None),
+            ("no transmission", attenuated, {}, None, None),
+            ("zero transmission", attenuated, {"KHR_materials_transmission": {"transmissionFactor": 0}}, None, None),
+            ("unlit", attenuated, {**transmits, "KHR_materials_unlit": {}}, None, None),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            for extension in ("gltf", "glb"):
+                for (case, volume, others, thickness, attenuation), required in itertools.product(
+                        cases, (False, True)):
+                    with self.subTest(extension=extension, case=case, required=required):
+                        name = f"{case.replace(' ', '_')}_{'required' if required else 'optional'}"
+                        path = pathlib.Path(directory) / f"volume_{name}.{extension}"
+                        document, binary = mesh_document(extension)
+                        used = ["KHR_materials_volume", *others]
+                        document["extensionsUsed"] = used
+                        if required:
+                            document["extensionsRequired"] = used
+                        document["meshes"][0]["primitives"][0]["material"] = 0
+                        document["meshes"][0]["primitives"][1]["material"] = 1
+                        lit = {"pbrMetallicRoughness": {"baseColorFactor": [0.2, 0.4, 0.6, 1],
+                                                        "metallicFactor": 0.25, "roughnessFactor": 0.5}}
+                        extensions = {"KHR_materials_volume": volume, **others}
+                        document["materials"] = [{**lit, "extensions": extensions},
+                                                 {**lit, "extensions": dict(others)}]
+                        write_asset(path, document, binary)
+                        result = open_with_stderr(path)
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertNotIn("'KHR_materials_volume' is not supported", result.stderr)
+                        self.assertEqual(ignored in result.stderr, case == "unlit", result.stderr)
+                        self.assertEqual(preview_warning in result.stderr, thickness is not None, result.stderr)
+
+                        stage = Usd.Stage.Open(str(path))
+                        material = UsdShade.Material.Get(stage, "/Asset/mtl/Material_0")
+                        preview = UsdShade.Shader.Get(stage, "/Asset/mtl/Material_0/preview/surface")
+                        mtlx = UsdShade.Shader.Get(stage, "/Asset/mtl/Material_0/mtlx/surface")
+                        self.assert_material_nodegraphs(material, preview, mtlx)
+                        if thickness is None:
+                            self.assertFalse(mtlx.GetInput("thickness"))
+                        else:
+                            self.assertAlmostEqual(mtlx.GetInput("thickness").Get(), thickness, places=6)
+                        if attenuation is None:
+                            self.assertFalse(mtlx.GetInput("attenuation_distance"))
+                            self.assertFalse(mtlx.GetInput("attenuation_color"))
+                        else:
+                            distance, color = attenuation
+                            for input_name in ("attenuation_distance", "attenuation_color"):
+                                self.assertEqual(mtlx.GetInput(input_name).GetAttr().GetVariability(),
+                                                 Sdf.VariabilityUniform, input_name)
+                            self.assertAlmostEqual(mtlx.GetInput("attenuation_distance").Get(), distance, places=6)
+                            self.assertTrue(Gf.IsClose(mtlx.GetInput("attenuation_color").Get(), Gf.Vec3f(*color),
+                                                       1e-6))
+                        # UsdPreviewSurface has no volume.
+                        for input_name in ("thickness", "attenuation_distance", "attenuation_color", "opacity"):
+                            self.assertFalse(preview.GetInput(input_name), input_name)
+                        # The volume changes nothing else.
+                        self.assertEqual(bool(mtlx.GetInput("transmission")),
+                                         case not in ("no transmission", "zero transmission", "unlit"))
+                        if case != "unlit":
+                            self.assertTrue(Gf.IsClose(mtlx.GetInput("base_color").Get(),
+                                                       Gf.Vec3f(0.2, 0.4, 0.6), 1e-6))
+                            self.assertAlmostEqual(mtlx.GetInput("roughness").Get(), 0.5, places=6)
+                        self.assertEqual(mtlx.GetInput("alpha_mode").Get(), 0)
+                        # A material without the extension authors no volume.
+                        plain_mtlx = UsdShade.Shader.Get(stage, "/Asset/mtl/Material_1/mtlx/surface")
+                        for input_name in ("thickness", "attenuation_distance", "attenuation_color"):
+                            self.assertFalse(plain_mtlx.GetInput(input_name), input_name)
+
+    def test_volume_textures(self):
+        def open_with_stderr(path):
+            return subprocess.run(
+                [sys.executable, "-c",
+                 "from pxr import Usd; import sys; assert Usd.Stage.Open(sys.argv[1])", str(path)],
+                capture_output=True, text=True, check=False,
+            )
+
+        def source_of(shader, name):
+            connection = shader.GetInput(name).GetConnectedSource() if shader.GetInput(name) else None
+            return (UsdShade.Shader(connection[0].GetPrim()), connection[1]) if connection else (None, None)
+
+        def thickness_prims(material, graph):
+            return [prim for prim in Usd.PrimRange(material.GetPrim().GetChild(graph))
+                    if prim.GetName().startswith("thickness")]
+
+        transmission = {"transmissionFactor": 1}
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            for extension in ("gltf", "glb"):
+                with self.subTest(extension=extension, case="texture"):
+                    path = root / ("volume." + extension)
+                    document, binary = textured_document(extension, None, PNG)
+                    document["extensionsUsed"] = ["KHR_materials_transmission", "KHR_materials_volume",
+                                                  "KHR_texture_transform"]
+                    document["samplers"] = [{"wrapS": 33648, "wrapT": 33071}]
+                    document["textures"].append({"source": 0, "sampler": 0})
+                    document["materials"][0]["extensions"] = {
+                        "KHR_materials_transmission": transmission,
+                        "KHR_materials_volume": {
+                            "thicknessFactor": 0.5,
+                            "thicknessTexture": {"index": 1, "texCoord": 1, "extensions": {
+                                "KHR_texture_transform": {"offset": [0.25, 0]}}},
+                        },
+                    }
+                    write_asset(path, document, binary)
+                    result = open_with_stderr(path)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    stage = Usd.Stage.Open(str(path))
+                    usd_material = UsdShade.Material.Get(stage, "/Asset/mtl/Material_0")
+
+                    mtlx, _, _ = usd_material.ComputeSurfaceSource("mtlx")
+                    factor, _ = source_of(mtlx, "thickness")
+                    self.assertEqual(factor.GetPath().name, "thicknessFactor")
+                    self.assertEqual(factor.GetIdAttr().Get(), "ND_multiply_float")
+                    self.assertAlmostEqual(factor.GetInput("in2").Get(), 0.5)
+                    channel, _ = source_of(factor, "in1")
+                    self.assertEqual(channel.GetPath().name, "thicknessChannel")
+                    # glTF's thickness is the texture's G channel.
+                    self.assertEqual(channel.GetInput("index").Get(), 1)
+                    image, _ = source_of(channel, "in")
+                    self.assertEqual(image.GetPath().name, "thicknessImage")
+                    self.assertEqual(image.GetIdAttr().Get(), "ND_image_vector4")
+                    self.assertFalse(image.GetInput("file").GetAttr().HasColorSpace())
+                    self.assertEqual(image.GetInput("uaddressmode").Get(), "mirror")
+                    self.assertEqual(image.GetInput("vaddressmode").Get(), "clamp")
+                    # The transform sits between the reader of TEXCOORD_1 and the image.
+                    translate, _ = source_of(image, "texcoord")
+                    self.assertEqual(translate.GetIdAttr().Get(), "ND_add_vector2")
+                    reader = translate
+                    while reader and reader.GetIdAttr().Get() != "ND_geompropvalue_vector2":
+                        reader = source_of(reader, "in1")[0] or source_of(reader, "in")[0]
+                    self.assertEqual(reader.GetInput("geomprop").Get(), "st1")
+                    asset = image.GetInput("file").Get()
+                    self.assertEqual(asset.path, f"./{path.name}[images/0.png]")
+                    self.assertEqual(asset_bytes(asset.resolvedPath), PNG)
+                    # UsdPreviewSurface has no volume to connect it to.
+                    self.assertFalse(thickness_prims(usd_material, "preview"))
+                    preview, _, _ = usd_material.ComputeSurfaceSource()
+                    self.assertFalse(preview.GetInput("thickness"))
+
+                with self.subTest(extension=extension, case="factor of one"):
+                    path = root / ("volume_one." + extension)
+                    document, binary = textured_document(extension, None, PNG)
+                    document["extensionsUsed"] = ["KHR_materials_transmission", "KHR_materials_volume"]
+                    document["materials"][0]["extensions"] = {
+                        "KHR_materials_transmission": transmission,
+                        "KHR_materials_volume": {"thicknessFactor": 1, "thicknessTexture": {"index": 0}},
+                    }
+                    write_asset(path, document, binary)
+                    stage = Usd.Stage.Open(str(path))
+                    usd_material = UsdShade.Material.Get(stage, "/Asset/mtl/Material_0")
+                    mtlx, _, _ = usd_material.ComputeSurfaceSource("mtlx")
+                    # A factor of 1 needs no multiply.
+                    channel, _ = source_of(mtlx, "thickness")
+                    self.assertEqual(channel.GetPath().name, "thicknessChannel")
+                    self.assertEqual(source_of(source_of(channel, "in")[0], "texcoord")[0].GetInput("geomprop").Get(),
+                                     "st")
+
+                for case, extensions in (
+                    ("default factor", {"KHR_materials_transmission": transmission, "KHR_materials_volume": {}}),
+                    ("no transmission", {"KHR_materials_volume": {"thicknessFactor": 1}}),
+                    ("unlit", {"KHR_materials_transmission": transmission,
+                               "KHR_materials_volume": {"thicknessFactor": 1}, "KHR_materials_unlit": {}}),
+                ):
+                    with self.subTest(extension=extension, case=case):
+                        path = root / (f"volume_{case.replace(' ', '_')}." + extension)
+                        document, binary = textured_document(extension, None, PNG)
+                        document["extensionsUsed"] = list(extensions)
+                        # A texture without a volume is never read, so a damaged one does not matter.
+                        document["images"].append({"uri": "data:image/png;base64,AA=="})
+                        document["textures"].append({"source": 1})
+                        extensions = json.loads(json.dumps(extensions))
+                        extensions["KHR_materials_volume"]["thicknessTexture"] = {"index": 1}
+                        document["materials"][0]["extensions"] = extensions
+                        write_asset(path, document, binary)
+                        result = open_with_stderr(path)
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertNotIn("UsdPreviewSurface has no volume", result.stderr)
+                        stage = Usd.Stage.Open(str(path))
+                        usd_material = UsdShade.Material.Get(stage, "/Asset/mtl/Material_0")
+                        self.assertFalse(thickness_prims(usd_material, "mtlx"))
+                        self.assertFalse(usd_material.ComputeSurfaceSource("mtlx")[0].GetInput("thickness"))
+
+    def test_volume_failures_preserve_layer(self):
+        texture_range = "material texture uses a texture coordinate set the primitive does not have"
+        wrong_type = "KHR_materials_volume has a field of the wrong type"
+        out_of_range = "KHR_materials_volume is out of range"
+        thickness_range = "material thickness factor is non-finite or negative"
+        distance_range = "material attenuation distance is not positive"
+        color_range = "material attenuation color is non-finite or out of range"
+        cases = (
+            ("not an object", [1], "KHR_materials_volume is not an object"),
+            ("factor of the wrong type", {"thicknessFactor": "1"}, wrong_type),
+            ("distance of the wrong type", {"thicknessFactor": 1, "attenuationDistance": [1]}, wrong_type),
+            ("color not an array", {"thicknessFactor": 1, "attenuationColor": 1}, wrong_type),
+            # fastgltf accepts a short color, keeping 1 for the rest.
+            ("short color", {"thicknessFactor": 1, "attenuationColor": [0.5, 0.5]}, wrong_type),
+            ("long color", {"thicknessFactor": 1, "attenuationColor": [0.5, 0.5, 0.5, 0.5]}, wrong_type),
+            ("color of the wrong type", {"thicknessFactor": 1, "attenuationColor": [0.5, "0.5", 0.5]}, wrong_type),
+            ("texture not an object", {"thicknessFactor": 1, "thicknessTexture": 0}, wrong_type),
+            ("texture without an index", {"thicknessFactor": 1, "thicknessTexture": {"texCoord": 0}}, wrong_type),
+            ("factor overflow", {"thicknessFactor": 1e39}, out_of_range),
+            ("distance overflow", {"thicknessFactor": 1, "attenuationDistance": 1e39}, out_of_range),
+            ("color overflow", {"thicknessFactor": 1, "attenuationColor": [1e39, 0, 0]}, out_of_range),
+            ("negative factor", {"thicknessFactor": -0.5}, thickness_range),
+            ("zero distance", {"thicknessFactor": 1, "attenuationDistance": 0}, distance_range),
+            ("negative distance", {"thicknessFactor": 1, "attenuationDistance": -1}, distance_range),
+            ("color above one", {"thicknessFactor": 1, "attenuationColor": [1, 1.5, 1]}, color_range),
+            ("negative color", {"thicknessFactor": 1, "attenuationColor": [1, 1, -0.5]}, color_range),
+            ("missing UV set", {"thicknessFactor": 1, "thicknessTexture": {"index": 0, "texCoord": 1}},
+             texture_range),
+            ("texture out of range", {"thicknessFactor": 1, "thicknessTexture": {"index": 5}},
+             "texture index is out of range|cannot parse"),
+            # Ignoring the extension does not make an invalid value or a missing UV set valid.
+            ("thin missing UV set", {"thicknessTexture": {"index": 0, "texCoord": 1}}, texture_range),
+            ("thin zero distance", {"attenuationDistance": 0}, distance_range),
+            ("unlit negative factor", {"thicknessFactor": -1}, thickness_range),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            for extension in ("gltf", "glb"):
+                path = pathlib.Path(directory) / ("volume." + extension)
+                document, binary = textured_document(extension, None, PNG)
+                document["extensionsUsed"] = ["KHR_materials_transmission", "KHR_materials_volume"]
+                document["materials"][0]["extensions"] = {
+                    "KHR_materials_transmission": {"transmissionFactor": 1},
+                    "KHR_materials_volume": {"thicknessFactor": 0.5},
+                }
+                # The second primitive has one UV set only.
+                document["materials"].append({})
+                document["meshes"][0]["primitives"][1]["material"] = 1
+                write_asset(path, document, binary)
+                stage = Usd.Stage.Open(str(path))
+                layer = stage.GetRootLayer()
+                before = layer_text(layer)
+                mtlx = UsdShade.Shader.Get(stage, "/Asset/mtl/Material_0/mtlx/surface")
+                self.assertAlmostEqual(mtlx.GetInput("thickness").Get(), 0.5, places=6)
+                for case, value, message in cases:
+                    with self.subTest(extension=extension, case=case):
+                        invalid, invalid_binary = textured_document(extension, None, PNG)
+                        invalid["extensionsUsed"] = ["KHR_materials_transmission", "KHR_materials_volume"]
+                        invalid["meshes"][0]["primitives"][1]["material"] = 1
+                        extensions = {"KHR_materials_transmission": {"transmissionFactor": 1},
+                                      "KHR_materials_volume": value}
+                        if case.startswith("unlit"):
+                            invalid["extensionsUsed"].append("KHR_materials_unlit")
+                            extensions["KHR_materials_unlit"] = {}
+                        invalid["materials"].append({"extensions": extensions})
+                        write_asset(path, invalid, invalid_binary)
+                        with self.assertRaisesRegex(Tf.ErrorException, message):
+                            layer.Reload(True)
+                        self.assertEqual(layer_text(layer), before)
+
     def test_animation_outside_selected_scene_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             for extension in ("gltf", "glb"):
