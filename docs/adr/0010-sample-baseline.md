@@ -63,7 +63,9 @@ the inputs that zero both shaders' lighting, and that no fallback texture is aut
 enabled [clearcoat](0017-clearcoat.md), its weight and roughness in Preview, its texture slots in both
 networks, and its normal in MaterialX alone; otherwise, that no clearcoat is authored. For a
 [transmission](0018-transmission.md) above 0, its value and texture slot in MaterialX, and that Preview
-has neither; otherwise, that no transmission is authored.
+has neither; otherwise, that no transmission is authored. For a [volume](0019-volume.md) of a thickness
+above 0 on a transmissive material, its thickness, texture slot and any attenuation in MaterialX, and
+that Preview has none; otherwise, that no volume is authored.
 
 ## Evidence that it can fail
 

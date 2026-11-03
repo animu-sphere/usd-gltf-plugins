@@ -92,9 +92,20 @@ thin, and `thickness` keeps its default of 0. UsdPreviewSurface has no transmiss
 ignores the extension with a warning, and its `opacity` remains glTF's alpha. A factor of 0 and an
 unlit material author nothing. See [ADR 0018](../adr/0018-transmission.md) for how Storm draws it.
 
+## Volume
+
+A `KHR_materials_volume` thickness factor above 0, on a material with a transmission above 0, is
+authored as MaterialX `thickness`, the factor times the G channel of its texture, read as non-color data.
+A given `attenuationDistance` is authored as the uniform `attenuation_distance`, with `attenuationColor`
+as the uniform `attenuation_color`; without one, glTF's infinite default attenuates nothing, and neither
+is authored. These are `gltf_pbr`'s own volume inputs, which its graph does not yet connect, so the
+material is drawn thin, as glTF's fallback is. UsdPreviewSurface has no volume, so its network ignores
+the extension with a warning. A thickness of 0, a material without transmission and an unlit material
+author nothing. See [ADR 0019](../adr/0019-volume.md).
+
 ## Other extensions
 
-Each extension, including volume, sheen and specular,
+Each extension, including sheen and specular,
 requires its own explicit capability entry and tests. Do not silently
 claim complete support for unsupported features. Required extension handling
 is governed by the

@@ -752,6 +752,28 @@ def check_clearcoat(renderer, report):
     qt[2].doneCurrent()
 
 
+# A white dielectric quad, and the green emissive backdrop behind it of the transmission checks.
+TRANSMISSIVE_WHITE = {"baseColorFactor": [1, 1, 1, 1], "metallicFactor": 0, "roughnessFactor": 0.5}
+GREEN_BACKDROP = {**pbr(baseColorFactor=[0, 0, 0, 1], metallicFactor=0), "emissiveFactor": [0, 1, 0]}
+
+
+def render_before_backdrop(renderer, name, path, material, images=(), extensions=("KHR_materials_transmission",)):
+    """Renders a quad of `material` in darkness in front of the green backdrop, and samples the quad."""
+    document = quad_document([material], images)
+    document["extensionsUsed"] = list(extensions)
+    # The same quad again, behind the first and twice its size, so that both meshes have its bounds.
+    document["materials"].append(GREEN_BACKDROP)
+    document["meshes"].append({"primitives": [{**document["meshes"][0]["primitives"][0], "material": 1}]})
+    document["nodes"].append({"mesh": 1, "translation": [-0.5, -0.5, -1], "scale": [2, 2, 1]})
+    document["scenes"][0]["nodes"].append(1)
+    asset = renderer.output / f"{name}.gltf"
+    asset.write_text(json.dumps(document), encoding="utf-8")
+    _, stage = renderer.session(name, asset, path, None)
+    image = engine_image(stage, [], Gf.Vec4f(0, 0, 0, 1))
+    image.save(str(renderer.output / f"{name}_{path}.png"))
+    return Render(f"{name} {path}", image, stage).sample(0)
+
+
 def check_transmission(renderer, report):
     """Renders a white quad in darkness in front of a larger green emissive backdrop. An opaque quad
     is black there. glTF's transmission passes the backdrop through the quad's dielectric part, tinted
@@ -760,24 +782,11 @@ def check_transmission(renderer, report):
     qt = offscreen_context(report, "transmission")
     if not qt:
         return
-    white = {"baseColorFactor": [1, 1, 1, 1], "metallicFactor": 0, "roughnessFactor": 0.5}
-    backdrop = {**pbr(baseColorFactor=[0, 0, 0, 1], metallicFactor=0), "emissiveFactor": [0, 1, 0]}
+    white = TRANSMISSIVE_WHITE
     for path in PATHS:
 
         def render(name, material, images=()):
-            document = quad_document([material], images)
-            document["extensionsUsed"] = ["KHR_materials_transmission"]
-            # The same quad again, behind the first and twice its size, so that both meshes have its bounds.
-            document["materials"].append(backdrop)
-            document["meshes"].append({"primitives": [{**document["meshes"][0]["primitives"][0], "material": 1}]})
-            document["nodes"].append({"mesh": 1, "translation": [-0.5, -0.5, -1], "scale": [2, 2, 1]})
-            document["scenes"][0]["nodes"].append(1)
-            asset = renderer.output / f"transmission_{name}.gltf"
-            asset.write_text(json.dumps(document), encoding="utf-8")
-            _, stage = renderer.session(f"transmission_{name}", asset, path, None)
-            image = engine_image(stage, [], Gf.Vec4f(0, 0, 0, 1))
-            image.save(str(renderer.output / f"transmission_{name}_{path}.png"))
-            return Render(f"transmission_{name} {path}", image, stage).sample(0)
+            return render_before_backdrop(renderer, f"transmission_{name}", path, material, images)
 
         def transmissive(base=white, **transmission):
             return {**pbr(**base), "extensions": {"KHR_materials_transmission": transmission}}
@@ -809,6 +818,34 @@ def check_transmission(renderer, report):
     qt[2].doneCurrent()
 
 
+def check_volume(renderer, report):
+    """Renders the transmission check's white quad, fully transmissive, with a volume. glTF would
+    refract the backdrop through a thick quad, and a red attenuation would absorb its green. MaterialX
+    gltf_pbr 1.39 connects none of its volume inputs, and Storm draws its transmission as transparency,
+    so in each path every volume is expected to look like the thin quad: the authored inputs and the
+    thickness image do not break the material."""
+    qt = offscreen_context(report, "volume")
+    if not qt:
+        return
+    extensions = ("KHR_materials_transmission", "KHR_materials_volume")
+    for path in PATHS:
+
+        def render(name, volume, images=()):
+            material = {**pbr(**TRANSMISSIVE_WHITE), "extensions": {
+                "KHR_materials_transmission": {"transmissionFactor": 1}, "KHR_materials_volume": volume}}
+            return render_before_backdrop(renderer, f"volume_{name}", path, material, images, extensions)
+
+        thin = render("thin", {})
+        report.same(f"{path} a thickness of 1 draws as thin", render("thick", {"thicknessFactor": 1}), thin)
+        report.same(f"{path} a red attenuation draws as thin",
+                    render("red", {"thicknessFactor": 1, "attenuationDistance": 0.1,
+                                   "attenuationColor": [1, 0, 0]}), thin)
+        report.same(f"{path} a thickness image draws as thin",
+                    render("image", {"thicknessFactor": 1, "thicknessTexture": {"index": 0}},
+                           [(188, 188, 188, 255)]), thin)
+    qt[2].doneCurrent()
+
+
 def compare_paths(report, name, renders, samples, tolerance):
     if not all(renders.values()):
         return
@@ -833,8 +870,8 @@ def main():
     report = Report(arguments.verbose)
     renderer = Renderer(output, plugin, report)
     for check in (check_reflections, check_lights, check_unlit, check_ior, check_clearcoat, check_transmission,
-                  check_alpha_modes, check_base_color_textures, check_pbr_textures, check_normal_textures,
-                  check_texture_transforms, check_ktx2_textures, check_measurements):
+                  check_volume, check_alpha_modes, check_base_color_textures, check_pbr_textures,
+                  check_normal_textures, check_texture_transforms, check_ktx2_textures, check_measurements):
         print(check.__name__.removeprefix("check_"), flush=True)
         check(renderer, report)
 
