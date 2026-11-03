@@ -3116,6 +3116,224 @@ class FileFormatTest(unittest.TestCase):
                         self.assertEqual(layer_text(layer), before)
                         self.assertTrue(UsdShade.Material.Get(stage, "/Asset/mtl/Material_0"))
 
+    def test_unlit_materials(self):
+        def connected(shader, name):
+            return UsdShade.Shader(shader.GetInput(name).GetConnectedSource()[0].GetPrim())
+
+        with tempfile.TemporaryDirectory() as directory:
+            for extension in ("gltf", "glb"):
+                for mode, required in (("OPAQUE", False), ("MASK", True), ("BLEND", False)):
+                    with self.subTest(extension=extension, mode=mode, required=required):
+                        path = pathlib.Path(directory) / f"unlit_{mode}.{extension}"
+                        document, binary = mesh_document(extension)
+                        document["extensionsUsed"] = ["KHR_materials_unlit"]
+                        if required:
+                            document["extensionsRequired"] = ["KHR_materials_unlit"]
+                        document["meshes"][0]["primitives"][0]["material"] = 0
+                        document["meshes"][0]["primitives"][1]["material"] = 1
+                        # The fallback properties, which glTF recommends for clients without the extension.
+                        lit = {
+                            "pbrMetallicRoughness": {
+                                "baseColorFactor": [0.2, 0.4, 0.6, 0.25],
+                                "metallicFactor": 0.3,
+                                "roughnessFactor": 0.7,
+                            },
+                            "emissiveFactor": [0.1, 0.2, 0.3],
+                            "alphaMode": mode,
+                            "alphaCutoff": 0.375,
+                            "doubleSided": True,
+                        }
+                        document["materials"] = [{**lit, "extensions": {"KHR_materials_unlit": {}}}, lit]
+                        write_asset(path, document, binary)
+                        result = subprocess.run(
+                            [sys.executable, "-c",
+                             "from pxr import Usd; import sys; assert Usd.Stage.Open(sys.argv[1])", str(path)],
+                            capture_output=True, text=True, check=False,
+                        )
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertNotIn("KHR_materials_unlit", result.stderr)
+
+                        stage = Usd.Stage.Open(str(path))
+                        material = UsdShade.Material.Get(stage, "/Asset/mtl/Material_0")
+                        preview = UsdShade.Shader.Get(stage, "/Asset/mtl/Material_0/preview/surface")
+                        mtlx = UsdShade.Shader.Get(stage, "/Asset/mtl/Material_0/mtlx/surface")
+                        self.assert_material_nodegraphs(material, preview, mtlx)
+                        self.assertEqual(preview.GetIdAttr().Get(), "UsdPreviewSurface")
+                        self.assertEqual(mtlx.GetIdAttr().Get(), "ND_gltf_pbr_surfaceshader")
+                        base = Gf.Vec3f(0.2, 0.4, 0.6)
+                        # The base color is emitted, and nothing is reflected.
+                        self.assertEqual(preview.GetInput("diffuseColor").Get(), Gf.Vec3f(0))
+                        self.assertEqual(preview.GetInput("metallic").Get(), 1)
+                        self.assertEqual(preview.GetInput("roughness").Get(), 1)
+                        self.assertTrue(Gf.IsClose(preview.GetInput("emissiveColor").Get(), base, 1e-6))
+                        self.assertFalse(preview.GetInput("useSpecularWorkflow"))
+                        self.assertEqual(mtlx.GetInput("base_color").Get(), Gf.Vec3f(0))
+                        self.assertEqual(mtlx.GetInput("metallic").Get(), 0)
+                        self.assertEqual(mtlx.GetInput("specular").Get(), 0)
+                        self.assertTrue(Gf.IsClose(mtlx.GetInput("emissive").Get(), base, 1e-6))
+                        self.assertFalse(mtlx.GetInput("emissive_strength"))
+                        # Alpha coverage still applies.
+                        self.assertEqual(mtlx.GetInput("alpha_mode").Get(), {"OPAQUE": 0, "MASK": 1, "BLEND": 2}[mode])
+                        if mode == "OPAQUE":
+                            self.assertFalse(preview.GetInput("opacity"))
+                            self.assertFalse(mtlx.GetInput("alpha"))
+                        else:
+                            self.assertAlmostEqual(preview.GetInput("opacity").Get(), 0.25, places=6)
+                            self.assertAlmostEqual(mtlx.GetInput("alpha").Get(), 0.25, places=6)
+                        if mode == "MASK":
+                            self.assertAlmostEqual(preview.GetInput("opacityThreshold").Get(), 0.375, places=6)
+                            self.assertAlmostEqual(mtlx.GetInput("alpha_cutoff").Get(), 0.375, places=6)
+                        mesh = UsdGeom.Mesh.Get(stage, "/Asset/geo/Node_0/Mesh_0/Primitive_0")
+                        bound, _ = UsdShade.MaterialBindingAPI(mesh).ComputeBoundMaterial()
+                        self.assertEqual(bound.GetPath(), material.GetPath())
+                        self.assertTrue(mesh.GetDoubleSidedAttr().Get())
+
+                        # The same properties without the extension stay lit.
+                        lit_preview = UsdShade.Shader.Get(stage, "/Asset/mtl/Material_1/preview/surface")
+                        lit_mtlx = UsdShade.Shader.Get(stage, "/Asset/mtl/Material_1/mtlx/surface")
+                        self.assertTrue(Gf.IsClose(lit_preview.GetInput("diffuseColor").Get(), base, 1e-6))
+                        self.assertTrue(Gf.IsClose(lit_preview.GetInput("emissiveColor").Get(),
+                                                   Gf.Vec3f(0.1, 0.2, 0.3), 1e-6))
+                        self.assertFalse(lit_mtlx.GetInput("specular"))
+                        self.assertTrue(Gf.IsClose(lit_mtlx.GetInput("base_color").Get(), base, 1e-6))
+
+    def test_unlit_textures_and_vertex_colors(self):
+        def source_of(shader, name):
+            connection = shader.GetInput(name).GetConnectedSource()
+            return UsdShade.Shader(connection[0].GetPrim()) if connection else None
+
+        unlit = {"KHR_materials_unlit": {}}
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            for extension in ("gltf", "glb"):
+                with self.subTest(extension=extension, case="texture"):
+                    path = root / ("texture." + extension)
+                    document, binary = textured_document(extension, None, PNG)
+                    document["extensionsUsed"] = ["KHR_materials_unlit"]
+                    # Fallback textures are never read, so a damaged one does not matter.
+                    document["images"].append({"uri": "data:image/png;base64,AA=="})
+                    document["textures"].append({"source": 1})
+                    fallback = {"index": 1}
+                    material = document["materials"][0]
+                    material["pbrMetallicRoughness"].update(baseColorFactor=[0.5, 0.25, 1, 0.5],
+                                                            metallicRoughnessTexture=fallback)
+                    material.update(alphaMode="BLEND", normalTexture=fallback, occlusionTexture=fallback,
+                                    emissiveTexture=fallback, emissiveFactor=[1, 1, 1], extensions=unlit)
+                    write_asset(path, document, binary)
+                    stage = Usd.Stage.Open(str(path))
+                    usd_material = UsdShade.Material.Get(stage, "/Asset/mtl/Material_0")
+
+                    preview, _, _ = usd_material.ComputeSurfaceSource()
+                    texture = source_of(preview, "emissiveColor")
+                    self.assertEqual(texture.GetPath().name, "baseColorTexture")
+                    self.assertEqual(texture.GetInput("sourceColorSpace").Get(), "sRGB")
+                    self.assertEqual(texture.GetInput("scale").Get(), Gf.Vec4f(0.5, 0.25, 1, 0.5))
+                    self.assertEqual(source_of(preview, "opacity").GetPath(), texture.GetPath())
+                    self.assertIsNone(source_of(preview, "diffuseColor"))
+                    self.assertEqual(preview.GetInput("diffuseColor").Get(), Gf.Vec3f(0))
+                    for name in ("metallic", "roughness"):
+                        self.assertIsNone(source_of(preview, name))
+                    for name in ("normal", "occlusion"):
+                        self.assertFalse(preview.GetInput(name))
+
+                    mtlx, _, _ = usd_material.ComputeSurfaceSource("mtlx")
+                    factor = source_of(mtlx, "emissive")
+                    self.assertEqual(factor.GetPath().name, "baseColorFactor")
+                    self.assertEqual(factor.GetInput("in2").Get(), Gf.Vec3f(0.5, 0.25, 1))
+                    self.assertEqual(source_of(factor, "in1").GetPath().name, "baseColorRgb")
+                    alpha = source_of(mtlx, "alpha")
+                    self.assertEqual(alpha.GetPath().name, "alphaFactor")
+                    self.assertEqual(source_of(alpha, "in1").GetPath().name, "baseColorA")
+                    self.assertIsNone(source_of(mtlx, "base_color"))
+                    self.assertEqual(mtlx.GetInput("base_color").Get(), Gf.Vec3f(0))
+                    for name in ("metallic", "roughness"):
+                        self.assertIsNone(source_of(mtlx, name))
+                    for name in ("normal", "occlusion"):
+                        self.assertFalse(mtlx.GetInput(name))
+
+                    names = {prim.GetName() for prim in Usd.PrimRange(usd_material.GetPrim())}
+                    for slot in ("metallicRoughness", "normal", "occlusion", "emissive"):
+                        self.assertFalse({name for name in names if name.startswith(slot)}, slot)
+
+                with self.subTest(extension=extension, case="vertex colors"):
+                    path = root / ("colors." + extension)
+                    document, binary = color_document(extension, 5126, 4)
+                    document["extensionsUsed"] = ["KHR_materials_unlit"]
+                    primitives = document["meshes"][0]["primitives"]
+                    primitives[0]["material"] = 0
+                    primitives[1]["material"] = 0
+                    del primitives[1]["attributes"]["COLOR_0"]
+                    document["materials"] = [{
+                        "alphaMode": "BLEND",
+                        "pbrMetallicRoughness": {"baseColorFactor": [0.5, 0.25, 1, 0.5]},
+                        "extensions": unlit,
+                    }]
+                    write_asset(path, document, binary)
+                    stage = Usd.Stage.Open(str(path))
+                    usd_material = UsdShade.Material.Get(stage, "/Asset/mtl/Material_0_VertexColor")
+                    preview, _, _ = usd_material.ComputeSurfaceSource()
+                    reader = source_of(preview, "emissiveColor")
+                    self.assertEqual(reader.GetIdAttr().Get(), "UsdPrimvarReader_float3")
+                    self.assertEqual(reader.GetInput("varname").Get(), "gltf_previewBaseColor")
+                    self.assertEqual(source_of(preview, "opacity").GetInput("varname").Get(), "gltf_previewAlpha")
+                    self.assertEqual(preview.GetInput("diffuseColor").Get(), Gf.Vec3f(0))
+                    mesh = stage.GetPrimAtPath("/Asset/geo/Node_0/Mesh_0/Primitive_0")
+                    products = UsdGeom.PrimvarsAPI(mesh).GetPrimvar("gltf_previewBaseColor").Get()
+                    self.assertTrue(Gf.IsClose(products[1], Gf.Vec3f(0.5, 0, 1), 1e-6))
+
+                    mtlx, _, _ = usd_material.ComputeSurfaceSource("mtlx")
+                    factor = source_of(mtlx, "emissive")
+                    self.assertEqual(factor.GetPath().name, "baseColorFactor")
+                    self.assertEqual(source_of(factor, "in1").GetInput("geomprop").Get(), "displayColor")
+                    self.assertEqual(mtlx.GetInput("base_color").Get(), Gf.Vec3f(0))
+
+                    plain = UsdShade.Material.Get(stage, "/Asset/mtl/Material_0")
+                    plain_preview, _, _ = plain.ComputeSurfaceSource()
+                    self.assertTrue(Gf.IsClose(plain_preview.GetInput("emissiveColor").Get(),
+                                               Gf.Vec3f(0.5, 0.25, 1), 1e-6))
+                    self.assertIsNone(source_of(plain_preview, "emissiveColor"))
+
+    def test_unlit_failures_preserve_layer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for extension in ("gltf", "glb"):
+                path = pathlib.Path(directory) / ("unlit." + extension)
+                document, binary = mesh_document(extension)
+                document["extensionsUsed"] = ["KHR_materials_unlit"]
+                document["materials"] = [{"extensions": {"KHR_materials_unlit": {}}}]
+                document["meshes"][0]["primitives"][0]["material"] = 0
+                write_asset(path, document, binary)
+                stage = Usd.Stage.Open(str(path))
+                layer = stage.GetRootLayer()
+                before = layer_text(layer)
+                self.assertEqual(UsdShade.Shader.Get(stage, "/Asset/mtl/Material_0/preview/surface")
+                                 .GetInput("emissiveColor").Get(), Gf.Vec3f(1))
+                for case in ("not an object", "base color", "fallback factor", "fallback UV set"):
+                    with self.subTest(extension=extension, case=case):
+                        invalid, invalid_binary = mesh_document(extension)
+                        invalid["extensionsUsed"] = ["KHR_materials_unlit"]
+                        invalid["meshes"][0]["primitives"][0]["material"] = 0
+                        material = {"extensions": {"KHR_materials_unlit": {}}}
+                        invalid["materials"] = [material]
+                        if case == "not an object":
+                            material["extensions"]["KHR_materials_unlit"] = True
+                            message = "KHR_materials_unlit is not an object"
+                        elif case == "base color":
+                            material["pbrMetallicRoughness"] = {"baseColorFactor": [1, 1, 1.5, 1]}
+                            message = "material base color factor is non-finite or out of range"
+                        elif case == "fallback factor":
+                            # Ignoring a property does not make an invalid value valid.
+                            material["pbrMetallicRoughness"] = {"metallicFactor": 2}
+                            message = "material metallic or roughness factor is non-finite or out of range"
+                        else:
+                            invalid["images"] = [{"uri": "data:image/png;base64,AA=="}]
+                            invalid["textures"] = [{"source": 0}]
+                            material["normalTexture"] = {"index": 0}
+                            message = "texture coordinate set the primitive does not have"
+                        write_asset(path, invalid, invalid_binary)
+                        with self.assertRaisesRegex(Tf.ErrorException, message):
+                            layer.Reload(True)
+                        self.assertEqual(layer_text(layer), before)
+
     def test_animation_outside_selected_scene_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             for extension in ("gltf", "glb"):

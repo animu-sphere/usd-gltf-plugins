@@ -54,8 +54,19 @@ without another flip. `KHR_texture_transform` applies between the reader and the
 [ADR 0011](../adr/0011-texture-transform.md). Document observed differences from glTF shading and
 renderer-specific limitations.
 
-Each extension, including clearcoat, transmission, ior, sheen, specular and
-unlit, requires its own explicit capability entry and tests. Do not silently
+## Unlit materials
+
+A `KHR_materials_unlit` material emits its base color term, the same graph of factor, texture and
+vertex color, through UsdPreviewSurface `emissiveColor` and MaterialX `emissive`, and zeroes what a
+light would add: Preview is a black metal of roughness 1, and `gltf_pbr` a black dielectric with
+`specular` 0. Alpha, its mode and cutoff, and `doubleSided` apply as to any material. The fallback
+metallic-roughness, normal, occlusion and emissive properties are not authored. See
+[ADR 0015](../adr/0015-unlit.md).
+
+## Other extensions
+
+Each extension, including clearcoat, transmission, ior, sheen and specular,
+requires its own explicit capability entry and tests. Do not silently
 claim complete support for unsupported features. Required extension handling
 is governed by the
 [import pipeline](../architecture/IMPORT_PIPELINE.md).

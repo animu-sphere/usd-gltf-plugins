@@ -160,6 +160,32 @@ hasMalformedLight(const std::byte* bytes, std::size_t size)
     return false;
 }
 
+// fastgltf rejects such a material without saying why.
+bool
+hasMalformedUnlit(const std::byte* bytes, std::size_t size)
+{
+    const auto json = jsonOf(bytes, size);
+    simdjson::dom::parser parser;
+    simdjson::dom::element root;
+    simdjson::dom::array materials;
+    if (parser.parse(json.data(), json.size()).get(root) != simdjson::SUCCESS ||
+        root["materials"].get_array().get(materials) != simdjson::SUCCESS)
+    {
+        return false;
+    }
+    for (const auto material : materials)
+    {
+        simdjson::dom::element unlit;
+        if (material["extensions"][fastgltf::extensions::KHR_materials_unlit].get(unlit) ==
+                simdjson::SUCCESS &&
+            !unlit.is_object())
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
 } // namespace
 
 bool
@@ -167,6 +193,7 @@ IsImplementedExtension(std::string_view extension)
 {
     return extension == fastgltf::extensions::EXT_texture_webp ||
            extension == fastgltf::extensions::KHR_lights_punctual ||
+           extension == fastgltf::extensions::KHR_materials_unlit ||
            extension == fastgltf::extensions::KHR_mesh_quantization ||
            extension == fastgltf::extensions::KHR_texture_basisu ||
            extension == fastgltf::extensions::KHR_texture_transform;
@@ -183,8 +210,8 @@ Parse(const std::byte* bytes, std::size_t size, std::string& error)
     }
     fastgltf::Parser parser(
         fastgltf::Extensions::EXT_texture_webp | fastgltf::Extensions::KHR_lights_punctual |
-        fastgltf::Extensions::KHR_mesh_quantization | fastgltf::Extensions::KHR_texture_basisu |
-        fastgltf::Extensions::KHR_texture_transform);
+        fastgltf::Extensions::KHR_materials_unlit | fastgltf::Extensions::KHR_mesh_quantization |
+        fastgltf::Extensions::KHR_texture_basisu | fastgltf::Extensions::KHR_texture_transform);
     auto asset = parser.loadGltf(data.get(), {}, fastgltf::Options::None);
     auto result = asset.error();
     if (result == fastgltf::Error::None &&
@@ -212,6 +239,10 @@ Parse(const std::byte* bytes, std::size_t size, std::string& error)
         result == fastgltf::Error::UnknownRequiredExtension)
     {
         error = describeRequiredExtensions(bytes, size);
+    }
+    if (result == fastgltf::Error::InvalidGltf && hasMalformedUnlit(bytes, size))
+    {
+        error = "KHR_materials_unlit is not an object";
     }
     if (error.empty())
     {

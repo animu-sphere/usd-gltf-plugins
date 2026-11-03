@@ -66,6 +66,8 @@ struct PbrFactors
     float occlusionStrength;
     float normalScale;
     fastgltf::AlphaMode alphaMode;
+    // KHR_materials_unlit: the base color, with its alpha, is the whole result.
+    bool unlit;
 };
 
 PbrFactors
@@ -80,7 +82,21 @@ pbrFactors(const fastgltf::Material& source)
             float(pbr.roughnessFactor),
             source.occlusionTexture ? float(source.occlusionTexture->strength) : 1.0f,
             source.normalTexture ? float(source.normalTexture->scale) : 1.0f,
-            source.alphaMode};
+            source.alphaMode,
+            source.unlit};
+}
+
+// Neither shader has an unlit mode, so an unlit material emits its base color and reflects nothing.
+const char*
+previewColorInput(const PbrFactors& factors)
+{
+    return factors.unlit ? "emissiveColor" : "diffuseColor";
+}
+
+const char*
+mtlxColorInput(const PbrFactors& factors)
+{
+    return factors.unlit ? "emissive" : "base_color";
 }
 
 // A UsdPreviewSurface threshold of 0 means no masking, whereas every fragment of
@@ -131,7 +147,7 @@ connectPreviewVertexColor(const UsdShadeNodeGraph& graph, UsdShadeShader& surfac
     const auto color = authorPrimvarReader(graph, "displayColorReader", "UsdPrimvarReader_float3",
                                            "varname", previewColorPrimvar(factors), "fallback",
                                            SdfValueTypeNames->Float3, factors.baseColor, "result");
-    if (!color || !surface.GetInput(TfToken("diffuseColor")).ConnectToSource(color))
+    if (!color || !surface.GetInput(TfToken(previewColorInput(factors))).ConnectToSource(color))
     {
         return false;
     }
@@ -272,7 +288,8 @@ connectPreviewBaseColor(const UsdShadeNodeGraph& graph, UsdShadeShader& surface,
         graph, "baseColorTexture", texture, "sRGB",
         GfVec4f(factors.baseColor[0], factors.baseColor[1], factors.baseColor[2], factors.alpha));
     return image &&
-           connectPreviewOutput(image, "rgb", SdfValueTypeNames->Float3, surface, "diffuseColor") &&
+           connectPreviewOutput(image, "rgb", SdfValueTypeNames->Float3, surface,
+                                previewColorInput(factors)) &&
            (!previewUsesOpacity(factors) ||
             connectPreviewOutput(image, "a", SdfValueTypeNames->Float, surface, "opacity"));
 }
@@ -539,7 +556,7 @@ connectMtlxInputs(const UsdShadeNodeGraph& graph, UsdShadeShader& surface,
             }
         }
     }
-    return connectMtlxInput(graph, surface, "base_color", imageColor, vertexColorValue,
+    return connectMtlxInput(graph, surface, mtlxColorInput(factors), imageColor, vertexColorValue,
                             "baseColorVertex", "baseColorFactor", "ND_multiply_color3",
                             SdfValueTypeNames->Color3f, factors.baseColor) &&
            connectMtlxInput(graph, surface, "alpha", imageAlpha, vertexAlpha, "alphaVertex",
@@ -653,11 +670,17 @@ authorPreview(const UsdShadeMaterial& material, const PbrFactors& factors, bool 
     }
     auto surface = UsdShadeShader::Define(stage, graph.GetPath().AppendChild(TfToken("surface")));
     const bool opacity = previewUsesOpacity(factors);
+    // A black metal has no diffuse term, and its specular color is black at every angle.
+    const bool unlit = factors.unlit;
     return surface && surface.CreateIdAttr().Set(TfToken("UsdPreviewSurface")) &&
-           setInput(surface, "diffuseColor", SdfValueTypeNames->Color3f, factors.baseColor) &&
-           setInput(surface, "metallic", SdfValueTypeNames->Float, factors.metallic) &&
-           setInput(surface, "roughness", SdfValueTypeNames->Float, factors.roughness) &&
-           setInput(surface, "emissiveColor", SdfValueTypeNames->Color3f, factors.emissive) &&
+           setInput(surface, "diffuseColor", SdfValueTypeNames->Color3f,
+                    unlit ? GfVec3f(0) : factors.baseColor) &&
+           setInput(surface, "metallic", SdfValueTypeNames->Float,
+                    unlit ? 1.0f : factors.metallic) &&
+           setInput(surface, "roughness", SdfValueTypeNames->Float,
+                    unlit ? 1.0f : factors.roughness) &&
+           setInput(surface, "emissiveColor", SdfValueTypeNames->Color3f,
+                    unlit ? factors.baseColor : factors.emissive) &&
            (!opacity || setInput(surface, "opacity", SdfValueTypeNames->Float, factors.alpha)) &&
            (!opacity || factors.alphaMode != fastgltf::AlphaMode::Mask ||
             setInput(surface, "opacityThreshold", SdfValueTypeNames->Float, factors.alphaCutoff)) &&
@@ -686,12 +709,18 @@ authorMtlx(const UsdShadeMaterial& material, const PbrFactors& factors, bool ver
     }
     const bool opaque = factors.alphaMode == fastgltf::AlphaMode::Opaque;
     const bool mask = factors.alphaMode == fastgltf::AlphaMode::Mask;
+    // A dielectric's specular input scales both its F0 and F90, so 0 removes its reflection.
+    const bool unlit = factors.unlit;
     const auto alphaMode = surface.CreateInput(TfToken("alpha_mode"), SdfValueTypeNames->Int);
     return surface.CreateIdAttr().Set(TfToken("ND_gltf_pbr_surfaceshader")) &&
-           setInput(surface, "base_color", SdfValueTypeNames->Color3f, factors.baseColor) &&
-           setInput(surface, "metallic", SdfValueTypeNames->Float, factors.metallic) &&
+           setInput(surface, "base_color", SdfValueTypeNames->Color3f,
+                    unlit ? GfVec3f(0) : factors.baseColor) &&
+           setInput(surface, "metallic", SdfValueTypeNames->Float,
+                    unlit ? 0.0f : factors.metallic) &&
            setInput(surface, "roughness", SdfValueTypeNames->Float, factors.roughness) &&
-           setInput(surface, "emissive", SdfValueTypeNames->Color3f, factors.emissive) &&
+           (!unlit || setInput(surface, "specular", SdfValueTypeNames->Float, 0.0f)) &&
+           setInput(surface, "emissive", SdfValueTypeNames->Color3f,
+                    unlit ? factors.baseColor : factors.emissive) &&
            alphaMode && alphaMode.GetAttr().SetVariability(SdfVariabilityUniform) &&
            alphaMode.Set(opaque ? 0 : (mask ? 1 : 2)) &&
            (opaque || setInput(surface, "alpha", SdfValueTypeNames->Float, factors.alpha)) &&
@@ -941,12 +970,13 @@ MaterialAuthor::Bind(std::size_t index, std::size_t uvSetCount, const pxr::VtVec
             return !info || resolveTexture(_asset, *info, _sourcePath, _loadBuffer,
                                            texture.emplace(), error);
         };
+        // KHR_materials_unlit defines every other texture as a fallback for clients without it.
         MaterialTextures textures;
         if (!resolve(pbr.baseColorTexture, textures.baseColor) ||
-            !resolve(pbr.metallicRoughnessTexture, textures.metallicRoughness) ||
-            !resolve(source.normalTexture, textures.normal) ||
-            !resolve(source.occlusionTexture, textures.occlusion) ||
-            !resolve(source.emissiveTexture, textures.emissive))
+            (!source.unlit && (!resolve(pbr.metallicRoughnessTexture, textures.metallicRoughness) ||
+                               !resolve(source.normalTexture, textures.normal) ||
+                               !resolve(source.occlusionTexture, textures.occlusion) ||
+                               !resolve(source.emissiveTexture, textures.emissive))))
         {
             return false;
         }

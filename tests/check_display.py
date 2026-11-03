@@ -608,6 +608,51 @@ def check_lights(renderer, report):
     qt[2].doneCurrent()
 
 
+def check_unlit(renderer, report):
+    """Renders a quad of KHR_materials_unlit, which glTF says shows its base color however it is lit,
+    in darkness and under a light, without usdview's light at the camera."""
+    qt = offscreen_context(report, "unlit")
+    if not qt:
+        return
+
+    def unlit(material):
+        return {**material, "extensions": {"KHR_materials_unlit": {}}}
+
+    for path in PATHS:
+
+        def render(name, material, images=(), light=None):
+            document = quad_document([material], images)
+            document["extensionsUsed"] = ["KHR_materials_unlit"]
+            if light:
+                document["extensionsUsed"].append("KHR_lights_punctual")
+                document["extensions"] = {"KHR_lights_punctual": {"lights": [light]}}
+                document["nodes"].append({"translation": [0.5, 0.5, 1],
+                                          "extensions": {"KHR_lights_punctual": {"light": 0}}})
+                document["scenes"][0]["nodes"].append(1)
+            asset = renderer.output / f"unlit_{name}.gltf"
+            asset.write_text(json.dumps(document), encoding="utf-8")
+            _, stage = renderer.session(f"unlit_{name}", asset, path, None)
+            image = engine_image(stage, [], Gf.Vec4f(0, 0, 0, 1))
+            image.save(str(renderer.output / f"unlit_{name}_{path}.png"))
+            return Render(f"unlit_{name} {path}", image, stage).sample(0)
+
+        half = pbr(baseColorFactor=[0.5, 0.5, 0.5, 1])
+        dark = render("dark", unlit(half))
+        # Without gamma correction, a pixel is the linear value.
+        report.same(f"{path} an unlit quad shows its base color without a light", dark, (128, 128, 128, 255))
+        report.same(f"{path} a light does not change an unlit quad",
+                    render("lit", unlit(half), light={"type": "point", "intensity": ILLUMINANCE * 4}), dark)
+        # The fallback properties would make a lit quad red, mirror-like and bumped.
+        fallback = {**pbr(baseColorFactor=[0.5, 0.5, 0.5, 1], metallicFactor=1, roughnessFactor=0),
+                    "emissiveFactor": [1, 0, 0], "normalTexture": {"index": 0}, "occlusionTexture": {"index": 0}}
+        report.same(f"{path} an unlit quad ignores its fallback properties",
+                    render("fallback", unlit(fallback), [(218, 128, 218, 255)]), dark)
+        image = render("image", unlit(pbr(baseColorTexture={"index": 0})), [(188, 188, 188, 255)])
+        report.same(f"{path} an unlit base color image reads as sRGB", image,
+                    render("srgb", unlit(pbr(baseColorFactor=[SRGB, SRGB, SRGB, 1]))))
+    qt[2].doneCurrent()
+
+
 def compare_paths(report, name, renders, samples, tolerance):
     if not all(renders.values()):
         return
@@ -631,7 +676,7 @@ def main():
 
     report = Report(arguments.verbose)
     renderer = Renderer(output, plugin, report)
-    for check in (check_reflections, check_lights, check_alpha_modes, check_base_color_textures,
+    for check in (check_reflections, check_lights, check_unlit, check_alpha_modes, check_base_color_textures,
                   check_pbr_textures, check_normal_textures, check_texture_transforms, check_ktx2_textures,
                   check_measurements):
         print(check.__name__.removeprefix("check_"), flush=True)
