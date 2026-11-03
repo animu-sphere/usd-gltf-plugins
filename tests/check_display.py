@@ -653,6 +653,47 @@ def check_unlit(renderer, report):
     qt[2].doneCurrent()
 
 
+def check_ior(renderer, report):
+    """Renders a black dielectric quad under a point light between it and the camera, where the
+    light, view and normal agree at the quad's center, so that its reflection there is F0 times the
+    same specular lobe. glTF's F0 is ((ior - 1) / (ior + 1))^2: 0 at an ior of 1, 0.04 at 1.5,
+    0.111 at 2, and 1 at 0, which also makes F90 1, as a white metal's are."""
+    qt = offscreen_context(report, "ior")
+    if not qt:
+        return
+    black = {"baseColorFactor": [0, 0, 0, 1], "metallicFactor": 0, "roughnessFactor": 0.5}
+    for path in PATHS:
+
+        def render(name, material):
+            document = quad_document([material])
+            document["extensionsUsed"] = ["KHR_lights_punctual", "KHR_materials_ior"]
+            document["extensions"] = {"KHR_lights_punctual": {"lights": [
+                {"type": "point", "intensity": ILLUMINANCE * 4}]}}
+            document["nodes"].append({"translation": [0.5, 0.5, 1],
+                                      "extensions": {"KHR_lights_punctual": {"light": 0}}})
+            document["scenes"][0]["nodes"].append(1)
+            asset = renderer.output / f"ior_{name}.gltf"
+            asset.write_text(json.dumps(document), encoding="utf-8")
+            _, stage = renderer.session(f"ior_{name}", asset, path, None)
+            image = engine_image(stage, [], Gf.Vec4f(0, 0, 0, 1))
+            image.save(str(renderer.output / f"ior_{name}_{path}.png"))
+            return Render(f"ior_{name} {path}", image, stage).sample(0)
+
+        def ior(value):
+            return {**pbr(**black), "extensions": {"KHR_materials_ior": {"ior": value}}}
+
+        default = render("default", pbr(**black))
+        report.same(f"{path} an ior of 1.5 is the default", render("explicit", ior(1.5)), default)
+        report.same(f"{path} an ior of 1 reflects nothing toward the light", render("one", ior(1)), (0, 0, 0, 255))
+        report.different(f"{path} the default ior reflects the light", default, (0, 0, 0, 255))
+        larger = render("two", ior(2))
+        report.expect(f"{path} an ior of 2 reflects more than 1.5", min(larger[:3]) > max(default[:3]) + DIFFERENT,
+                      f"{larger} and {default}")
+        report.same(f"{path} an ior of 0 reflects as a white metal", render("infinite", ior(0)),
+                    render("metal", pbr(baseColorFactor=[1, 1, 1, 1], metallicFactor=1, roughnessFactor=0.5)))
+    qt[2].doneCurrent()
+
+
 def compare_paths(report, name, renders, samples, tolerance):
     if not all(renders.values()):
         return
@@ -676,7 +717,7 @@ def main():
 
     report = Report(arguments.verbose)
     renderer = Renderer(output, plugin, report)
-    for check in (check_reflections, check_lights, check_unlit, check_alpha_modes, check_base_color_textures,
+    for check in (check_reflections, check_lights, check_unlit, check_ior, check_alpha_modes, check_base_color_textures,
                   check_pbr_textures, check_normal_textures, check_texture_transforms, check_ktx2_textures,
                   check_measurements):
         print(check.__name__.removeprefix("check_"), flush=True)

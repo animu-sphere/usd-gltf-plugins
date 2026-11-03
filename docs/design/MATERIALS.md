@@ -63,9 +63,17 @@ light would add: Preview is a black metal of roughness 1, and `gltf_pbr` a black
 metallic-roughness, normal, occlusion and emissive properties are not authored. See
 [ADR 0015](../adr/0015-unlit.md).
 
+## Index of refraction
+
+A `KHR_materials_ior` value other than 1.5 is authored as the `ior` input of both UsdPreviewSurface and
+`gltf_pbr`, uniform in the latter, whose dielectric F0 is `((ior - 1) / (ior + 1))^2` as in glTF. It
+does not change metallic, roughness, `specular` or any other input. An ior of 0, whose Fresnel term is
+1 at every angle, is authored as 1000000, and a value below 1 other than 0 fails. An unlit material
+authors none. See [ADR 0016](../adr/0016-ior.md).
+
 ## Other extensions
 
-Each extension, including clearcoat, transmission, ior, sheen and specular,
+Each extension, including clearcoat, transmission, sheen and specular,
 requires its own explicit capability entry and tests. Do not silently
 claim complete support for unsupported features. Required extension handling
 is governed by the

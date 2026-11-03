@@ -44,6 +44,7 @@ available when the decision was made; they are not progress reports:
 - [0013: Lights](adr/0013-lights.md)
 - [0014: WebP decoder](adr/0014-webp-decoder.md)
 - [0015: Unlit materials](adr/0015-unlit.md)
+- [0016: Index of refraction](adr/0016-ior.md)
 
 New decisions go in `docs/adr/NNNN-title.md`.
 
