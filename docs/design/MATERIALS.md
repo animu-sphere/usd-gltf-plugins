@@ -71,9 +71,21 @@ does not change metallic, roughness, `specular` or any other input. An ior of 0,
 1 at every angle, is authored as 1000000, and a value below 1 other than 0 fails. An unlit material
 authors none. See [ADR 0016](../adr/0016-ior.md).
 
+## Clearcoat
+
+A `KHR_materials_clearcoat` layer with a factor above 0 is authored as UsdPreviewSurface `clearcoat`
+and `clearcoatRoughness`, and MaterialX `clearcoat`, `clearcoat_roughness` and `clearcoat_normal`. Its
+weight is the factor times the R channel of its texture, and its roughness the factor times the G
+channel of its own, read as non-color data like metallic and roughness; both roughness inputs are
+always authored, because Preview's default is 0.01. `clearcoatNormalTexture` is a normal map on
+`clearcoat_normal` only: Preview has no clearcoat normal, so its coat follows the base normal and the
+texture is ignored with a warning. Without that texture, `gltf_pbr`'s coat uses the geometric normal,
+as glTF's does. A factor of 0 and an unlit material author nothing. See
+[ADR 0017](../adr/0017-clearcoat.md) for how each shader layers the coat.
+
 ## Other extensions
 
-Each extension, including clearcoat, transmission, sheen and specular,
+Each extension, including transmission, sheen and specular,
 requires its own explicit capability entry and tests. Do not silently
 claim complete support for unsupported features. Required extension handling
 is governed by the

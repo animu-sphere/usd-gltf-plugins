@@ -24,6 +24,8 @@ here.
   shader paths, and the fallback properties are not authored.
 - `KHR_materials_ior`, optional or required: the dielectric Fresnel term's ior in both shader paths,
   with an ior of 0 as a very large one.
+- `KHR_materials_clearcoat`, optional or required: the coat's weight, roughness and their textures in
+  both shader paths, and its normal texture in MaterialX only.
 
 ### Changed
 

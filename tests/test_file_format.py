@@ -3449,6 +3449,299 @@ class FileFormatTest(unittest.TestCase):
                             layer.Reload(True)
                         self.assertEqual(layer_text(layer), before)
 
+    def test_clearcoat_materials(self):
+        def open_with_stderr(path):
+            return subprocess.run(
+                [sys.executable, "-c",
+                 "from pxr import Usd; import sys; assert Usd.Stage.Open(sys.argv[1])", str(path)],
+                capture_output=True, text=True, check=False,
+            )
+
+        def value_of(shader, name):
+            value = shader.GetInput(name)
+            return value.Get() if value else None
+
+        ignored = "KHR_materials_clearcoat is ignored, because the material is unlit"
+        fresnel = "UsdPreviewSurface computes the clearcoat's Fresnel term from the material's ior"
+        # The clearcoat and its roughness authored in both paths, or None where the layer is disabled.
+        cases = (
+            ("factors", {"clearcoatFactor": 0.5, "clearcoatRoughnessFactor": 0.25}, {}, (0.5, 0.25)),
+            # Preview's clearcoat roughness defaults to 0.01, so glTF's 0 is authored.
+            ("smooth", {"clearcoatFactor": 1}, {}, (1, 0)),
+            ("disabled", {"clearcoatRoughnessFactor": 0.5}, {}, None),
+            ("empty", {}, {}, None),
+            ("unlit", {"clearcoatFactor": 1}, {"KHR_materials_unlit": {}}, None),
+            ("with ior", {"clearcoatFactor": 1}, {"KHR_materials_ior": {"ior": 2}}, (1, 0)),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            for extension in ("gltf", "glb"):
+                for (case, clearcoat, others, expected), required in itertools.product(cases, (False, True)):
+                    with self.subTest(extension=extension, case=case, required=required):
+                        name = f"{case.replace(' ', '_')}_{'required' if required else 'optional'}"
+                        path = pathlib.Path(directory) / f"clearcoat_{name}.{extension}"
+                        document, binary = mesh_document(extension)
+                        used = ["KHR_materials_clearcoat", *others]
+                        document["extensionsUsed"] = used
+                        if required:
+                            document["extensionsRequired"] = used
+                        document["meshes"][0]["primitives"][0]["material"] = 0
+                        document["meshes"][0]["primitives"][1]["material"] = 1
+                        lit = {"pbrMetallicRoughness": {"baseColorFactor": [0.2, 0.4, 0.6, 1],
+                                                        "metallicFactor": 0.25, "roughnessFactor": 0.5}}
+                        extensions = {"KHR_materials_clearcoat": clearcoat, **others}
+                        document["materials"] = [{**lit, "extensions": extensions}, lit]
+                        write_asset(path, document, binary)
+                        result = open_with_stderr(path)
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertNotIn("'KHR_materials_clearcoat' is not supported", result.stderr)
+                        self.assertEqual(ignored in result.stderr, case == "unlit", result.stderr)
+                        self.assertEqual(fresnel in result.stderr, case == "with ior", result.stderr)
+
+                        stage = Usd.Stage.Open(str(path))
+                        material = UsdShade.Material.Get(stage, "/Asset/mtl/Material_0")
+                        preview = UsdShade.Shader.Get(stage, "/Asset/mtl/Material_0/preview/surface")
+                        mtlx = UsdShade.Shader.Get(stage, "/Asset/mtl/Material_0/mtlx/surface")
+                        self.assert_material_nodegraphs(material, preview, mtlx)
+                        if expected is None:
+                            for shader, names in ((preview, ("clearcoat", "clearcoatRoughness")),
+                                                  (mtlx, ("clearcoat", "clearcoat_roughness", "clearcoat_normal"))):
+                                for input_name in names:
+                                    self.assertFalse(shader.GetInput(input_name), input_name)
+                        else:
+                            amount, roughness = expected
+                            self.assertAlmostEqual(value_of(preview, "clearcoat"), amount, places=6)
+                            self.assertAlmostEqual(value_of(preview, "clearcoatRoughness"), roughness, places=6)
+                            self.assertAlmostEqual(value_of(mtlx, "clearcoat"), amount, places=6)
+                            self.assertAlmostEqual(value_of(mtlx, "clearcoat_roughness"), roughness, places=6)
+                            # Without a clearcoat normal texture, gltf_pbr uses the geometric normal.
+                            self.assertFalse(mtlx.GetInput("clearcoat_normal"))
+                        # The clearcoat changes nothing of the base layer.
+                        if case != "unlit":
+                            self.assertTrue(Gf.IsClose(preview.GetInput("diffuseColor").Get(),
+                                                       Gf.Vec3f(0.2, 0.4, 0.6), 1e-6))
+                            self.assertAlmostEqual(preview.GetInput("metallic").Get(), 0.25, places=6)
+                            self.assertAlmostEqual(preview.GetInput("roughness").Get(), 0.5, places=6)
+                            self.assertAlmostEqual(mtlx.GetInput("roughness").Get(), 0.5, places=6)
+                            self.assertFalse(mtlx.GetInput("specular"))
+                        # A material without the extension authors no clearcoat.
+                        plain = UsdShade.Shader.Get(stage, "/Asset/mtl/Material_1/preview/surface")
+                        plain_mtlx = UsdShade.Shader.Get(stage, "/Asset/mtl/Material_1/mtlx/surface")
+                        self.assertFalse(plain.GetInput("clearcoat"))
+                        self.assertFalse(plain_mtlx.GetInput("clearcoat"))
+
+    def test_clearcoat_textures(self):
+        def open_with_stderr(path):
+            return subprocess.run(
+                [sys.executable, "-c",
+                 "from pxr import Usd; import sys; assert Usd.Stage.Open(sys.argv[1])", str(path)],
+                capture_output=True, text=True, check=False,
+            )
+
+        def source_of(shader, name):
+            connection = shader.GetInput(name).GetConnectedSource() if shader.GetInput(name) else None
+            return (UsdShade.Shader(connection[0].GetPrim()), connection[1]) if connection else (None, None)
+
+        normal_warning = "UsdPreviewSurface has no clearcoat normal; its network ignores clearcoatNormalTexture"
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            for extension in ("gltf", "glb"):
+                with self.subTest(extension=extension, case="textures"):
+                    path = root / ("clearcoat." + extension)
+                    document, binary = textured_document(extension, None, PNG)
+                    document["extensionsUsed"] = ["KHR_materials_clearcoat"]
+                    document["samplers"] = [{"wrapS": 33648, "wrapT": 33071}]
+                    document["textures"].append({"source": 0, "sampler": 0})
+                    material = document["materials"][0]
+                    material["normalTexture"] = {"index": 0}
+                    material["extensions"] = {"KHR_materials_clearcoat": {
+                        "clearcoatFactor": 0.5, "clearcoatTexture": {"index": 1, "texCoord": 1},
+                        "clearcoatRoughnessFactor": 0.25, "clearcoatRoughnessTexture": {"index": 0, "texCoord": 2},
+                        "clearcoatNormalTexture": {"index": 0, "scale": 0.75},
+                    }}
+                    write_asset(path, document, binary)
+                    result = open_with_stderr(path)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIn(normal_warning, result.stderr)
+                    stage = Usd.Stage.Open(str(path))
+                    usd_material = UsdShade.Material.Get(stage, "/Asset/mtl/Material_0")
+                    expected = f"./{path.name}[images/0.png]"
+
+                    preview, _, _ = usd_material.ComputeSurfaceSource()
+                    amount, amount_output = source_of(preview, "clearcoat")
+                    self.assertEqual((amount.GetPath().name, amount_output), ("clearcoatTexture", "r"))
+                    self.assertEqual(amount.GetInput("sourceColorSpace").Get(), "raw")
+                    self.assertEqual(amount.GetInput("scale").Get(), Gf.Vec4f(0.5, 1, 1, 1))
+                    self.assertFalse(amount.GetInput("bias"))
+                    self.assertEqual(amount.GetInput("wrapS").Get(), "mirror")
+                    self.assertEqual(amount.GetInput("wrapT").Get(), "clamp")
+                    self.assertEqual(source_of(amount, "st")[0].GetInput("varname").Get(), "st1")
+                    rough, rough_output = source_of(preview, "clearcoatRoughness")
+                    self.assertEqual((rough.GetPath().name, rough_output), ("clearcoatRoughnessTexture", "g"))
+                    self.assertEqual(rough.GetInput("sourceColorSpace").Get(), "raw")
+                    self.assertEqual(rough.GetInput("scale").Get(), Gf.Vec4f(1, 0.25, 1, 1))
+                    self.assertEqual(rough.GetInput("wrapS").Get(), "repeat")
+                    self.assertEqual(source_of(rough, "st")[0].GetInput("varname").Get(), "st2")
+                    # Preview's clearcoat reads the base normal, which keeps its own texture.
+                    self.assertEqual(source_of(preview, "normal")[0].GetPath().name, "normalTexture")
+                    preview_graph = usd_material.GetPrim().GetChild("preview")
+                    self.assertFalse([prim for prim in Usd.PrimRange(preview_graph)
+                                      if prim.GetName().startswith("clearcoatNormal")])
+
+                    mtlx, _, _ = usd_material.ComputeSurfaceSource("mtlx")
+                    factor, _ = source_of(mtlx, "clearcoat")
+                    self.assertEqual(factor.GetPath().name, "clearcoatFactor")
+                    self.assertEqual(factor.GetIdAttr().Get(), "ND_multiply_float")
+                    self.assertAlmostEqual(factor.GetInput("in2").Get(), 0.5)
+                    channel, _ = source_of(factor, "in1")
+                    self.assertEqual(channel.GetPath().name, "clearcoatChannel")
+                    self.assertEqual(channel.GetInput("index").Get(), 0)
+                    image, _ = source_of(channel, "in")
+                    self.assertEqual(image.GetPath().name, "clearcoatImage")
+                    self.assertEqual(image.GetIdAttr().Get(), "ND_image_vector4")
+                    self.assertFalse(image.GetInput("file").GetAttr().HasColorSpace())
+                    self.assertEqual(image.GetInput("uaddressmode").Get(), "mirror")
+                    self.assertEqual(image.GetInput("vaddressmode").Get(), "clamp")
+                    self.assertEqual(source_of(image, "texcoord")[0].GetInput("geomprop").Get(), "st1")
+                    rough_factor, _ = source_of(mtlx, "clearcoat_roughness")
+                    self.assertEqual(rough_factor.GetPath().name, "clearcoatRoughnessFactor")
+                    self.assertAlmostEqual(rough_factor.GetInput("in2").Get(), 0.25)
+                    rough_channel, _ = source_of(rough_factor, "in1")
+                    self.assertEqual(rough_channel.GetInput("index").Get(), 1)
+                    rough_image, _ = source_of(rough_channel, "in")
+                    self.assertEqual(rough_image.GetPath().name, "clearcoatRoughnessImage")
+                    self.assertEqual(source_of(rough_image, "texcoord")[0].GetInput("geomprop").Get(), "st2")
+                    coat_map, _ = source_of(mtlx, "clearcoat_normal")
+                    self.assertEqual(coat_map.GetPath().name, "clearcoatNormalMap")
+                    self.assertEqual(coat_map.GetIdAttr().Get(), "ND_normalmap_float")
+                    self.assertAlmostEqual(coat_map.GetInput("scale").Get(), 0.75)
+                    self.assertEqual(mtlx.GetInput("clearcoat_normal").GetTypeName(), Sdf.ValueTypeNames.Vector3f)
+                    coat_xyz, _ = source_of(coat_map, "in")
+                    self.assertEqual(coat_xyz.GetIdAttr().Get(), "ND_convert_vector4_vector3")
+                    coat_image, _ = source_of(coat_xyz, "in")
+                    self.assertEqual(coat_image.GetPath().name, "clearcoatNormalImage")
+                    self.assertFalse(coat_image.GetInput("file").GetAttr().HasColorSpace())
+                    # The base normal map is separate, and unchanged.
+                    base_map, _ = source_of(mtlx, "normal")
+                    self.assertEqual(base_map.GetPath().name, "normalMap")
+                    self.assertFalse(base_map.GetInput("scale"))
+
+                    for shader in (amount, rough, image, rough_image, coat_image):
+                        asset = shader.GetInput("file").Get()
+                        self.assertEqual(asset.path, expected)
+                        self.assertEqual(asset_bytes(asset.resolvedPath), PNG)
+
+                with self.subTest(extension=extension, case="factor of one"):
+                    path = root / ("clearcoat_one." + extension)
+                    document, binary = textured_document(extension, None, PNG)
+                    document["extensionsUsed"] = ["KHR_materials_clearcoat"]
+                    document["materials"][0]["extensions"] = {"KHR_materials_clearcoat": {
+                        "clearcoatFactor": 1, "clearcoatTexture": {"index": 0},
+                        "clearcoatRoughnessTexture": {"index": 0},
+                    }}
+                    write_asset(path, document, binary)
+                    result = open_with_stderr(path)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertNotIn(normal_warning, result.stderr)
+                    stage = Usd.Stage.Open(str(path))
+                    usd_material = UsdShade.Material.Get(stage, "/Asset/mtl/Material_0")
+                    mtlx, _, _ = usd_material.ComputeSurfaceSource("mtlx")
+                    # A factor of 1 needs no multiply; the default roughness factor of 0 does.
+                    self.assertEqual(source_of(mtlx, "clearcoat")[0].GetPath().name, "clearcoatChannel")
+                    rough_factor, _ = source_of(mtlx, "clearcoat_roughness")
+                    self.assertEqual(rough_factor.GetPath().name, "clearcoatRoughnessFactor")
+                    self.assertEqual(rough_factor.GetInput("in2").Get(), 0)
+                    self.assertFalse(mtlx.GetInput("clearcoat_normal"))
+                    preview, _, _ = usd_material.ComputeSurfaceSource()
+                    self.assertEqual(source_of(preview, "clearcoat")[0].GetInput("scale").Get(), Gf.Vec4f(1))
+                    self.assertEqual(source_of(preview, "clearcoatRoughness")[0].GetInput("scale").Get(),
+                                     Gf.Vec4f(1, 0, 1, 1))
+
+                for case, extensions in (
+                    ("disabled", {"KHR_materials_clearcoat": {"clearcoatRoughnessFactor": 0.5}}),
+                    ("unlit", {"KHR_materials_clearcoat": {"clearcoatFactor": 1}, "KHR_materials_unlit": {}}),
+                ):
+                    with self.subTest(extension=extension, case=case):
+                        path = root / (f"clearcoat_{case}." + extension)
+                        document, binary = textured_document(extension, None, PNG)
+                        document["extensionsUsed"] = list(extensions)
+                        # A disabled clearcoat's textures are never read, so a damaged one does not matter.
+                        document["images"].append({"uri": "data:image/png;base64,AA=="})
+                        document["textures"].append({"source": 1})
+                        damaged = {"index": 1}
+                        extensions["KHR_materials_clearcoat"].update(
+                            clearcoatTexture=damaged, clearcoatRoughnessTexture=damaged,
+                            clearcoatNormalTexture=damaged)
+                        document["materials"][0]["extensions"] = extensions
+                        write_asset(path, document, binary)
+                        result = open_with_stderr(path)
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertNotIn(normal_warning, result.stderr)
+                        stage = Usd.Stage.Open(str(path))
+                        usd_material = UsdShade.Material.Get(stage, "/Asset/mtl/Material_0")
+                        names = {prim.GetName() for prim in Usd.PrimRange(usd_material.GetPrim())}
+                        self.assertFalse({name for name in names if name.startswith("clearcoat")})
+                        self.assertFalse(usd_material.ComputeSurfaceSource()[0].GetInput("clearcoat"))
+                        self.assertFalse(usd_material.ComputeSurfaceSource("mtlx")[0].GetInput("clearcoat"))
+
+    def test_clearcoat_failures_preserve_layer(self):
+        texture_range = "material texture uses a texture coordinate set the primitive does not have"
+        factor_range = "material clearcoat factor or roughness is non-finite or out of range"
+        cases = (
+            ("not an object", 0.5, "KHR_materials_clearcoat is not an object"),
+            ("factor of the wrong type", {"clearcoatFactor": "0.5"},
+             "KHR_materials_clearcoat has a field of the wrong type"),
+            ("roughness of the wrong type", {"clearcoatFactor": 1, "clearcoatRoughnessFactor": [0.5]},
+             "KHR_materials_clearcoat has a field of the wrong type"),
+            ("texture not an object", {"clearcoatFactor": 1, "clearcoatTexture": 0},
+             "KHR_materials_clearcoat has a field of the wrong type"),
+            ("texture without an index", {"clearcoatFactor": 1, "clearcoatRoughnessTexture": {}},
+             "KHR_materials_clearcoat has a field of the wrong type"),
+            ("normal scale of the wrong type",
+             {"clearcoatFactor": 1, "clearcoatNormalTexture": {"index": 0, "scale": "1"}},
+             "KHR_materials_clearcoat has a field of the wrong type"),
+            ("overflow", {"clearcoatFactor": 1e39}, "KHR_materials_clearcoat is out of range"),
+            ("normal scale overflow", {"clearcoatFactor": 1, "clearcoatNormalTexture": {"index": 0, "scale": -1e39}},
+             "KHR_materials_clearcoat is out of range"),
+            ("factor above one", {"clearcoatFactor": 1.5}, factor_range),
+            ("negative roughness", {"clearcoatFactor": 1, "clearcoatRoughnessFactor": -0.5}, factor_range),
+            ("missing UV set", {"clearcoatFactor": 1, "clearcoatTexture": {"index": 0, "texCoord": 1}},
+             texture_range),
+            ("texture out of range", {"clearcoatFactor": 1, "clearcoatTexture": {"index": 5}},
+             "texture index is out of range|cannot parse"),
+            # Ignoring a layer does not make an invalid value or a missing UV set valid.
+            ("disabled missing UV set", {"clearcoatNormalTexture": {"index": 0, "texCoord": 1}}, texture_range),
+            ("unlit above one", {"clearcoatFactor": 2}, factor_range),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            for extension in ("gltf", "glb"):
+                path = pathlib.Path(directory) / ("clearcoat." + extension)
+                document, binary = textured_document(extension, None, PNG)
+                document["extensionsUsed"] = ["KHR_materials_clearcoat"]
+                document["materials"][0]["extensions"] = {"KHR_materials_clearcoat": {"clearcoatFactor": 0.5}}
+                # The second primitive has one UV set only.
+                document["materials"].append({})
+                document["meshes"][0]["primitives"][1]["material"] = 1
+                write_asset(path, document, binary)
+                stage = Usd.Stage.Open(str(path))
+                layer = stage.GetRootLayer()
+                before = layer_text(layer)
+                preview = UsdShade.Shader.Get(stage, "/Asset/mtl/Material_0/preview/surface")
+                self.assertAlmostEqual(preview.GetInput("clearcoat").Get(), 0.5, places=6)
+                for case, value, message in cases:
+                    with self.subTest(extension=extension, case=case):
+                        invalid, invalid_binary = textured_document(extension, None, PNG)
+                        invalid["extensionsUsed"] = ["KHR_materials_clearcoat"]
+                        invalid["meshes"][0]["primitives"][1]["material"] = 1
+                        extensions = {"KHR_materials_clearcoat": value}
+                        if case.startswith("unlit"):
+                            invalid["extensionsUsed"].append("KHR_materials_unlit")
+                            extensions["KHR_materials_unlit"] = {}
+                        invalid["materials"].append({"extensions": extensions})
+                        write_asset(path, invalid, invalid_binary)
+                        with self.assertRaisesRegex(Tf.ErrorException, message):
+                            layer.Reload(True)
+                        self.assertEqual(layer_text(layer), before)
+
     def test_animation_outside_selected_scene_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             for extension in ("gltf", "glb"):

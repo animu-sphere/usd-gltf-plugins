@@ -694,6 +694,64 @@ def check_ior(renderer, report):
     qt[2].doneCurrent()
 
 
+def check_clearcoat(renderer, report):
+    """Renders a black quad with a clearcoat under a point light between it and the camera, as for the
+    ior. glTF's clearcoat is a dielectric of ior 1.5 over the base, weighted by its factor, so the
+    coat adds a reflection of F0 0.04 to a black base. A base of ior 1 reflects nothing itself, and
+    a coat over it reflects as a base of ior 1.5 and the coat's roughness would through MaterialX.
+    Storm's UsdPreviewSurface computes the coat's F0 from the material's ior, so there it reflects
+    nothing."""
+    qt = offscreen_context(report, "clearcoat")
+    if not qt:
+        return
+    black = {"baseColorFactor": [0, 0, 0, 1], "metallicFactor": 0, "roughnessFactor": 1}
+    for path in PATHS:
+
+        def render(name, material, images=()):
+            document = quad_document([material], images)
+            document["extensionsUsed"] = ["KHR_lights_punctual", "KHR_materials_clearcoat", "KHR_materials_ior"]
+            document["extensions"] = {"KHR_lights_punctual": {"lights": [
+                {"type": "point", "intensity": ILLUMINANCE * 4}]}}
+            document["nodes"].append({"translation": [0.5, 0.5, 1],
+                                      "extensions": {"KHR_lights_punctual": {"light": 0}}})
+            document["scenes"][0]["nodes"].append(1)
+            asset = renderer.output / f"clearcoat_{name}.gltf"
+            asset.write_text(json.dumps(document), encoding="utf-8")
+            _, stage = renderer.session(f"clearcoat_{name}", asset, path, None)
+            image = engine_image(stage, [], Gf.Vec4f(0, 0, 0, 1))
+            image.save(str(renderer.output / f"clearcoat_{name}_{path}.png"))
+            return Render(f"clearcoat_{name} {path}", image, stage).sample(0)
+
+        def coated(base=black, ior=None, **clearcoat):
+            extensions = {"KHR_materials_clearcoat": {"clearcoatRoughnessFactor": 0.5, **clearcoat}}
+            if ior is not None:
+                extensions["KHR_materials_ior"] = {"ior": ior}
+            return {**pbr(**base), "extensions": extensions}
+
+        bare = render("bare", pbr(**black))
+        report.same(f"{path} a clearcoat of factor 0 is none", render("zero", coated(clearcoatFactor=0)), bare)
+        full = render("full", coated(clearcoatFactor=1))
+        report.expect(f"{path} a clearcoat reflects the light", min(full[:3]) > max(bare[:3]) + DIFFERENT,
+                      f"{full} and {bare}")
+        half = render("half", coated(clearcoatFactor=0.5))
+        report.expect(f"{path} half a clearcoat reflects less", max(bare[:3]) < min(half[:3])
+                      and max(half[:3]) < min(full[:3]), f"{bare}, {half} and {full}")
+        report.different(f"{path} the clearcoat's roughness applies",
+                         render("rough", coated(clearcoatFactor=1, clearcoatRoughnessFactor=1)), full)
+        report.same(f"{path} a clearcoat image of 188 is a factor of 0.737",
+                    render("image", coated(clearcoatFactor=1, clearcoatTexture={"index": 0}), [(188, 188, 188, 255)]),
+                    render("data", coated(clearcoatFactor=DATA)))
+        silent = render("silent", {**pbr(**black), "extensions": {"KHR_materials_ior": {"ior": 1}}})
+        report.same(f"{path} a base of ior 1 reflects nothing", silent, (0, 0, 0, 255))
+        over_silent = render("over_silent", coated(ior=1, clearcoatFactor=1))
+        if path == "mtlx":
+            report.same(f"{path} a clearcoat keeps its ior of 1.5 over a base of ior 1", over_silent,
+                        render("smooth_base", pbr(baseColorFactor=[0, 0, 0, 1], metallicFactor=0, roughnessFactor=0.5)))
+        else:
+            report.same(f"{path} Storm's clearcoat takes the base's ior of 1", over_silent, silent)
+    qt[2].doneCurrent()
+
+
 def compare_paths(report, name, renders, samples, tolerance):
     if not all(renders.values()):
         return
@@ -717,9 +775,9 @@ def main():
 
     report = Report(arguments.verbose)
     renderer = Renderer(output, plugin, report)
-    for check in (check_reflections, check_lights, check_unlit, check_ior, check_alpha_modes, check_base_color_textures,
-                  check_pbr_textures, check_normal_textures, check_texture_transforms, check_ktx2_textures,
-                  check_measurements):
+    for check in (check_reflections, check_lights, check_unlit, check_ior, check_clearcoat, check_alpha_modes,
+                  check_base_color_textures, check_pbr_textures, check_normal_textures, check_texture_transforms,
+                  check_ktx2_textures, check_measurements):
         print(check.__name__.removeprefix("check_"), flush=True)
         check(renderer, report)
 

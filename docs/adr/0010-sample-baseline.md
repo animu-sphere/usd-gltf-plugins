@@ -59,7 +59,9 @@ identical, and KTX2 must be served as an image);
 Preview's color space, factors, scales, normal scale and occlusion strength; and alpha mode and
 cutoff in both paths. For an [unlit](0015-unlit.md) material, its base color in Preview's emission,
 the inputs that zero both shaders' lighting, and that no fallback texture is authored. The
-[ior](0016-ior.md) of each material in both paths, or that none is authored at the default.
+[ior](0016-ior.md) of each material in both paths, or that none is authored at the default. For an
+enabled [clearcoat](0017-clearcoat.md), its weight and roughness in Preview, its texture slots in both
+networks, and its normal in MaterialX alone; otherwise, that no clearcoat is authored.
 
 ## Evidence that it can fail
 
