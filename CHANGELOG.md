@@ -26,6 +26,8 @@ here.
   with an ior of 0 as a very large one.
 - `KHR_materials_clearcoat`, optional or required: the coat's weight, roughness and their textures in
   both shader paths, and its normal texture in MaterialX only.
+- `KHR_materials_transmission`, optional or required: the transmission and its texture in MaterialX,
+  which Storm draws as transparency; UsdPreviewSurface has none and ignores it with a warning.
 
 ### Changed
 

@@ -3742,6 +3742,240 @@ class FileFormatTest(unittest.TestCase):
                             layer.Reload(True)
                         self.assertEqual(layer_text(layer), before)
 
+    def test_transmission_materials(self):
+        def open_with_stderr(path):
+            return subprocess.run(
+                [sys.executable, "-c",
+                 "from pxr import Usd; import sys; assert Usd.Stage.Open(sys.argv[1])", str(path)],
+                capture_output=True, text=True, check=False,
+            )
+
+        ignored = "KHR_materials_transmission is ignored, because the material is unlit"
+        preview_warning = "UsdPreviewSurface has no transmission; its network ignores KHR_materials_transmission"
+        # The transmission authored in MaterialX, or None where there is none.
+        cases = (
+            ("half", {"transmissionFactor": 0.5}, {}, 0.5),
+            ("full", {"transmissionFactor": 1}, {}, 1),
+            ("zero", {"transmissionFactor": 0}, {}, None),
+            ("empty", {}, {}, None),
+            ("unlit", {"transmissionFactor": 1}, {"KHR_materials_unlit": {}}, None),
+            ("with ior", {"transmissionFactor": 1}, {"KHR_materials_ior": {"ior": 1.25}}, 1),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            for extension in ("gltf", "glb"):
+                for (case, transmission, others, expected), required in itertools.product(cases, (False, True)):
+                    with self.subTest(extension=extension, case=case, required=required):
+                        name = f"{case.replace(' ', '_')}_{'required' if required else 'optional'}"
+                        path = pathlib.Path(directory) / f"transmission_{name}.{extension}"
+                        document, binary = mesh_document(extension)
+                        used = ["KHR_materials_transmission", *others]
+                        document["extensionsUsed"] = used
+                        if required:
+                            document["extensionsRequired"] = used
+                        document["meshes"][0]["primitives"][0]["material"] = 0
+                        document["meshes"][0]["primitives"][1]["material"] = 1
+                        lit = {"pbrMetallicRoughness": {"baseColorFactor": [0.2, 0.4, 0.6, 1],
+                                                        "metallicFactor": 0.25, "roughnessFactor": 0.5}}
+                        extensions = {"KHR_materials_transmission": transmission, **others}
+                        document["materials"] = [{**lit, "extensions": extensions}, lit]
+                        write_asset(path, document, binary)
+                        result = open_with_stderr(path)
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertNotIn("'KHR_materials_transmission' is not supported", result.stderr)
+                        self.assertEqual(ignored in result.stderr, case == "unlit", result.stderr)
+                        self.assertEqual(preview_warning in result.stderr, expected is not None, result.stderr)
+
+                        stage = Usd.Stage.Open(str(path))
+                        material = UsdShade.Material.Get(stage, "/Asset/mtl/Material_0")
+                        preview = UsdShade.Shader.Get(stage, "/Asset/mtl/Material_0/preview/surface")
+                        mtlx = UsdShade.Shader.Get(stage, "/Asset/mtl/Material_0/mtlx/surface")
+                        self.assert_material_nodegraphs(material, preview, mtlx)
+                        if expected is None:
+                            self.assertFalse(mtlx.GetInput("transmission"))
+                        else:
+                            self.assertAlmostEqual(mtlx.GetInput("transmission").Get(), expected, places=6)
+                        # Without KHR_materials_volume the material is thin, gltf_pbr's default.
+                        for input_name in ("thickness", "attenuation_distance", "attenuation_color"):
+                            self.assertFalse(mtlx.GetInput(input_name), input_name)
+                        # UsdPreviewSurface has no transmission, and its opacity remains glTF's alpha.
+                        self.assertFalse(preview.GetInput("transmission"))
+                        self.assertFalse(preview.GetInput("opacity"))
+                        self.assertEqual(mtlx.GetInput("alpha_mode").Get(), 0)
+                        self.assertFalse(mtlx.GetInput("alpha"))
+                        # The transmission changes nothing else.
+                        if case != "unlit":
+                            self.assertTrue(Gf.IsClose(preview.GetInput("diffuseColor").Get(),
+                                                       Gf.Vec3f(0.2, 0.4, 0.6), 1e-6))
+                            self.assertAlmostEqual(preview.GetInput("metallic").Get(), 0.25, places=6)
+                            self.assertAlmostEqual(preview.GetInput("roughness").Get(), 0.5, places=6)
+                            self.assertTrue(Gf.IsClose(mtlx.GetInput("base_color").Get(),
+                                                       Gf.Vec3f(0.2, 0.4, 0.6), 1e-6))
+                            self.assertAlmostEqual(mtlx.GetInput("metallic").Get(), 0.25, places=6)
+                            self.assertFalse(mtlx.GetInput("specular"))
+                        if case == "with ior":
+                            self.assertAlmostEqual(mtlx.GetInput("ior").Get(), 1.25, places=6)
+                        # A material without the extension authors no transmission.
+                        plain_mtlx = UsdShade.Shader.Get(stage, "/Asset/mtl/Material_1/mtlx/surface")
+                        self.assertFalse(plain_mtlx.GetInput("transmission"))
+
+    def test_transmission_textures(self):
+        def open_with_stderr(path):
+            return subprocess.run(
+                [sys.executable, "-c",
+                 "from pxr import Usd; import sys; assert Usd.Stage.Open(sys.argv[1])", str(path)],
+                capture_output=True, text=True, check=False,
+            )
+
+        def source_of(shader, name):
+            connection = shader.GetInput(name).GetConnectedSource() if shader.GetInput(name) else None
+            return (UsdShade.Shader(connection[0].GetPrim()), connection[1]) if connection else (None, None)
+
+        def transmission_prims(material, graph):
+            return [prim for prim in Usd.PrimRange(material.GetPrim().GetChild(graph))
+                    if prim.GetName().startswith("transmission")]
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            for extension in ("gltf", "glb"):
+                with self.subTest(extension=extension, case="texture"):
+                    path = root / ("transmission." + extension)
+                    document, binary = textured_document(extension, None, PNG)
+                    document["extensionsUsed"] = ["KHR_materials_transmission", "KHR_texture_transform"]
+                    document["samplers"] = [{"wrapS": 33648, "wrapT": 33071}]
+                    document["textures"].append({"source": 0, "sampler": 0})
+                    document["materials"][0]["extensions"] = {"KHR_materials_transmission": {
+                        "transmissionFactor": 0.5,
+                        "transmissionTexture": {"index": 1, "texCoord": 1, "extensions": {
+                            "KHR_texture_transform": {"offset": [0.25, 0]}}},
+                    }}
+                    write_asset(path, document, binary)
+                    result = open_with_stderr(path)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    stage = Usd.Stage.Open(str(path))
+                    usd_material = UsdShade.Material.Get(stage, "/Asset/mtl/Material_0")
+
+                    mtlx, _, _ = usd_material.ComputeSurfaceSource("mtlx")
+                    factor, _ = source_of(mtlx, "transmission")
+                    self.assertEqual(factor.GetPath().name, "transmissionFactor")
+                    self.assertEqual(factor.GetIdAttr().Get(), "ND_multiply_float")
+                    self.assertAlmostEqual(factor.GetInput("in2").Get(), 0.5)
+                    channel, _ = source_of(factor, "in1")
+                    self.assertEqual(channel.GetPath().name, "transmissionChannel")
+                    self.assertEqual(channel.GetInput("index").Get(), 0)
+                    image, _ = source_of(channel, "in")
+                    self.assertEqual(image.GetPath().name, "transmissionImage")
+                    self.assertEqual(image.GetIdAttr().Get(), "ND_image_vector4")
+                    self.assertFalse(image.GetInput("file").GetAttr().HasColorSpace())
+                    self.assertEqual(image.GetInput("uaddressmode").Get(), "mirror")
+                    self.assertEqual(image.GetInput("vaddressmode").Get(), "clamp")
+                    # The transform sits between the reader of TEXCOORD_1 and the image.
+                    translate, _ = source_of(image, "texcoord")
+                    self.assertEqual(translate.GetIdAttr().Get(), "ND_add_vector2")
+                    reader = translate
+                    while reader and reader.GetIdAttr().Get() != "ND_geompropvalue_vector2":
+                        reader = source_of(reader, "in1")[0] or source_of(reader, "in")[0]
+                    self.assertEqual(reader.GetInput("geomprop").Get(), "st1")
+                    asset = image.GetInput("file").Get()
+                    self.assertEqual(asset.path, f"./{path.name}[images/0.png]")
+                    self.assertEqual(asset_bytes(asset.resolvedPath), PNG)
+                    # UsdPreviewSurface has no transmission to connect it to.
+                    self.assertFalse(transmission_prims(usd_material, "preview"))
+                    preview, _, _ = usd_material.ComputeSurfaceSource()
+                    self.assertFalse(preview.GetInput("transmission"))
+                    self.assertFalse(preview.GetInput("opacity"))
+
+                with self.subTest(extension=extension, case="factor of one"):
+                    path = root / ("transmission_one." + extension)
+                    document, binary = textured_document(extension, None, PNG)
+                    document["extensionsUsed"] = ["KHR_materials_transmission"]
+                    document["materials"][0]["extensions"] = {"KHR_materials_transmission": {
+                        "transmissionFactor": 1, "transmissionTexture": {"index": 0}}}
+                    write_asset(path, document, binary)
+                    stage = Usd.Stage.Open(str(path))
+                    usd_material = UsdShade.Material.Get(stage, "/Asset/mtl/Material_0")
+                    mtlx, _, _ = usd_material.ComputeSurfaceSource("mtlx")
+                    # A factor of 1 needs no multiply.
+                    channel, _ = source_of(mtlx, "transmission")
+                    self.assertEqual(channel.GetPath().name, "transmissionChannel")
+                    self.assertEqual(source_of(source_of(channel, "in")[0], "texcoord")[0].GetInput("geomprop").Get(),
+                                     "st")
+
+                for case, extensions in (
+                    ("default factor", {"KHR_materials_transmission": {}}),
+                    ("unlit", {"KHR_materials_transmission": {"transmissionFactor": 1}, "KHR_materials_unlit": {}}),
+                ):
+                    with self.subTest(extension=extension, case=case):
+                        path = root / (f"transmission_{case.replace(' ', '_')}." + extension)
+                        document, binary = textured_document(extension, None, PNG)
+                        document["extensionsUsed"] = list(extensions)
+                        # A texture without transmission is never read, so a damaged one does not matter.
+                        document["images"].append({"uri": "data:image/png;base64,AA=="})
+                        document["textures"].append({"source": 1})
+                        extensions["KHR_materials_transmission"]["transmissionTexture"] = {"index": 1}
+                        document["materials"][0]["extensions"] = extensions
+                        write_asset(path, document, binary)
+                        result = open_with_stderr(path)
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertNotIn("UsdPreviewSurface has no transmission", result.stderr)
+                        stage = Usd.Stage.Open(str(path))
+                        usd_material = UsdShade.Material.Get(stage, "/Asset/mtl/Material_0")
+                        self.assertFalse(transmission_prims(usd_material, "mtlx"))
+                        self.assertFalse(usd_material.ComputeSurfaceSource("mtlx")[0].GetInput("transmission"))
+
+    def test_transmission_failures_preserve_layer(self):
+        texture_range = "material texture uses a texture coordinate set the primitive does not have"
+        factor_range = "material transmission factor is non-finite or out of range"
+        cases = (
+            ("not an object", [1], "KHR_materials_transmission is not an object"),
+            ("factor of the wrong type", {"transmissionFactor": "1"},
+             "KHR_materials_transmission has a field of the wrong type"),
+            ("texture not an object", {"transmissionFactor": 1, "transmissionTexture": 0},
+             "KHR_materials_transmission has a field of the wrong type"),
+            ("texture without an index", {"transmissionFactor": 1, "transmissionTexture": {"texCoord": 0}},
+             "KHR_materials_transmission has a field of the wrong type"),
+            ("texCoord of the wrong type", {"transmissionFactor": 1, "transmissionTexture": {"index": 0, "texCoord": -1}},
+             "KHR_materials_transmission has a field of the wrong type"),
+            ("overflow", {"transmissionFactor": 1e39}, "KHR_materials_transmission is out of range"),
+            ("factor above one", {"transmissionFactor": 1.5}, factor_range),
+            ("negative factor", {"transmissionFactor": -0.5}, factor_range),
+            ("missing UV set", {"transmissionFactor": 1, "transmissionTexture": {"index": 0, "texCoord": 1}},
+             texture_range),
+            ("texture out of range", {"transmissionFactor": 1, "transmissionTexture": {"index": 5}},
+             "texture index is out of range|cannot parse"),
+            # Ignoring the extension does not make an invalid value or a missing UV set valid.
+            ("zero missing UV set", {"transmissionTexture": {"index": 0, "texCoord": 1}}, texture_range),
+            ("unlit above one", {"transmissionFactor": 2}, factor_range),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            for extension in ("gltf", "glb"):
+                path = pathlib.Path(directory) / ("transmission." + extension)
+                document, binary = textured_document(extension, None, PNG)
+                document["extensionsUsed"] = ["KHR_materials_transmission"]
+                document["materials"][0]["extensions"] = {"KHR_materials_transmission": {"transmissionFactor": 0.5}}
+                # The second primitive has one UV set only.
+                document["materials"].append({})
+                document["meshes"][0]["primitives"][1]["material"] = 1
+                write_asset(path, document, binary)
+                stage = Usd.Stage.Open(str(path))
+                layer = stage.GetRootLayer()
+                before = layer_text(layer)
+                mtlx = UsdShade.Shader.Get(stage, "/Asset/mtl/Material_0/mtlx/surface")
+                self.assertAlmostEqual(mtlx.GetInput("transmission").Get(), 0.5, places=6)
+                for case, value, message in cases:
+                    with self.subTest(extension=extension, case=case):
+                        invalid, invalid_binary = textured_document(extension, None, PNG)
+                        invalid["extensionsUsed"] = ["KHR_materials_transmission"]
+                        invalid["meshes"][0]["primitives"][1]["material"] = 1
+                        extensions = {"KHR_materials_transmission": value}
+                        if case.startswith("unlit"):
+                            invalid["extensionsUsed"].append("KHR_materials_unlit")
+                            extensions["KHR_materials_unlit"] = {}
+                        invalid["materials"].append({"extensions": extensions})
+                        write_asset(path, invalid, invalid_binary)
+                        with self.assertRaisesRegex(Tf.ErrorException, message):
+                            layer.Reload(True)
+                        self.assertEqual(layer_text(layer), before)
+
     def test_animation_outside_selected_scene_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             for extension in ("gltf", "glb"):

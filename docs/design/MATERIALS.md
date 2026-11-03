@@ -83,9 +83,18 @@ texture is ignored with a warning. Without that texture, `gltf_pbr`'s coat uses 
 as glTF's does. A factor of 0 and an unlit material author nothing. See
 [ADR 0017](../adr/0017-clearcoat.md) for how each shader layers the coat.
 
+## Transmission
+
+A `KHR_materials_transmission` factor above 0 is authored as MaterialX `transmission`, the factor times
+the R channel of its texture, read as non-color data. `gltf_pbr` mixes its diffuse term toward a
+transmission tinted by the base color, as glTF does; without `KHR_materials_volume` the material is
+thin, and `thickness` keeps its default of 0. UsdPreviewSurface has no transmission, so its network
+ignores the extension with a warning, and its `opacity` remains glTF's alpha. A factor of 0 and an
+unlit material author nothing. See [ADR 0018](../adr/0018-transmission.md) for how Storm draws it.
+
 ## Other extensions
 
-Each extension, including transmission, sheen and specular,
+Each extension, including volume, sheen and specular,
 requires its own explicit capability entry and tests. Do not silently
 claim complete support for unsupported features. Required extension handling
 is governed by the

@@ -46,6 +46,7 @@ available when the decision was made; they are not progress reports:
 - [0015: Unlit materials](adr/0015-unlit.md)
 - [0016: Index of refraction](adr/0016-ior.md)
 - [0017: Clearcoat](adr/0017-clearcoat.md)
+- [0018: Transmission](adr/0018-transmission.md)
 
 New decisions go in `docs/adr/NNNN-title.md`.
 
