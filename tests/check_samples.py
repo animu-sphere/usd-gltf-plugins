@@ -34,8 +34,8 @@ import numpy
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 BASELINE = ROOT / "tests" / "sample_baseline.json"
-IMPLEMENTED_EXTENSIONS = {"EXT_texture_webp", "KHR_lights_punctual", "KHR_materials_unlit", "KHR_mesh_quantization",
-                          "KHR_texture_basisu", "KHR_texture_transform"}
+IMPLEMENTED_EXTENSIONS = {"EXT_texture_webp", "KHR_lights_punctual", "KHR_materials_ior", "KHR_materials_unlit",
+                          "KHR_mesh_quantization", "KHR_texture_basisu", "KHR_texture_transform"}
 PATHS = ("mtlx", "preview")
 CAMERA = "/SampleCheckCamera"
 RESULT_MARKER = "SAMPLE_RESULT "
@@ -557,6 +557,16 @@ def check_material(check, asset, stage, path, material, has_colors, images):
         if infos["occlusionTexture"]:
             strength = infos["occlusionTexture"].get("strength", 1)
             check_occlusion(check, textures.get("occlusionTexture"), strength, label)
+
+    # Both shaders default to glTF's 1.5, an ior of 0 stands for a very large one, and an unlit material has none.
+    ior = material.get("extensions", {}).get("KHR_materials_ior", {}).get("ior", 1.5)
+    expected_ior = None if unlit or ior == 1.5 else (1e6 if ior == 0 else ior)
+    for description, shader in (("Preview", surface), ("MaterialX", pbr_surface)):
+        value = shader.GetInput("ior").Get() if shader.GetInput("ior") else None
+        if expected_ior is None:
+            check.expect(value is None, f"{label} {description} authors an ior of {value}, not the default")
+        elif check.expect(value is not None, f"{label} {description} ior is not authored"):
+            check.close(value, expected_ior, f"{label} {description} ior")
 
     mode = material.get("alphaMode", "OPAQUE")
     modes = {"OPAQUE": 0, "MASK": 1, "BLEND": 2}

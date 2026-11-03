@@ -22,6 +22,8 @@ here.
   through the package resolver by a vendored libwebp decoder.
 - `KHR_materials_unlit`, optional or required: the base color, with its alpha, is emitted through both
   shader paths, and the fallback properties are not authored.
+- `KHR_materials_ior`, optional or required: the dielectric Fresnel term's ior in both shader paths,
+  with an ior of 0 as a very large one.
 
 ### Changed
 

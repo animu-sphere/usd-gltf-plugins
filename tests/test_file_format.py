@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 import base64
 import faulthandler
+import itertools
 import json
 import math
 import pathlib
@@ -3329,6 +3330,120 @@ class FileFormatTest(unittest.TestCase):
                             invalid["textures"] = [{"source": 0}]
                             material["normalTexture"] = {"index": 0}
                             message = "texture coordinate set the primitive does not have"
+                        write_asset(path, invalid, invalid_binary)
+                        with self.assertRaisesRegex(Tf.ErrorException, message):
+                            layer.Reload(True)
+                        self.assertEqual(layer_text(layer), before)
+
+    def test_ior_materials(self):
+        def open_with_stderr(path):
+            return subprocess.run(
+                [sys.executable, "-c",
+                 "from pxr import Usd; import sys; assert Usd.Stage.Open(sys.argv[1])", str(path)],
+                capture_output=True, text=True, check=False,
+            )
+
+        def ior_input(shader):
+            value = shader.GetInput("ior")
+            return value.Get() if value else None
+
+        # The value authored in both paths, or None where the shaders' default of 1.5 applies.
+        cases = (
+            ("water", {"ior": 1.33}, False, 1.33),
+            ("one", {"ior": 1}, False, 1),
+            ("large", {"ior": 4}, False, 4),
+            ("infinite", {"ior": 0}, False, 1e6),
+            ("explicit default", {"ior": 1.5}, False, None),
+            ("default", {}, False, None),
+            ("unlit", {"ior": 2}, True, None),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            for extension in ("gltf", "glb"):
+                for (case, ior, unlit, expected), required in itertools.product(cases, (False, True)):
+                    with self.subTest(extension=extension, case=case, required=required):
+                        name = f"{case.replace(' ', '_')}_{'required' if required else 'optional'}"
+                        path = pathlib.Path(directory) / f"ior_{name}.{extension}"
+                        document, binary = mesh_document(extension)
+                        used = ["KHR_materials_ior"] + (["KHR_materials_unlit"] if unlit else [])
+                        document["extensionsUsed"] = used
+                        if required:
+                            document["extensionsRequired"] = used
+                        document["meshes"][0]["primitives"][0]["material"] = 0
+                        document["meshes"][0]["primitives"][1]["material"] = 1
+                        lit = {"pbrMetallicRoughness": {"baseColorFactor": [0.2, 0.4, 0.6, 1],
+                                                        "metallicFactor": 0.25, "roughnessFactor": 0.5}}
+                        extensions = {"KHR_materials_ior": ior}
+                        if unlit:
+                            extensions["KHR_materials_unlit"] = {}
+                        document["materials"] = [{**lit, "extensions": extensions}, lit]
+                        write_asset(path, document, binary)
+                        result = open_with_stderr(path)
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertNotIn("'KHR_materials_ior' is not supported", result.stderr)
+                        self.assertEqual("KHR_materials_ior is ignored, because the material is unlit"
+                                         in result.stderr, unlit, result.stderr)
+
+                        stage = Usd.Stage.Open(str(path))
+                        material = UsdShade.Material.Get(stage, "/Asset/mtl/Material_0")
+                        preview = UsdShade.Shader.Get(stage, "/Asset/mtl/Material_0/preview/surface")
+                        mtlx = UsdShade.Shader.Get(stage, "/Asset/mtl/Material_0/mtlx/surface")
+                        self.assert_material_nodegraphs(material, preview, mtlx)
+                        if expected is None:
+                            self.assertIsNone(ior_input(preview))
+                            self.assertIsNone(ior_input(mtlx))
+                        else:
+                            self.assertAlmostEqual(ior_input(preview), expected, places=5)
+                            self.assertAlmostEqual(ior_input(mtlx), expected, places=5)
+                            # gltf_pbr declares its ior uniform.
+                            self.assertEqual(mtlx.GetInput("ior").GetAttr().GetVariability(),
+                                             Sdf.VariabilityUniform)
+                            self.assertFalse(preview.GetInput("ior").GetAttr().GetVariability()
+                                             == Sdf.VariabilityUniform)
+                        # The ior changes only the Fresnel term; every other input is as without it.
+                        self.assertTrue(Gf.IsClose(preview.GetInput("diffuseColor").Get(),
+                                                   Gf.Vec3f(0) if unlit else Gf.Vec3f(0.2, 0.4, 0.6), 1e-6))
+                        self.assertFalse(preview.GetInput("useSpecularWorkflow"))
+                        if not unlit:
+                            self.assertFalse(mtlx.GetInput("specular"))
+                            self.assertAlmostEqual(preview.GetInput("metallic").Get(), 0.25, places=6)
+                            self.assertAlmostEqual(mtlx.GetInput("roughness").Get(), 0.5, places=6)
+                        # A material without the extension authors no ior.
+                        self.assertIsNone(ior_input(UsdShade.Shader.Get(stage, "/Asset/mtl/Material_1/preview/surface")))
+                        self.assertIsNone(ior_input(UsdShade.Shader.Get(stage, "/Asset/mtl/Material_1/mtlx/surface")))
+
+    def test_ior_failures_preserve_layer(self):
+        cases = (
+            ("not an object", 1.4, "KHR_materials_ior is not an object"),
+            ("wrong type", {"ior": "1.4"}, "KHR_materials_ior has a field of the wrong type"),
+            ("overflow", {"ior": 1e39}, "KHR_materials_ior is out of range"),
+            ("below one", {"ior": 0.5}, "material ior is neither 0 nor at least 1"),
+            ("negative", {"ior": -1.5}, "material ior is neither 0 nor at least 1"),
+            ("unlit below one", {"ior": 0.5}, "material ior is neither 0 nor at least 1"),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            for extension in ("gltf", "glb"):
+                path = pathlib.Path(directory) / ("ior." + extension)
+                document, binary = mesh_document(extension)
+                document["extensionsUsed"] = ["KHR_materials_ior"]
+                document["materials"] = [{"extensions": {"KHR_materials_ior": {"ior": 1.25}}}]
+                document["meshes"][0]["primitives"][0]["material"] = 0
+                write_asset(path, document, binary)
+                stage = Usd.Stage.Open(str(path))
+                layer = stage.GetRootLayer()
+                before = layer_text(layer)
+                preview = UsdShade.Shader.Get(stage, "/Asset/mtl/Material_0/preview/surface")
+                self.assertAlmostEqual(preview.GetInput("ior").Get(), 1.25, places=6)
+                for case, value, message in cases:
+                    with self.subTest(extension=extension, case=case):
+                        invalid, invalid_binary = mesh_document(extension)
+                        invalid["extensionsUsed"] = ["KHR_materials_ior"]
+                        invalid["meshes"][0]["primitives"][0]["material"] = 0
+                        extensions = {"KHR_materials_ior": value}
+                        if case.startswith("unlit"):
+                            # Ignoring a property does not make an invalid value valid.
+                            invalid["extensionsUsed"].append("KHR_materials_unlit")
+                            extensions["KHR_materials_unlit"] = {}
+                        invalid["materials"] = [{"extensions": extensions}]
                         write_asset(path, invalid, invalid_binary)
                         with self.assertRaisesRegex(Tf.ErrorException, message):
                             layer.Reload(True)

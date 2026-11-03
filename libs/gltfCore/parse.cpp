@@ -4,6 +4,7 @@
 #include <simdjson.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <string_view>
 
@@ -160,9 +161,10 @@ hasMalformedLight(const std::byte* bytes, std::size_t size)
     return false;
 }
 
-// fastgltf rejects such a material without saying why.
-bool
-hasMalformedUnlit(const std::byte* bytes, std::size_t size)
+// fastgltf rejects a material extension of the wrong type without saying why. Returns an empty
+// string if no such extension is found.
+std::string
+describeMalformedMaterial(const std::byte* bytes, std::size_t size)
 {
     const auto json = jsonOf(bytes, size);
     simdjson::dom::parser parser;
@@ -171,7 +173,7 @@ hasMalformedUnlit(const std::byte* bytes, std::size_t size)
     if (parser.parse(json.data(), json.size()).get(root) != simdjson::SUCCESS ||
         root["materials"].get_array().get(materials) != simdjson::SUCCESS)
     {
-        return false;
+        return {};
     }
     for (const auto material : materials)
     {
@@ -180,10 +182,33 @@ hasMalformedUnlit(const std::byte* bytes, std::size_t size)
                 simdjson::SUCCESS &&
             !unlit.is_object())
         {
-            return true;
+            return "KHR_materials_unlit is not an object";
+        }
+        simdjson::dom::element ior;
+        if (material["extensions"][fastgltf::extensions::KHR_materials_ior].get(ior) ==
+            simdjson::SUCCESS)
+        {
+            simdjson::dom::element value;
+            double number = 0;
+            if (!ior.is_object())
+            {
+                return "KHR_materials_ior is not an object";
+            }
+            if (ior["ior"].get(value) == simdjson::SUCCESS)
+            {
+                if (value.get_double().get(number) != simdjson::SUCCESS)
+                {
+                    return "KHR_materials_ior has a field of the wrong type";
+                }
+                // fastgltf reads it as a float.
+                if (!std::isfinite(float(number)))
+                {
+                    return "KHR_materials_ior is out of range";
+                }
+            }
         }
     }
-    return false;
+    return {};
 }
 
 } // namespace
@@ -193,6 +218,7 @@ IsImplementedExtension(std::string_view extension)
 {
     return extension == fastgltf::extensions::EXT_texture_webp ||
            extension == fastgltf::extensions::KHR_lights_punctual ||
+           extension == fastgltf::extensions::KHR_materials_ior ||
            extension == fastgltf::extensions::KHR_materials_unlit ||
            extension == fastgltf::extensions::KHR_mesh_quantization ||
            extension == fastgltf::extensions::KHR_texture_basisu ||
@@ -210,8 +236,9 @@ Parse(const std::byte* bytes, std::size_t size, std::string& error)
     }
     fastgltf::Parser parser(
         fastgltf::Extensions::EXT_texture_webp | fastgltf::Extensions::KHR_lights_punctual |
-        fastgltf::Extensions::KHR_materials_unlit | fastgltf::Extensions::KHR_mesh_quantization |
-        fastgltf::Extensions::KHR_texture_basisu | fastgltf::Extensions::KHR_texture_transform);
+        fastgltf::Extensions::KHR_materials_ior | fastgltf::Extensions::KHR_materials_unlit |
+        fastgltf::Extensions::KHR_mesh_quantization | fastgltf::Extensions::KHR_texture_basisu |
+        fastgltf::Extensions::KHR_texture_transform);
     auto asset = parser.loadGltf(data.get(), {}, fastgltf::Options::None);
     auto result = asset.error();
     if (result == fastgltf::Error::None &&
@@ -240,9 +267,9 @@ Parse(const std::byte* bytes, std::size_t size, std::string& error)
     {
         error = describeRequiredExtensions(bytes, size);
     }
-    if (result == fastgltf::Error::InvalidGltf && hasMalformedUnlit(bytes, size))
+    if (result == fastgltf::Error::InvalidGltf || result == fastgltf::Error::InvalidJson)
     {
-        error = "KHR_materials_unlit is not an object";
+        error = describeMalformedMaterial(bytes, size);
     }
     if (error.empty())
     {

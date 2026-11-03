@@ -6,10 +6,6 @@ implementation order, which investigation may change. Each feature follows the
 
 ## v0.2.0: wider static scene support
 
-### Next
-
-- `KHR_materials_ior`, stating its relation to the existing PBR parameters, in both networks.
-
 ### If measurements and time allow
 
 Each of these moves to the [backlog](backlog.md) if it does not fit this version.

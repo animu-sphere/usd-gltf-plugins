@@ -68,7 +68,17 @@ struct PbrFactors
     fastgltf::AlphaMode alphaMode;
     // KHR_materials_unlit: the base color, with its alpha, is the whole result.
     bool unlit;
+    // KHR_materials_ior, already validated; 0 stands for infinity.
+    float ior;
 };
+
+// glTF's default, and the default of both shaders' ior inputs.
+constexpr float kDefaultIor = 1.5f;
+
+// An ior of 0 makes glTF's Fresnel term 1 at every angle, which glTF lets a renderer treat as a
+// very large finite ior. This one gives an F0 of 0.999996, with 1 at grazing angles, and keeps
+// 1 / ior finite for refraction.
+constexpr float kInfiniteIor = 1.0e6f;
 
 PbrFactors
 pbrFactors(const fastgltf::Material& source)
@@ -83,7 +93,20 @@ pbrFactors(const fastgltf::Material& source)
             source.occlusionTexture ? float(source.occlusionTexture->strength) : 1.0f,
             source.normalTexture ? float(source.normalTexture->scale) : 1.0f,
             source.alphaMode,
-            source.unlit};
+            source.unlit,
+            float(source.ior)};
+}
+
+// The ior to author, if it is not the shaders' default. An unlit material reflects nothing, so
+// its ior has no effect.
+std::optional<float>
+authoredIor(const PbrFactors& factors)
+{
+    if (factors.unlit || factors.ior == kDefaultIor)
+    {
+        return std::nullopt;
+    }
+    return factors.ior == 0.0f ? kInfiniteIor : factors.ior;
 }
 
 // Neither shader has an unlit mode, so an unlit material emits its base color and reflects nothing.
@@ -672,6 +695,8 @@ authorPreview(const UsdShadeMaterial& material, const PbrFactors& factors, bool 
     const bool opacity = previewUsesOpacity(factors);
     // A black metal has no diffuse term, and its specular color is black at every angle.
     const bool unlit = factors.unlit;
+    // In the metallic workflow, a dielectric's F0 is ((1 - ior) / (1 + ior))^2, as in glTF.
+    const auto ior = authoredIor(factors);
     return surface && surface.CreateIdAttr().Set(TfToken("UsdPreviewSurface")) &&
            setInput(surface, "diffuseColor", SdfValueTypeNames->Color3f,
                     unlit ? GfVec3f(0) : factors.baseColor) &&
@@ -681,6 +706,7 @@ authorPreview(const UsdShadeMaterial& material, const PbrFactors& factors, bool 
                     unlit ? 1.0f : factors.roughness) &&
            setInput(surface, "emissiveColor", SdfValueTypeNames->Color3f,
                     unlit ? factors.baseColor : factors.emissive) &&
+           (!ior || setInput(surface, "ior", SdfValueTypeNames->Float, *ior)) &&
            (!opacity || setInput(surface, "opacity", SdfValueTypeNames->Float, factors.alpha)) &&
            (!opacity || factors.alphaMode != fastgltf::AlphaMode::Mask ||
             setInput(surface, "opacityThreshold", SdfValueTypeNames->Float, factors.alphaCutoff)) &&
@@ -712,6 +738,10 @@ authorMtlx(const UsdShadeMaterial& material, const PbrFactors& factors, bool ver
     // A dielectric's specular input scales both its F0 and F90, so 0 removes its reflection.
     const bool unlit = factors.unlit;
     const auto alphaMode = surface.CreateInput(TfToken("alpha_mode"), SdfValueTypeNames->Int);
+    // gltf_pbr computes its dielectric F0 from ior as glTF does, and declares the input uniform.
+    const auto ior = authoredIor(factors);
+    const auto iorInput =
+        ior ? surface.CreateInput(TfToken("ior"), SdfValueTypeNames->Float) : UsdShadeInput();
     return surface.CreateIdAttr().Set(TfToken("ND_gltf_pbr_surfaceshader")) &&
            setInput(surface, "base_color", SdfValueTypeNames->Color3f,
                     unlit ? GfVec3f(0) : factors.baseColor) &&
@@ -721,6 +751,8 @@ authorMtlx(const UsdShadeMaterial& material, const PbrFactors& factors, bool ver
            (!unlit || setInput(surface, "specular", SdfValueTypeNames->Float, 0.0f)) &&
            setInput(surface, "emissive", SdfValueTypeNames->Color3f,
                     unlit ? factors.baseColor : factors.emissive) &&
+           (!ior || (iorInput && iorInput.GetAttr().SetVariability(SdfVariabilityUniform) &&
+                     iorInput.Set(*ior))) &&
            alphaMode && alphaMode.GetAttr().SetVariability(SdfVariabilityUniform) &&
            alphaMode.Set(opaque ? 0 : (mask ? 1 : 2)) &&
            (opaque || setInput(surface, "alpha", SdfValueTypeNames->Float, factors.alpha)) &&
@@ -962,6 +994,12 @@ MaterialAuthor::Bind(std::size_t index, std::size_t uvSetCount, const pxr::VtVec
         error = "material alpha cutoff is non-finite or negative";
         return false;
     }
+    // The parser has already rejected a value that is not finite.
+    if (source.ior != 0 && !(source.ior >= 1))
+    {
+        error = "material ior is neither 0 nor at least 1";
+        return false;
+    }
     auto& material = colors ? _vertexColorMaterials[index] : _materials[index];
     if (!material)
     {
@@ -988,6 +1026,12 @@ MaterialAuthor::Bind(std::size_t index, std::size_t uvSetCount, const pxr::VtVec
             TF_WARN("glTF material %zu: a MaterialX renderer may derive the normal map's tangent "
                     "frame without its rotation or mirroring by KHR_texture_transform",
                     index);
+        }
+        if (source.unlit && source.ior != kDefaultIor)
+        {
+            TF_WARN(
+                "glTF material %zu: KHR_materials_ior is ignored, because the material is unlit",
+                index);
         }
         if (pbr.baseColorTexture && colors)
         {
