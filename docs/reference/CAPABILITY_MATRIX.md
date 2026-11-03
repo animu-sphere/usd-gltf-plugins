@@ -224,19 +224,22 @@ not in this repository: 339 files in 150 models. The result for each file is in
 [`tests/sample_baseline.json`](../../tests/sample_baseline.json), and
 [ADR 0010](../adr/0010-sample-baseline.md) explains what is compared and its limits.
 
-Last result: on `7de8b8f` with lights added, on Windows with OpenUSD 26.08, the
-OpenStrata lookdev runtime and an NVIDIA RTX A5000. Repeated runs gave the same result for every file. It is not part of CI.
+Last result for opening and meaning: on `368e730` with WebP added, on Linux x86-64 with OpenUSD 26.08
+from the `usd-core` wheel, without rendering. Every file whose result WebP does not change matched the
+previous result, on `7de8b8f` on Windows with OpenUSD 26.08, the OpenStrata lookdev runtime and an
+NVIDIA RTX A5000, which is also the last render. Repeated runs there gave the same result for every
+file. It is not part of CI.
 NodePerformanceTest's GLB times out, because its 10,000 materials read 20,000 embedded images, and
 outside a resolver cache scope each read parses the 38 MB file again, about 0.1 second each.
 
 | Result | Files | What it means |
 | --- | --- | --- |
-| Opened | 230 | The stage opens. No file crashed, and one timed out after 600 seconds. |
-| Rejected | 108 | Each has a diagnostic naming a cause the file really has. |
+| Opened | 233 | The stage opens. No file crashed, and one timed out after 600 seconds. |
+| Rejected | 105 | Each has a diagnostic naming a cause the file really has. |
 | Meaning verified | 111 | USD agrees with values decoded from the file, in all that is compared, and the file uses no ignored extension. |
-| Meaning partial | 119 | The same, but the file uses an optional extension that is ignored, with a warning. What it changes is not compared. |
+| Meaning partial | 122 | The same, but the file uses an optional extension that is ignored, with a warning. What it changes is not compared. |
 | Meaning differs | 0 | |
-| Rendered | 230 | Storm drew something through both shader paths. No pixel was judged, so this is not evidence of correct display. |
+| Rendered | 230 | Storm drew something through both shader paths. No pixel was judged, so this is not evidence of correct display. The 3 files that WebP opens have not been rendered. |
 
 Why files are rejected, read from each file. Most files have several causes, so a count of files that
 have a cause is not what supporting it would open:
@@ -245,14 +248,13 @@ have a cause is not what supporting it would open:
 | --- | --- | --- |
 | Animations | 69 | 23 |
 | Skin | 24 | 0 |
-| Requires `KHR_draco_mesh_compression` | 18 | 10 |
+| Requires `KHR_draco_mesh_compression` | 18 | 11 |
 | Morph targets | 10 | 2 |
 | Requires a material extension | 23 | 15 |
-| Requires `EXT_texture_webp` | 5 | 3 |
 | Requires `KHR_node_visibility` | 4 | 0 |
 | Requires meshopt compression | 5 | 2 |
 | Points or lines | 3 | 3 |
 | Sparse accessor | 2 | 2 |
 
-Ignored optional extensions, in files that opened, include `KHR_materials_transmission` (58),
-`KHR_materials_volume` (44), `KHR_materials_ior` (29) and `KHR_materials_clearcoat` (21).
+Ignored optional extensions, in files that opened, include `KHR_materials_transmission` (59),
+`KHR_materials_volume` (44), `KHR_materials_ior` (29) and `KHR_materials_clearcoat` (22).
