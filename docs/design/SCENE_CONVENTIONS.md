@@ -12,6 +12,7 @@ implemented.
     /Node_0                    Xform
       /Mesh_0                  Xform
         /Primitive_0           Mesh
+      /Camera_0                Camera
   /mtl                         Scope
     /Material_0                Material
 ```
@@ -23,8 +24,8 @@ but must not preclude a future shared USD representation.
 
 Each mesh is an Xform below its node, containing one USD Mesh per glTF
 primitive. This retains the primitive boundaries needed for material bindings.
-Use stable index-based prim names such as `Node_12`, `Mesh_3`, `Primitive_0`, and
-`Material_2`. glTF names can be empty, repeated, or invalid in a USD path;
+Use stable index-based prim names such as `Node_12`, `Mesh_3`, `Primitive_0`,
+`Camera_1` and `Material_2`. glTF names can be empty, repeated, or invalid in a USD path;
 retain original names as display names or equivalent metadata. Test name
 stability. Do not prescribe `/Asset/rig` or `/Asset/anim` as mandatory:
 their placement must be decided when UsdSkel and animation are designed.
@@ -125,6 +126,41 @@ whose factor is not 1 also has the products as vertex-interpolated primvars:
 `gltf_previewAlpha` (`float[]`). Primvars read by material graphs use
 underscores rather than namespaces, because Storm's MaterialX shaders fail to
 compile with a colon in a `geomprop` name.
+
+## Cameras
+
+A node's camera is a `UsdGeomCamera` named after the camera's index, below the node, so a camera that
+several nodes use is authored under each. Both look along local -Z with +Y up, so no axis changes.
+See the [decision record](../adr/0012-cameras.md).
+
+glTF places a camera by the rotation and translation of its node's world transform, and ignores its
+scale, while a USD renderer views through the inverse of the prim's whole transform. When the node's
+transform, accumulated from the asset's root, holds a scale or shear, the camera prim has a transform
+that cancels it. A scale that the assembler applies above the asset is a change of units, and scales
+the view with the scene. A node whose transform is degenerate, reflected or sheared beyond a rotation
+has no view in glTF, and is rejected: its columns, each divided by its length, must have a
+determinant within 0.001 of 1.
+
+| glTF | USD |
+| --- | --- |
+| `perspective` | `projection = "perspective"` |
+| `yfov` | `focalLength = verticalAperture / (2 tan(yfov / 2))` |
+| `aspectRatio` | `verticalAperture = horizontalAperture / aspectRatio`, where `horizontalAperture` is `GfCamera`'s default, 20.955. Undefined, it is 1. |
+| `znear`, `zfar` | `clippingRange`. Undefined `zfar`, an infinite projection, is 1,000,000, USD's own fallback. |
+| `orthographic` | `projection = "orthographic"`, with no focal length |
+| `xmag`, `ymag` | `horizontalAperture = 20 xmag` and `verticalAperture = 20 ymag`, since an aperture is in tenths of a unit and a magnification is half the width |
+| `znear`, `zfar` | `clippingRange` |
+| `name` | The prim's display name |
+
+An undefined aspect ratio means the viewport's, which USD cannot author. A renderer that adjusts the
+aperture's width to the viewport keeps `yfov` at any shape, and one that fits the aperture inside it
+keeps `yfov` in a viewport at least as wide as tall, as usdview does. Other differences of aspect
+ratio are adapted by the renderer, as glTF also leaves to the client. No depth of field is authored.
+
+Values the specification forbids are rejected, as are a `yfov` of pi or more, which no aperture holds,
+a negative magnification, which would mirror the view, a `znear` that is not below the far plane of
+an infinite projection, and values beyond a float. A camera that no selected node uses is not
+checked.
 
 ## Scene selection
 

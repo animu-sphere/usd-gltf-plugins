@@ -48,7 +48,8 @@ a change is an edit that a pull request shows.
 
 ## Compared for meaning
 
-For the selected scene: stage metrics; prim paths and the mesh count; world transforms; points,
+For the selected scene: stage metrics; prim paths and the mesh count; world transforms; each camera's
+view and projection, as a renderer combines them; points,
 triangles (in any rotation that keeps winding), normals including generated ones, UV sets with V
 flipped, tangents and vertex colors; bindings and `doubleSided`. For each bound material: which
 shader each path resolves to; for each texture in both networks, that it resolves, UV set, its

@@ -436,11 +436,6 @@ def unsupported_document(extension, feature):
             item["attributes"].update({"JOINTS_0": joints, "WEIGHTS_0": weights})
         node["skin"] = 0
         document["skins"] = [{"joints": [0]}]
-    elif feature == "camera":
-        node["camera"] = 0
-        document["cameras"] = [{"type": "perspective", "perspective": {
-            "yfov": 1.0, "znear": 0.1,
-        }}]
     elif feature == "light":
         document["extensionsUsed"] = ["KHR_lights_punctual"]
         document["extensions"] = {"KHR_lights_punctual": {"lights": [{"type": "point"}]}}
@@ -470,6 +465,61 @@ def unsupported_document(extension, feature):
             base64.b64encode(binary).decode())
         return document, None
     return document, binary
+
+
+HALF_TURN_SINE = math.sqrt(0.5)
+
+
+def camera_document(extension):
+    """Cameras on a mesh's node, under scaled nodes and on a matrix node, with camera 0 used twice."""
+    document, binary = mesh_document(extension)
+    document["scenes"][0]["nodes"] = [0, 1, 3]
+    document["nodes"] = [
+        {"mesh": 0, "camera": 0, "translation": [2, 0, 0]},
+        {"camera": 1, "translation": [0, 1, 5], "rotation": [0, HALF_TURN_SINE, 0, HALF_TURN_SINE],
+         "scale": [2, 2, 2], "children": [2]},
+        {"camera": 2, "translation": [1, 0, 0], "scale": [1, 3, 0.5]},
+        {"camera": 0, "matrix": [1, 0, 0, 0, 0, 0, 1, 0, 0, -1, 0, 0, 0, 0, 10, 1]},
+    ]
+    document["cameras"] = [
+        {"name": "Main camera", "type": "perspective", "perspective": {
+            "aspectRatio": 1.5, "yfov": 0.660593, "zfar": 100, "znear": 0.01,
+        }},
+        {"type": "perspective", "perspective": {"yfov": 1.2, "znear": 0.5}},
+        {"type": "orthographic", "orthographic": {"xmag": 2, "ymag": 1.5, "zfar": 50, "znear": 0}},
+    ]
+    return document, binary
+
+
+def gltf_projection(camera):
+    """Returns a camera's projection from the glTF specification, in USD's row-vector convention.
+
+    An infinite projection uses the far plane the importer authors for it.
+    """
+    if camera["type"] == "perspective":
+        values = camera["perspective"]
+        aspect = values.get("aspectRatio", 1.0)
+        near, far = values["znear"], values.get("zfar", 1000000.0)
+        tangent = math.tan(values["yfov"] / 2)
+        columns = Gf.Matrix4d(
+            1 / (aspect * tangent), 0, 0, 0,
+            0, 1 / tangent, 0, 0,
+            0, 0, (far + near) / (near - far), 2 * far * near / (near - far),
+            0, 0, -1, 0)
+    else:
+        values = camera["orthographic"]
+        near, far = values["znear"], values["zfar"]
+        columns = Gf.Matrix4d(
+            1 / values["xmag"], 0, 0, 0,
+            0, 1 / values["ymag"], 0, 0,
+            0, 0, 2 / (near - far), (far + near) / (near - far),
+            0, 0, 0, 1)
+    return columns.GetTranspose()
+
+
+def rigid(axis, degrees, position):
+    """Returns a rotation followed by a translation."""
+    return Gf.Matrix4d().SetRotate(Gf.Rotation(Gf.Vec3d(*axis), degrees)).SetTranslateOnly(Gf.Vec3d(*position))
 
 
 def topology_document(extension, mode, indices, external=False, normal=False, index_type=5123):
@@ -2905,7 +2955,6 @@ class FileFormatTest(unittest.TestCase):
     def test_unsupported_features_fail_without_publishing(self):
         cases = {
             "skin": "node 1: skins are not supported",
-            "camera": "node 1: cameras are not supported",
             "light": "node 1: KHR_lights_punctual lights are not supported",
             "morph target": "morph targets are not supported",
             "mesh weights": "mesh 0: morph weights are not supported",
@@ -2935,6 +2984,161 @@ class FileFormatTest(unittest.TestCase):
                         self.assertTrue(stage.GetPrimAtPath("/Asset/geo/Node_0/Mesh_0/Primitive_0"))
                 write_asset(path, document, binary)
                 self.assertTrue(layer.Reload(True))
+
+    def test_cameras(self):
+        # Each camera prim, its glTF camera, and the rotation and position of its node without scale.
+        expected = {
+            "Node_0/Camera_0": (0, rigid((1, 0, 0), 0, (2, 0, 0))),
+            "Node_1/Camera_1": (1, rigid((0, 1, 0), 90, (0, 1, 5))),
+            "Node_1/Node_2/Camera_2": (2, rigid((0, 1, 0), 90, (0, 1, 3))),
+            "Node_3/Camera_0": (0, rigid((1, 0, 0), 90, (0, 0, 10))),
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            for extension in ("gltf", "glb"):
+                with self.subTest(extension=extension):
+                    path = pathlib.Path(directory) / ("cameras." + extension)
+                    document, binary = camera_document(extension)
+                    write_asset(path, document, binary)
+                    stage = Usd.Stage.Open(str(path))
+                    cache = UsdGeom.XformCache()
+                    authored = {str(prim.GetPath()) for prim in stage.Traverse() if prim.IsA(UsdGeom.Camera)}
+                    self.assertEqual(authored, {"/Asset/geo/" + key for key in expected})
+                    self.assertTrue(stage.GetPrimAtPath("/Asset/geo/Node_0/Mesh_0/Primitive_0"))
+                    for key, (index, view) in expected.items():
+                        prim = stage.GetPrimAtPath("/Asset/geo/" + key)
+                        camera = UsdGeom.Camera(prim)
+                        source = document["cameras"][index]
+                        self.assertEqual(prim.GetDisplayName(), source.get("name", ""))
+                        self.assertEqual(camera.GetProjectionAttr().Get(), source["type"])
+                        # Only a camera under a scaled node needs a transform to cancel the scale.
+                        self.assertEqual(bool(camera.GetOrderedXformOps()), key.startswith("Node_1"), key)
+                        if source["type"] == "perspective":
+                            self.assertAlmostEqual(camera.GetHorizontalApertureAttr().Get(),
+                                                   Gf.Camera.DEFAULT_HORIZONTAL_APERTURE, places=4)
+                        else:
+                            self.assertFalse(camera.GetFocalLengthAttr().HasAuthoredValue())
+                        self.assertFalse(camera.GetFStopAttr().HasAuthoredValue())
+                        # Hydra views through the inverse of the prim's whole transform.
+                        world = cache.GetLocalToWorldTransform(prim)
+                        actual = world.GetInverse() * camera.GetCamera().frustum.ComputeProjectionMatrix()
+                        wanted = view.GetInverse() * gltf_projection(source)
+                        self.assertTrue(Gf.IsClose(actual, wanted, 1e-5), f"{key}: {actual} != {wanted}")
+                    perspective = UsdGeom.Camera(stage.GetPrimAtPath("/Asset/geo/Node_0/Camera_0")).GetCamera()
+                    self.assertAlmostEqual(perspective.aspectRatio, 1.5, places=5)
+                    self.assertAlmostEqual(math.radians(perspective.GetFieldOfView(Gf.Camera.FOVVertical)),
+                                           0.660593, places=5)
+                    infinite = UsdGeom.Camera(stage.GetPrimAtPath("/Asset/geo/Node_1/Camera_1")).GetCamera()
+                    self.assertEqual(infinite.aspectRatio, 1.0)
+                    self.assertEqual(infinite.clippingRange, Gf.Range1f(0.5, 1000000))
+
+    def test_cameras_reference_into_a_scaled_stage(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "cameras.gltf"
+            document, binary = camera_document("gltf")
+            write_asset(path, document, binary)
+            stage = Usd.Stage.CreateInMemory()
+            host = UsdGeom.Xform.Define(stage, "/Host")
+            host.AddScaleOp().Set(Gf.Vec3f(100))
+            host.GetPrim().GetReferences().AddReference(str(path))
+            prim = stage.GetPrimAtPath("/Host/geo/Node_1/Camera_1")
+            camera = UsdGeom.Camera(prim)
+            # The host's scale acts as a change of units, so distances in the view grow with it.
+            world = UsdGeom.XformCache().GetLocalToWorldTransform(prim)
+            scale = Gf.Matrix4d().SetScale(100)
+            actual = world.GetInverse() * camera.GetCamera().frustum.ComputeProjectionMatrix()
+            wanted = scale.GetInverse() * rigid((0, 1, 0), 90, (0, 1, 5)).GetInverse() * gltf_projection(
+                document["cameras"][1])
+            self.assertTrue(Gf.IsClose(actual, wanted, 1e-5), f"{actual} != {wanted}")
+
+    def test_camera_failures_preserve_layer(self):
+        def mutate(document, name):
+            perspective = document["cameras"][0]["perspective"]
+            infinite = document["cameras"][1]["perspective"]
+            orthographic = document["cameras"][2]["orthographic"]
+            if name == "camera index":
+                document["nodes"][0]["camera"] = 3
+            elif name == "yfov of pi":
+                perspective["yfov"] = math.pi
+            elif name == "yfov of 0":
+                perspective["yfov"] = 0
+            elif name == "aspectRatio":
+                perspective["aspectRatio"] = 0
+            elif name == "perspective znear":
+                perspective["znear"] = 0
+            elif name == "perspective zfar":
+                perspective["zfar"] = perspective["znear"]
+            elif name == "infinite znear":
+                infinite["znear"] = 1000000
+            elif name == "xmag":
+                orthographic["xmag"] = 0
+            elif name == "negative ymag":
+                orthographic["ymag"] = -1.5
+            elif name == "orthographic znear":
+                orthographic["znear"] = -1
+            elif name == "orthographic zfar":
+                orthographic["zfar"] = 0
+            elif name == "beyond a float":
+                orthographic["xmag"] = 3e38
+            elif name == "missing yfov":
+                del perspective["yfov"]
+            elif name == "reflected":
+                document["nodes"][0]["scale"] = [-1, 1, 1]
+            elif name == "degenerate":
+                document["nodes"][0]["scale"] = [1, 0, 1]
+            elif name == "sheared":
+                # A rotation inside an unequal scale.
+                document["nodes"][1]["scale"] = [2, 1, 2]
+                document["nodes"][2]["rotation"] = [0, 0, 0.3826834323650898, 0.9238795325112867]
+
+        cases = {
+            "camera index": "camera index 3 is out of range",
+            "yfov of pi": "camera 0: yfov must be greater than 0 and less than pi",
+            "yfov of 0": "camera 0: yfov must be greater than 0 and less than pi",
+            "aspectRatio": "camera 0: aspectRatio must be greater than 0",
+            "perspective znear": "camera 0: znear must be greater than 0",
+            "perspective zfar": "camera 0: zfar must be greater than znear",
+            "infinite znear": "camera 1: znear must be less than the far plane of an infinite projection",
+            "xmag": "camera 2: xmag and ymag must be greater than 0",
+            "negative ymag": "camera 2: xmag and ymag must be greater than 0",
+            "orthographic znear": "camera 2: znear must not be negative",
+            "orthographic zfar": "camera 2: zfar must be greater than znear",
+            "beyond a float": "camera 2: its projection is beyond a float",
+            "missing yfov": "cannot parse",
+            "reflected": "node 0: camera 0 has no view",
+            "degenerate": "node 0: camera 0 has no view",
+            "sheared": "node 2: camera 2 has no view",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            for extension in ("gltf", "glb"):
+                path = pathlib.Path(directory) / ("cameras." + extension)
+                document, binary = camera_document(extension)
+                write_asset(path, document, binary)
+                stage = Usd.Stage.Open(str(path))
+                layer = stage.GetRootLayer()
+                before = layer_text(layer)
+                for name, message in cases.items():
+                    with self.subTest(extension=extension, name=name):
+                        invalid, invalid_binary = camera_document(extension)
+                        mutate(invalid, name)
+                        write_asset(path, invalid, invalid_binary)
+                        with self.assertRaisesRegex(Tf.ErrorException, message):
+                            layer.Reload(True)
+                        self.assertEqual(layer_text(layer), before)
+                write_asset(path, document, binary)
+                self.assertTrue(layer.Reload(True))
+
+    def test_cameras_outside_selected_scene_are_not_checked(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for extension in ("gltf", "glb"):
+                with self.subTest(extension=extension):
+                    document, binary = camera_document(extension)
+                    document["scenes"][0]["nodes"] = [3]
+                    document["cameras"][1]["perspective"]["yfov"] = 0
+                    path = pathlib.Path(directory) / ("unselected." + extension)
+                    write_asset(path, document, binary)
+                    stage = Usd.Stage.Open(str(path))
+                    authored = [str(prim.GetPath()) for prim in stage.Traverse() if prim.IsA(UsdGeom.Camera)]
+                    self.assertEqual(authored, ["/Asset/geo/Node_3/Camera_0"])
 
     def test_external_buffers_and_reload(self):
         with tempfile.TemporaryDirectory() as directory:

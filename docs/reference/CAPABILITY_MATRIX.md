@@ -28,6 +28,7 @@ CI success is not evidence of display compatibility.
 | `.gltf` / `.glb` registration and import | Verified (USD data, CI) | Read only; writing and editing are declared unsupported. Eager conversion on read. | `tests/test_file_format.py::test_registration_and_capabilities` |
 | Scene selection | Verified (USD data, CI) | Declared default scene, or scene 0 with a warning. No scenes or an invalid default fail. Scenes are never merged. | `tests/scene_selection.cpp`, `tests/test_file_format.py::test_first_scene_fallback_warns`, `tests/test_file_format.py::test_failures_report_diagnostics` |
 | Node hierarchy and transforms | Verified (USD data, CI) | TRS and matrix nodes. Invalid quaternions and perspective matrices fail. A quaternion within the tolerance of unit length is normalized. Multiply referenced meshes are duplicated, not shared. | `tests/test_file_format.py::test_scene_hierarchy_and_transforms`, `tests/test_file_format.py::test_rotations_are_normalized_within_the_tolerance`, `tests/test_file_format.py::test_node_order_and_optional_extension_warning` |
+| Cameras | Verified (USD data, CI) | Perspective, finite and infinite, and orthographic, below each node that uses them, with the node's scale cancelled as glTF ignores it. An undefined aspect ratio is authored as 1 and keeps `yfov` only where the renderer matches the viewport's height, and an infinite projection ends at 1,000,000. Degenerate, reflected and sheared nodes and values outside the specification fail. Compared as a renderer combines view and projection, not rendered. See the [decision record](../adr/0012-cameras.md). | `tests/test_file_format.py::test_cameras`, `tests/test_file_format.py::test_cameras_reference_into_a_scaled_stage`, `tests/test_file_format.py::test_camera_failures_preserve_layer`, `tests/test_file_format.py::test_cameras_outside_selected_scene_are_not_checked` |
 | Triangle-based meshes | Verified (USD data, CI) | Indexed and non-indexed TRIANGLES, TRIANGLE_STRIP and TRIANGLE_FAN with float or quantized POSITION. Interleaved accessors are accepted. | `tests/test_file_format.py::test_triangle_meshes`, `tests/test_file_format.py::test_triangle_strips_and_fans`, `tests/test_file_format.py::test_triangle_strip_and_fan_index_types_and_nonindexed_counts`, `tests/test_file_format.py::test_mesh_schema_attributes` |
 | Normals | Verified (USD data, CI) | Supplied float or quantized NORMAL, or generated per face when absent. | `tests/test_file_format.py::test_flat_normals_and_negative_scale` |
 | Mesh quantization (`KHR_mesh_quantization`) | Verified (USD data, CI) | Every format the extension adds to POSITION, NORMAL, TANGENT and TEXCOORD_n, authored as floats, when the file lists it in `extensionsRequired`. Without that, quantized data fails. Normals are not renormalized, so a renderer must normalize them, which Storm was [seen to do](#display-checks) on two samples only. Morph targets remain unsupported. | `tests/test_file_format.py::test_quantized_attribute_formats`, `tests/test_file_format.py::test_quantized_values_keep_their_range_and_precision`, `tests/test_file_format.py::test_quantized_attributes_interleaved_with_node_transform`, `tests/test_file_format.py::test_quantization_declared_without_quantized_data`, `tests/test_file_format.py::test_quantized_failures_preserve_layer` |
@@ -51,7 +52,7 @@ CI success is not evidence of display compatibility.
 | PNG and JPEG images | Experimental | bufferView, data URI and restricted local file images, served by a package resolver or a layer-relative path; embedded images resolve after moving an asset and through references. No image is written during import. See the [decision record](../adr/0001-image-assets.md). Import checks structure without decoding: damaged files, sides above 16384 and external files above 2 GiB fail. Not found: a PNG crafted with valid chunks and invalid data, which [crashes OpenUSD's image loader](../adr/0006-image-failures.md#limits) with or without this plugin; damage inside a JPEG scan; and external files damaged after import. Loader behavior was observed on Windows with Storm only. | `tests/image.cpp`, `tests/test_file_format.py::test_base_color_image_sources_and_networks`, `tests/test_file_format.py::test_images_resolve_after_moving_and_through_references`, `tests/test_file_format.py::test_package_resolver_rejects_invalid_entries`, `tests/test_file_format.py::test_texture_failures_preserve_layer`, `tests/test_file_format.py::test_damaged_and_oversized_images_fail_import`, `tests/test_file_format.py::test_unusual_but_valid_images_are_accepted`, `tests/test_file_format.py::test_checks_do_not_decode_image_data`, `tests/test_file_format.py::test_image_damaged_after_import_is_not_served`, `tests/test_file_format.py::test_external_image_file_size_limit` |
 | KTX2 (`KHR_texture_basisu`) | Experimental | ETC1S and UASTC LDR 4x4 single 2D images, up to 16384 per side, from bufferViews, data URIs and restricted local files, served as PNG by the package resolver and decoded on each read, without a cache. Other codecs, cubemaps and arrays are rejected. Import reads the header only, so a damaged body fails when read, with a warning, after the layer is published. Tested in CI, with the [display check](#display-checks) on Windows. See the [decision record](../adr/0005-ktx2-decoder.md). | `tests/image.cpp`, `tests/test_file_format.py::test_ktx2_images_are_served_as_png`, `tests/test_file_format.py::test_ktx2_is_preferred_over_its_fallback_and_does_not_warn`, `tests/test_file_format.py::test_ktx2_file_resolves_after_moving_and_on_reload`, `tests/test_file_format.py::test_ktx2_failures_preserve_layer`, `tests/test_file_format.py::test_ktx2_orientation_required_by_the_extension_is_accepted`, `tests/test_file_format.py::test_damaged_ktx2_body_fails_when_read`, `tests/test_file_format.py::test_ktx2_textures_view_fixture` |
 | Point and line primitives, other vertex attributes, sparse accessors | Unsupported | Rejected with a diagnostic. | `tests/test_file_format.py::test_mesh_failures_and_reload_preservation` |
-| Skins, cameras, lights and morphs | Unsupported | Rejected when used in the selected scene, including morph targets and node or mesh morph weights. | `tests/test_file_format.py::test_unsupported_features_fail_without_publishing`, `tests/test_file_format.py::test_optional_lights_outside_selected_scene_and_required_lights` |
+| Skins, lights and morphs | Unsupported | Rejected when used in the selected scene, including morph targets and node or mesh morph weights. | `tests/test_file_format.py::test_unsupported_features_fail_without_publishing`, `tests/test_file_format.py::test_optional_lights_outside_selected_scene_and_required_lights` |
 | Animation | Unsupported | Any asset with animations is rejected, including animations outside the selected scene. | `tests/test_file_format.py::test_unsupported_features_fail_without_publishing`, `tests/test_file_format.py::test_animation_outside_selected_scene_is_rejected` |
 | Export | Unsupported | Not implemented. | |
 | General renderer compatibility | Unsupported | No renderer, including Storm, has a general compatibility claim. | |
@@ -212,28 +213,27 @@ not in this repository: 339 files in 150 models. The result for each file is in
 [`tests/sample_baseline.json`](../../tests/sample_baseline.json), and
 [ADR 0010](../adr/0010-sample-baseline.md) explains what is compared and its limits.
 
-Last result: on `c07d352` with `KHR_mesh_quantization` added, on Windows with OpenUSD 26.08, the
+Last result: on `3d23ee6` with cameras added, on Windows with OpenUSD 26.08, the
 OpenStrata lookdev runtime and an NVIDIA RTX A5000. Repeated runs gave the same result for every file. It is not part of CI.
 
 | Result | Files | What it means |
 | --- | --- | --- |
-| Opened | 203 | The stage opens. No file crashed or timed out. |
-| Rejected | 136 | Each has a diagnostic naming a cause the file really has. |
-| Meaning verified | 98 | USD agrees with values decoded from the file, in all that is compared, and the file uses no ignored extension. |
-| Meaning partial | 105 | The same, but the file uses an optional extension that is ignored, with a warning. What it changes is not compared. |
+| Opened | 218 | The stage opens. No file crashed or timed out. |
+| Rejected | 121 | Each has a diagnostic naming a cause the file really has. |
+| Meaning verified | 108 | USD agrees with values decoded from the file, in all that is compared, and the file uses no ignored extension. |
+| Meaning partial | 110 | The same, but the file uses an optional extension that is ignored, with a warning. What it changes is not compared. |
 | Meaning differs | 0 | |
-| Rendered | 203 | Storm drew something through both shader paths. No pixel was judged, so this is not evidence of correct display. |
+| Rendered | 218 | Storm drew something through both shader paths. No pixel was judged, so this is not evidence of correct display. |
 
 Why files are rejected, read from each file. Most files have several causes, so a count of files that
 have a cause is not what supporting it would open:
 
 | Cause | Files with it | Files with only it |
 | --- | --- | --- |
-| Animations | 69 | 16 |
-| Selected camera | 34 | 15 |
-| Selected light | 24 | 7 |
+| Animations | 69 | 21 |
+| Selected light | 24 | 9 |
 | Skin | 24 | 0 |
-| Requires `KHR_draco_mesh_compression` | 18 | 9 |
+| Requires `KHR_draco_mesh_compression` | 18 | 10 |
 | Requires `KHR_lights_punctual` | 12 | 0 |
 | Morph targets | 10 | 2 |
 | Requires a material extension | 23 | 10 |
@@ -243,5 +243,5 @@ have a cause is not what supporting it would open:
 | Points or lines | 3 | 3 |
 | Sparse accessor | 2 | 2 |
 
-Ignored optional extensions, in files that opened, include `KHR_materials_transmission` (51),
-`KHR_materials_volume` (43), `KHR_materials_ior` (28) and `KHR_materials_clearcoat` (19).
+Ignored optional extensions, in files that opened, include `KHR_materials_transmission` (55),
+`KHR_materials_volume` (43), `KHR_materials_ior` (28) and `KHR_materials_clearcoat` (21).

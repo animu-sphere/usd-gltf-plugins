@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "scene.h"
 
+#include "camera.h"
 #include "material.h"
 #include "mesh.h"
 #include "parse.h"
@@ -30,6 +31,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <tuple>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -48,10 +50,6 @@ unsupportedNodeContent(const fastgltf::Node& node)
     if (node.skinIndex)
     {
         return "skins are";
-    }
-    if (node.cameraIndex)
-    {
-        return "cameras are";
     }
     if (node.lightIndex)
     {
@@ -149,15 +147,16 @@ authorScene(const fastgltf::Asset& asset, const std::string& sourcePath,
 
     MaterialAuthor materials(asset, sourcePath, loadBuffer, stage, mtl.GetPath());
     std::vector<bool> visited(asset.nodes.size(), false);
-    std::vector<std::pair<std::size_t, UsdPrim>> pending;
+    // Each node, its parent's prim and its parent's transform relative to the asset.
+    std::vector<std::tuple<std::size_t, UsdPrim, GfMatrix4d>> pending;
     const auto& roots = asset.scenes[selectedIndex].nodeIndices;
     for (auto it = roots.rbegin(); it != roots.rend(); ++it)
     {
-        pending.emplace_back(*it, geo.GetPrim());
+        pending.emplace_back(*it, geo.GetPrim(), GfMatrix4d(1.0));
     }
     while (!pending.empty())
     {
-        auto [index, parent] = std::move(pending.back());
+        auto [index, parent, parentWorld] = std::move(pending.back());
         pending.pop_back();
         if (index >= asset.nodes.size() || visited[index])
         {
@@ -196,9 +195,16 @@ authorScene(const fastgltf::Asset& asset, const std::string& sourcePath,
         {
             return {};
         }
+        // Gf matrices use row vectors, so the parent's transform applies last.
+        const GfMatrix4d world = matrix * parentWorld;
+        if (node.cameraIndex &&
+            !AuthorCamera(asset, index, *node.cameraIndex, xform.GetPrim(), world))
+        {
+            return {};
+        }
         for (auto it = node.children.rbegin(); it != node.children.rend(); ++it)
         {
-            pending.emplace_back(*it, xform.GetPrim());
+            pending.emplace_back(*it, xform.GetPrim(), world);
         }
     }
     if (!mark.IsClean())

@@ -49,7 +49,6 @@ OPTIONAL_WARNING = re.compile(r"glTF optional extension '(.*)' is not supported"
 DIAGNOSTIC_CAUSES = {
     "animations are not supported": ("animations",),
     "skins are not supported": ("skin",),
-    "cameras are not supported": ("camera",),
     "lights are not supported": ("light",),
     "morph weights are not supported": ("morph targets",),
     "morph targets are not supported": ("morph targets",),
@@ -181,6 +180,39 @@ def node_matrix(node):
     matrix[:3, :3] = rotation * numpy.array(node.get("scale", (1, 1, 1)), numpy.float64).reshape(3, 1)
     matrix[3, :3] = node.get("translation", (0, 0, 0))
     return matrix
+
+
+def gltf_projection(camera):
+    """Returns a camera's projection from the glTF specification, in USD's row-vector convention.
+
+    An undefined aspect ratio is 1, and an infinite projection uses the far plane the plugin authors.
+    """
+    if camera["type"] == "perspective":
+        values = camera["perspective"]
+        aspect = values.get("aspectRatio", 1.0)
+        near, far = values["znear"], values.get("zfar", 1000000.0)
+        tangent = math.tan(values["yfov"] / 2)
+        columns = numpy.array([
+            [1 / (aspect * tangent), 0, 0, 0],
+            [0, 1 / tangent, 0, 0],
+            [0, 0, (far + near) / (near - far), 2 * far * near / (near - far)],
+            [0, 0, -1, 0]])
+    else:
+        values = camera["orthographic"]
+        near, far = values["znear"], values["zfar"]
+        columns = numpy.array([
+            [1 / values["xmag"], 0, 0, 0],
+            [0, 1 / values["ymag"], 0, 0],
+            [0, 0, 2 / (near - far), (far + near) / (near - far)],
+            [0, 0, 0, 1]])
+    return columns.T
+
+
+def camera_view(world):
+    """Returns the rotation and translation of a node's world matrix, which place a glTF camera."""
+    result = numpy.array(world, numpy.float64)
+    result[:3, :3] /= numpy.linalg.norm(result[:3, :3], axis=1, keepdims=True)
+    return result
 
 
 def expected_triangles(asset, primitive, vertices):
@@ -490,6 +522,7 @@ def check_meaning(stage, asset):
     roots = scenes[document.get("scene", 0)].get("nodes", []) if scenes else []
     cache = UsdGeom.XformCache(Usd.TimeCode.Default())
     expected_paths = set()
+    expected_cameras = set()
     materials = {}
 
     def walk(index, parent_path, parent_world):
@@ -510,6 +543,17 @@ def check_meaning(stage, asset):
                 if check.expect(mesh_prim and mesh_prim.IsA(UsdGeom.Mesh), f"{mesh_path} is not a Mesh"):
                     bound, material, has_colors = check_primitive(check, asset, mesh_prim, primitive, label)
                     materials[bound] = (material, has_colors)
+        if "camera" in node:
+            camera_index = node["camera"]
+            camera_path = f"{path}/Camera_{camera_index}"
+            expected_cameras.add(camera_path)
+            camera_prim = stage.GetPrimAtPath(camera_path)
+            if check.expect(camera_prim and camera_prim.IsA(UsdGeom.Camera), f"{camera_path} is not a Camera"):
+                # Hydra views through the inverse of the prim's whole transform.
+                actual = numpy.linalg.inv(numpy.array(cache.GetLocalToWorldTransform(camera_prim))) @ numpy.array(
+                    UsdGeom.Camera(camera_prim).GetCamera().frustum.ComputeProjectionMatrix())
+                expected = numpy.linalg.inv(camera_view(world)) @ gltf_projection(document["cameras"][camera_index])
+                check.close(actual, expected, f"camera {camera_index} on Node_{index}")
         for child in node.get("children", []):
             walk(child, path, world)
 
@@ -517,6 +561,8 @@ def check_meaning(stage, asset):
         walk(root, "/Asset/geo", numpy.identity(4))
     actual = {str(prim.GetPath()) for prim in stage.Traverse() if prim.IsA(UsdGeom.Mesh)}
     check.expect(actual == expected_paths, f"{len(actual)} meshes authored, expected {len(expected_paths)}")
+    cameras = {str(prim.GetPath()) for prim in stage.Traverse() if prim.IsA(UsdGeom.Camera)}
+    check.expect(cameras == expected_cameras, f"{len(cameras)} cameras authored, expected {len(expected_cameras)}")
     images = {}
     for path, (material, has_colors) in sorted(materials.items()):
         check_material(check, asset, stage, path, material, has_colors, images)
@@ -674,8 +720,6 @@ def rejection_causes(document):
         pending += node.get("children", [])
         if "skin" in node:
             causes.add("skin")
-        if "camera" in node:
-            causes.add("camera")
         if "KHR_lights_punctual" in node.get("extensions", {}):
             causes.add("light")
         if "weights" in node:
