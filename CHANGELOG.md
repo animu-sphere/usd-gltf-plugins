@@ -18,6 +18,8 @@ here.
 - `KHR_mesh_quantization`: non-float POSITION, NORMAL, TANGENT and TEXCOORD, authored as floats.
 - Perspective and orthographic cameras, as `UsdGeomCamera` prims below their nodes.
 - `KHR_lights_punctual`: directional, point and spot lights, as UsdLux lights below their nodes.
+- `EXT_texture_webp`: still lossy and lossless WebP images, with or without alpha, served as PNG
+  through the package resolver by a vendored libwebp decoder.
 
 ### Changed
 

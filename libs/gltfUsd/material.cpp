@@ -761,9 +761,13 @@ resolveTexture(const fastgltf::Asset& asset, const fastgltf::TextureInfo& info,
         return false;
     }
     const auto& texture = asset.textures[info.textureIndex];
-    // The plain source is the fallback for clients without the extension.
-    const auto imageIndex =
-        texture.basisuImageIndex ? texture.basisuImageIndex : texture.imageIndex;
+    // The plain source is the fallback for clients without the extensions. A texture with both
+    // image extensions uses KTX2. A failure in the chosen image does not fall back.
+    const bool basisu = texture.basisuImageIndex.has_value();
+    const bool webp = !basisu && texture.webpImageIndex.has_value();
+    const auto imageIndex = basisu ? texture.basisuImageIndex
+                            : webp ? texture.webpImageIndex
+                                   : texture.imageIndex;
     if (!imageIndex)
     {
         error = "texture has no image source";
@@ -785,14 +789,25 @@ resolveTexture(const fastgltf::Asset& asset, const fastgltf::TextureInfo& info,
     {
         return false;
     }
-    if (texture.basisuImageIndex && location.format != gltfTexture::ImageFormat::Ktx2)
+    if (basisu && location.format != gltfTexture::ImageFormat::Ktx2)
     {
         error = "KHR_texture_basisu image is not KTX2";
         return false;
     }
-    if (!texture.basisuImageIndex && location.format == gltfTexture::ImageFormat::Ktx2)
+    if (webp && location.format != gltfTexture::ImageFormat::Webp)
+    {
+        error = "EXT_texture_webp image is not WebP";
+        return false;
+    }
+    // glTF allows only PNG and JPEG as a plain source.
+    if (!basisu && location.format == gltfTexture::ImageFormat::Ktx2)
     {
         error = "KTX2 image requires KHR_texture_basisu";
+        return false;
+    }
+    if (!webp && location.format == gltfTexture::ImageFormat::Webp)
+    {
+        error = "WebP image requires EXT_texture_webp";
         return false;
     }
     result.file = location.packaged

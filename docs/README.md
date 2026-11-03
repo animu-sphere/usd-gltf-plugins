@@ -42,6 +42,7 @@ available when the decision was made; they are not progress reports:
 - [0011: Texture transforms](adr/0011-texture-transform.md)
 - [0012: Cameras](adr/0012-cameras.md)
 - [0013: Lights](adr/0013-lights.md)
+- [0014: WebP decoder](adr/0014-webp-decoder.md)
 
 New decisions go in `docs/adr/NNNN-title.md`.
 

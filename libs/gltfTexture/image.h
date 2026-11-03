@@ -18,7 +18,8 @@ enum class ImageFormat
 {
     Png,
     Jpeg,
-    Ktx2
+    Ktx2,
+    Webp
 };
 
 // Checks the signature only.
@@ -28,8 +29,12 @@ enum class ImageFormat
 [[nodiscard]] bool CheckImage(std::span<const std::byte> bytes, ImageFormat format,
                               std::string& error);
 
-// The format consumers read: KTX2 is converted to PNG.
+// The format consumers read: KTX2 and WebP are converted to PNG.
 [[nodiscard]] ImageFormat ServedFormat(ImageFormat format);
+
+// Decodes a KTX2 or WebP image to the PNG it is served as.
+[[nodiscard]] bool ConvertToPng(std::span<const std::byte> bytes, ImageFormat format,
+                                std::vector<std::byte>& png, std::string& error);
 
 // Names a packaged image inside its .gltf or .glb package: images/<index>.<ext>,
 // with the extension of its served format. Parsing returns that format.
@@ -37,7 +42,7 @@ enum class ImageFormat
 [[nodiscard]] bool ParsePackageEntry(std::string_view entry, std::size_t& imageIndex,
                                      ImageFormat& format);
 
-// Bytes of a bufferView or data URI image, or of a local KTX2 file. They are owned
+// Bytes of a bufferView or data URI image, or of a local KTX2 or WebP file. They are owned
 // by the asset, by the buffer loader or, for a file, by `owned`.
 [[nodiscard]] bool GetPackagedImage(const fastgltf::Asset& asset, std::size_t imageIndex,
                                     const std::string& sourcePath,
@@ -56,7 +61,7 @@ struct ImageLocation
 
 // Finds and checks an image without decoding it. External images follow the local
 // file policy. Those read directly must have the file extension of their format,
-// and KTX2 files are served through the package.
+// and KTX2 and WebP files are served through the package.
 [[nodiscard]] bool LocateImage(const fastgltf::Asset& asset, std::size_t imageIndex,
                                const std::string& sourcePath,
                                const gltfCore::BufferLoader& loadBuffer, ImageLocation& location,

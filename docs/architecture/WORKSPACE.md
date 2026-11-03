@@ -42,7 +42,7 @@ to the build must keep both entry points working.
 | Component | Responsibility | Boundary |
 | --- | --- | --- |
 | `gltfCore` | Parse using fastgltf; safely access glTF data, URIs and buffers | Does not depend on USD or create USD prims; avoid copying all fastgltf data into another model unnecessarily |
-| `gltfTexture` | Accept bufferView, data URI and external URI images; decode and convert KTX2; handle color-space information, caching and output asset paths | Owns image processing only; does not build USD material networks |
+| `gltfTexture` | Accept bufferView, data URI and external URI images; decode and convert KTX2 and WebP; handle color-space information, caching and output asset paths | Owns image processing only; does not build USD material networks |
 | `gltfUsd` | Translate scene, mesh, transforms, materials and bindings onto a temporary `SdfLayer` | Does not register the plugin |
 | `usdGltfFileFormat` | Register `SdfFileFormat` and the `ArPackageResolver` for embedded images, invoke import and propagate diagnostics | Does not own the conversion implementation |
 | `gltfConvert` | If needed, call the same conversion library from a CLI | Does not implement a separate conversion pipeline |

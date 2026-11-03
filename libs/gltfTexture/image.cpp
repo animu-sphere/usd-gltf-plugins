@@ -4,6 +4,7 @@
 #include "imageStructure.h"
 #include "ktx2.h"
 #include "localFile.h"
+#include "webp.h"
 
 #include <algorithm>
 #include <array>
@@ -22,7 +23,7 @@ namespace
 {
 
 constexpr std::string_view kEntryPrefix = "images/";
-// The longest signature, which is KTX2's.
+// The longest signatures, which are KTX2's and WebP's.
 constexpr std::size_t kSignatureSize = 12;
 // External images are read whole, and an image within the dimension limit fits this
 // unless it is padded or stored with very little compression.
@@ -86,13 +87,14 @@ locateExternalImage(const fastgltf::URI& uri, std::size_t imageIndex, const std:
     ImageFormat format;
     if (!DetectImageFormat(bytes, format))
     {
-        error = "external image is not PNG, JPEG or KTX2";
+        error = "external image is not PNG, JPEG, KTX2 or WebP";
         return false;
     }
     location.format = format;
-    if (format == ImageFormat::Ktx2)
+    // The image loader cannot read these, so they are converted in the package.
+    if (ServedFormat(format) != format)
     {
-        if (!CheckKtx2(bytes, error))
+        if (!CheckImage(bytes, format, error))
         {
             return false;
         }
@@ -122,7 +124,25 @@ locateExternalImage(const fastgltf::URI& uri, std::size_t imageIndex, const std:
 ImageFormat
 ServedFormat(ImageFormat format)
 {
-    return format == ImageFormat::Ktx2 ? ImageFormat::Png : format;
+    return format == ImageFormat::Ktx2 || format == ImageFormat::Webp ? ImageFormat::Png : format;
+}
+
+bool
+ConvertToPng(std::span<const std::byte> bytes, ImageFormat format, std::vector<std::byte>& png,
+             std::string& error)
+{
+    switch (format)
+    {
+    case ImageFormat::Ktx2:
+        return DecodeKtx2ToPng(bytes, png, error);
+    case ImageFormat::Webp:
+        return DecodeWebpToPng(bytes, png, error);
+    case ImageFormat::Png:
+    case ImageFormat::Jpeg:
+        break;
+    }
+    error = "image is served without conversion";
+    return false;
 }
 
 bool
@@ -133,6 +153,8 @@ DetectImageFormat(std::span<const std::byte> bytes, ImageFormat& format)
     static constexpr std::array<unsigned char, 3> jpeg = {0xFF, 0xD8, 0xFF};
     static constexpr std::array<unsigned char, kSignatureSize> ktx2 = {
         0xAB, 'K', 'T', 'X', ' ', '2', '0', 0xBB, '\r', '\n', 0x1A, '\n'};
+    static constexpr std::array<unsigned char, 4> riff = {'R', 'I', 'F', 'F'};
+    static constexpr std::array<unsigned char, 4> webp = {'W', 'E', 'B', 'P'};
     const auto startsWith = [bytes](const auto& signature)
     {
         return bytes.size() >= signature.size() &&
@@ -155,6 +177,14 @@ DetectImageFormat(std::span<const std::byte> bytes, ImageFormat& format)
         format = ImageFormat::Ktx2;
         return true;
     }
+    // RIFF, the size of what follows, then the form type.
+    if (startsWith(riff) && bytes.size() >= kSignatureSize &&
+        std::equal(webp.begin(), webp.end(), bytes.begin() + 8, [](unsigned char a, std::byte b)
+                   { return a == std::to_integer<unsigned char>(b); }))
+    {
+        format = ImageFormat::Webp;
+        return true;
+    }
     return false;
 }
 
@@ -169,6 +199,8 @@ CheckImage(std::span<const std::byte> bytes, ImageFormat format, std::string& er
         return CheckJpeg(bytes, error);
     case ImageFormat::Ktx2:
         return CheckKtx2(bytes, error);
+    case ImageFormat::Webp:
+        return CheckWebp(bytes, error);
     }
     return false;
 }
@@ -245,7 +277,7 @@ GetPackagedImage(const fastgltf::Asset& asset, std::size_t imageIndex,
             return false;
         }
         bytes = owned;
-        if (!DetectImageFormat(bytes, format) || format != ImageFormat::Ktx2)
+        if (!DetectImageFormat(bytes, format) || ServedFormat(format) == format)
         {
             error = "external image is read directly, not through the package";
             return false;
@@ -259,7 +291,7 @@ GetPackagedImage(const fastgltf::Asset& asset, std::size_t imageIndex,
     }
     if (!DetectImageFormat(bytes, format))
     {
-        error = "embedded image is not PNG, JPEG or KTX2";
+        error = "embedded image is not PNG, JPEG, KTX2 or WebP";
         return false;
     }
     return true;

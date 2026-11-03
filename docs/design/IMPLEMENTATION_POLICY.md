@@ -17,8 +17,8 @@ file through `Usd.Stage.Open`, without a dedicated renderer.
 6. Prioritize import; USD-to-glTF export is a later phase.
 7. Use `/Asset`, `/Asset/geo`, and `/Asset/mtl` as the basic scene layout.
 8. Provide both MaterialX and UsdPreviewSurface shading paths in UsdShade.
-9. Provide a standard-image conversion path for KTX2 rather than requiring
-   KTX2-aware imaging from consumers.
+9. Provide a standard-image conversion path for KTX2 and WebP rather than
+   requiring imaging that reads them from consumers.
 
 ## Quality principles
 
@@ -95,4 +95,6 @@ can express first. A result that looks close is not a claim of equivalence with 
 - [OpenUSD file format plugins](https://openusd.org/release/api/_sdf__page__file_format_plugin.html)
 - [Basis Universal](https://github.com/BinomialLLC/basis_universal)
 - [KHR_texture_basisu](https://github.com/KhronosGroup/glTF/tree/main/extensions/2.0/Khronos/KHR_texture_basisu)
+- [EXT_texture_webp](https://github.com/KhronosGroup/glTF/tree/main/extensions/2.0/Vendor/EXT_texture_webp)
+- [libwebp](https://github.com/webmproject/libwebp)
 - [usd-vrm-plugins](https://github.com/animu-sphere/usd-vrm-plugins)

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "image.h"
 #include "ktx2.h"
+#include "webp.h"
 
 #include <array>
 #include <cstddef>
@@ -20,6 +21,16 @@ using gltfTexture::ImageFormat;
 
 const std::vector<unsigned char> kKtx2Signature = {0xAB, 'K',  'T',  'X',  ' ',  '2',
                                                    '0',  0xBB, '\r', '\n', 0x1A, '\n'};
+
+// tests/fixtures/textures/lossless_alpha.webp: 16 by 16 quadrants of red, green, blue and white
+// from the upper left, the lower two with alpha 64. Its VP8L chunk has an odd size and a padding
+// byte.
+const std::vector<unsigned char> kWebp = {
+    0x52, 0x49, 0x46, 0x46, 0x3C, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50, 0x56, 0x50,
+    0x38, 0x4C, 0x2F, 0x00, 0x00, 0x00, 0x2F, 0x0F, 0xC0, 0x03, 0x10, 0x1F, 0x20, 0x10,
+    0x48, 0xDE, 0x1F, 0x3A, 0x0D, 0x01, 0x41, 0xC1, 0xFF, 0xD1, 0xCD, 0xBF, 0x40, 0x20,
+    0x49, 0x6D, 0x7F, 0xA8, 0x43, 0x1E, 0x3D, 0x00, 0x61, 0xB6, 0xD1, 0x24, 0x27, 0x39,
+    0xC9, 0x7B, 0x9F, 0x41, 0x44, 0xFF, 0x43, 0xE1, 0xAB, 0xED, 0x03, 0x00};
 
 bool
 checkDetect(std::vector<unsigned char> bytes, bool expected, ImageFormat expectedFormat,
@@ -139,6 +150,103 @@ checkStructure()
     return ok;
 }
 
+bool
+checkWebpRejected(const std::vector<unsigned char>& bytes, const char* label)
+{
+    std::string error;
+    std::vector<std::byte> png;
+    const auto span = std::as_bytes(std::span<const unsigned char>(bytes));
+    if (gltfTexture::CheckWebp(span, error) || error.empty() ||
+        gltfTexture::DecodeWebpToPng(span, png, error))
+    {
+        std::cerr << label << ": expected an error\n";
+        return false;
+    }
+    return true;
+}
+
+// Decodes the WebP above and reads its pixels from the single stored block EncodePng writes for
+// an image this small.
+bool
+checkWebp()
+{
+    const auto bytes = std::as_bytes(std::span<const unsigned char>(kWebp));
+    bool ok = checkPrefixesRejected(bytes, ImageFormat::Webp, "WebP");
+
+    std::vector<unsigned char> trailing = kWebp;
+    trailing.insert(trailing.end(), {0, 1, 2});
+    std::string error;
+    if (!gltfTexture::CheckWebp(std::as_bytes(std::span<const unsigned char>(trailing)), error))
+    {
+        std::cerr << "WebP with trailing bytes: unexpected error: " << error << "\n";
+        ok = false;
+    }
+
+    std::vector<std::byte> png;
+    if (!gltfTexture::DecodeWebpToPng(bytes, png, error))
+    {
+        std::cerr << "WebP: unexpected error: " << error << "\n";
+        return false;
+    }
+    ImageFormat format = ImageFormat::Jpeg;
+    constexpr std::size_t kData = 8 + 25 + 8 + 2 + 5;
+    constexpr std::size_t kRow = 16 * 4 + 1;
+    if (!gltfTexture::DetectImageFormat(png, format) || format != ImageFormat::Png ||
+        png.size() < kData + 16 * kRow || !gltfTexture::CheckImage(png, format, error))
+    {
+        std::cerr << "WebP: unexpected PNG\n";
+        return false;
+    }
+    const std::array<std::pair<std::array<std::size_t, 2>, std::array<int, 4>>, 4> expected = {{
+        {{4, 4}, {255, 0, 0, 255}},
+        {{12, 4}, {0, 255, 0, 255}},
+        {{4, 12}, {0, 0, 255, 64}},
+        {{12, 12}, {255, 255, 255, 64}},
+    }};
+    for (const auto& [point, rgba] : expected)
+    {
+        const auto offset = kData + point[1] * kRow + 1 + point[0] * 4;
+        for (std::size_t channel = 0; channel < 4; ++channel)
+        {
+            if (std::to_integer<int>(png[offset + channel]) != rgba[channel])
+            {
+                std::cerr << "WebP: pixel " << point[0] << ", " << point[1] << " differs\n";
+                ok = false;
+            }
+        }
+    }
+    return ok;
+}
+
+bool
+checkWebpStructure()
+{
+    bool ok = checkWebpRejected({}, "empty WebP");
+    ok = checkWebpRejected({'R', 'I', 'F', 'F', 4, 0, 0, 0, 'W', 'E', 'B', 'P'},
+                           "WebP header alone") &&
+         ok;
+    // A RIFF size that wraps when the header is added.
+    ok = checkWebpRejected({'R', 'I', 'F', 'F', 0xFF, 0xFF, 0xFF, 0xFF, 'W', 'E',
+                            'B', 'P', 'V', 'P', '8',  'L',  0,    0,    0,   0},
+                           "WebP RIFF size") &&
+         ok;
+    // A chunk that claims more than the RIFF payload holds.
+    auto chunk = kWebp;
+    chunk[16] = 0xFF;
+    chunk[17] = 0xFF;
+    ok = checkWebpRejected(chunk, "WebP chunk size") && ok;
+    // A chunk header cut by the end of the RIFF payload.
+    auto cut = kWebp;
+    cut.insert(cut.end(), {'E', 'X', 'I', 'F'});
+    cut[4] = std::uint8_t(cut.size() - 8);
+    ok = checkWebpRejected(cut, "WebP chunk header") && ok;
+    // The VP8L signature byte.
+    auto signature = kWebp;
+    signature[20] = 0;
+    ok = checkWebpRejected(signature, "WebP bitstream header") && ok;
+    return ok;
+}
+
 // Two rows of two pixels fit a known layout: one stored block after the zlib header.
 bool
 checkPng()
@@ -172,7 +280,13 @@ main()
     ok = checkDetect({0x89, 'P', 'N', 'G'}, false, ImageFormat::Png, "short PNG") && ok;
     ok = checkDetect({0xFF, 0xD8}, false, ImageFormat::Jpeg, "short JPEG") && ok;
     ok = checkDetect({}, false, ImageFormat::Png, "empty") && ok;
-    ok = checkDetect({'R', 'I', 'F', 'F'}, false, ImageFormat::Png, "WebP") && ok;
+    ok = checkDetect({'R', 'I', 'F', 'F'}, false, ImageFormat::Png, "short WebP") && ok;
+    ok = checkDetect({'R', 'I', 'F', 'F', 0, 0, 0, 0, 'W', 'E', 'B', 'P'}, true, ImageFormat::Webp,
+                     "WebP") &&
+         ok;
+    ok = checkDetect({'R', 'I', 'F', 'F', 0, 0, 0, 0, 'W', 'A', 'V', 'E'}, false, ImageFormat::Png,
+                     "RIFF of another form") &&
+         ok;
     ok = checkDetect(kKtx2Signature, true, ImageFormat::Ktx2, "KTX2") && ok;
     ok = checkDetect({0xAB, 'K', 'T', 'X', ' ', '2', '0', 0xBB}, false, ImageFormat::Png,
                      "short KTX2") &&
@@ -185,6 +299,9 @@ main()
     // KTX2 is served as PNG.
     ok = checkEntry(gltfTexture::MakePackageEntry(3, ImageFormat::Ktx2), true, 3) && ok;
     ok = checkEntry("images/3.ktx2", false) && ok;
+    // WebP is served as PNG.
+    ok = checkEntry(gltfTexture::MakePackageEntry(5, ImageFormat::Webp), true, 5) && ok;
+    ok = checkEntry("images/5.webp", false) && ok;
     ok = checkEntry(gltfTexture::MakePackageEntry(12, ImageFormat::Jpeg), true, 12,
                     ImageFormat::Jpeg) &&
          ok;
@@ -212,5 +329,7 @@ main()
     ok = checkKtx2Rejected(kKtx2Signature, "KTX2 signature alone") && ok;
     ok = checkPng() && ok;
     ok = checkStructure() && ok;
+    ok = checkWebp() && ok;
+    ok = checkWebpStructure() && ok;
     return ok ? 0 : 1;
 }
