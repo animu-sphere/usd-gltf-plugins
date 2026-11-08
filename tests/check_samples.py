@@ -1072,7 +1072,7 @@ def author_view(stage):
 
 def inspect(path, root, directory):
     """Runs in a process of its own, and prints a result for this file."""
-    from pxr import Sdf, Tf, Usd, UsdShade
+    from pxr import Ar, Sdf, Tf, Usd, UsdShade
 
     result = {"opened": True, "diagnostics": []}
     try:
@@ -1087,7 +1087,10 @@ def inspect(path, root, directory):
     asset = Asset(path)
     used = asset.json.get("extensionsUsed", [])
     result["ignored"] = sorted(set(used) - IMPLEMENTED_EXTENSIONS)
-    result["mismatches"], result["meshes"] = check_meaning(stage, asset)
+    # Embedded images share a parsed package only inside a resolver cache scope.
+    # Bound the scope to this inspection, so another file or reload sees fresh bytes.
+    with Ar.ResolverScopedCache():
+        result["mismatches"], result["meshes"] = check_meaning(stage, asset)
 
     for shading in PATHS:
         session = Sdf.Layer.CreateAnonymous(".usda")

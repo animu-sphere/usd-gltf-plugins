@@ -77,6 +77,17 @@ python tests\check_samples.py build\cy2026-windows-x86_64-py313-usd <glTF-Sample
 It exits nonzero if a result differs, and keeps images and logs in `sample_check` in the build
 directory. `--update` accepts the new results. Without `--render` it needs no GPU.
 
+To measure import time, peak resident memory and repeated mesh point/topology arrays, in the
+matching USD environment and without a GPU:
+
+```sh
+python tests/measure_import.py build/cy2026-windows-x86_64-py313-usd model.glb --output build/import.json
+```
+
+Each of three serial runs opens the asset in a fresh process. OS file caches are not flushed.
+The JSON report records the source and plugin hashes, runtime and individual measurements;
+identical points and topology alone do not establish that meshes can share all their data.
+
 ## Documentation
 
 - [Documentation index](docs/README.md)
