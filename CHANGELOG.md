@@ -48,6 +48,8 @@ here.
 
 - A rejection names each unsupported required extension, and states the one skin, camera, light,
   morph, primitive mode or accessor cause it found rather than listing the possibilities.
+- fastgltf 1.0.1. Node rotations are normalized with its quaternion `normalize`, which
+  divides by the length again.
 
 ### Fixed
 
