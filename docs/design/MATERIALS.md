@@ -94,6 +94,19 @@ untextured film defaults to 400. UsdPreviewSurface has no thin film and ignores 
 A strength factor of 0 and an unlit material author no film and read neither image. See
 [ADR 0022](../adr/0022-iridescence.md).
 
+## Anisotropy
+
+A `KHR_materials_anisotropy` strength above 0 is authored as MaterialX `anisotropy_strength`,
+the factor times its texture's B channel, read as non-color data. `anisotropy_rotation` is the
+counter-clockwise factor angle in radians, reduced modulo a full turn to keep shader arithmetic
+finite, plus `atan2(2G - 1, 2R - 1)` when a texture supplies its direction. A zero direction uses
+angle 0. Without a texture, strength and rotation are uniform values. UV transforms move samples
+without rotating the encoded direction vectors. UsdPreviewSurface has no anisotropy and ignores
+it with a warning. MaterialX uses the existing renderer-derived tangent frame, with a warning:
+supplied glTF tangents and their handedness are retained as data but do not control shading, so
+the resulting direction can differ from glTF. A strength of 0 and an unlit material author no
+anisotropy and read no anisotropy image. See [ADR 0023](../adr/0023-anisotropy.md).
+
 ## Sheen
 
 A `KHR_materials_sheen` color factor other than black is authored as MaterialX `sheen_color`, the factor

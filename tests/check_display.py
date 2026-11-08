@@ -764,6 +764,67 @@ def check_specular(renderer, report):
 SHEEN_LIGHT_ANGLE = math.radians(75)
 
 
+def check_anisotropy(renderer, report):
+    """Compare strength, RG direction and rotation in the renderer-derived tangent frame.
+
+    No comparison here establishes that this frame agrees with a supplied glTF TANGENT.
+    probe_anisotropy.py independently demonstrates that limitation.
+    """
+    qt = offscreen_context(report, "anisotropy")
+    if not qt:
+        return
+    for path in PATHS:
+        def render(name, anisotropy=None, images=()):
+            material = pbr(baseColorFactor=[0, 0, 0, 1], metallicFactor=0, roughnessFactor=0.35)
+            if anisotropy is not None:
+                material["extensions"] = {"KHR_materials_anisotropy": anisotropy}
+            document = quad_document([material], images)
+            document["extensionsUsed"] = ["KHR_lights_punctual", "KHR_materials_anisotropy"]
+            document["extensions"] = {"KHR_lights_punctual": {"lights": [
+                {"type": "point", "intensity": ILLUMINANCE * 4}]}}
+            document["nodes"].append({"translation": [0.85, 0.7, 1],
+                                      "extensions": {"KHR_lights_punctual": {"light": 0}}})
+            document["scenes"][0]["nodes"].append(1)
+            asset = renderer.output / f"anisotropy_{name}.gltf"
+            asset.write_text(json.dumps(document), encoding="utf-8")
+            _, stage = renderer.session(f"anisotropy_{name}", asset, path, None)
+            image = engine_image(stage, [], Gf.Vec4f(0, 0, 0, 1))
+            image.save(str(renderer.output / f"anisotropy_{name}_{path}.png"))
+            return Render(f"anisotropy_{name} {path}", image, stage).sample(0)
+
+        def values(strength=0.85, rotation=0, texture=False):
+            result = {"anisotropyStrength": strength, "anisotropyRotation": rotation}
+            if texture:
+                result["anisotropyTexture"] = {"index": 0}
+            return result
+
+        bare = render("bare")
+        report.same(f"{path} anisotropy strength 0 is none", render("zero", values(0)), bare)
+        full = render("full", values())
+        turned = render("turned", values(rotation=math.pi / 2))
+        ccw = render("ccw", values(rotation=math.pi / 6))
+        cw = render("cw", values(rotation=-math.pi / 6))
+        image_weight = render("weight_image", values(0.5, texture=True), [(255, 128, 188, 0)])
+        report.same(f"{path} anisotropy strength B is raw and multiplies its factor", image_weight,
+                    render("weight_data", values(0.5 * DATA, math.atan2(1 / 255, 1))))
+        diagonal = render("diagonal", values(rotation=math.pi / 4))
+        report.same(f"{path} anisotropy RG supplies a normalized direction",
+                    render("direction_image", values(texture=True), [(188, 188, 255, 0)]), diagonal)
+        report.same(f"{path} anisotropy rotation adds to the texture direction",
+                    render("rotation_image", values(rotation=-math.pi / 4, texture=True), [(255, 255, 255, 0)]), full)
+        report.same(f"{path} anisotropy RG remaps negative directions",
+                    render("negative_image", values(texture=True), [(0, 0, 255, 0)]),
+                    render("negative_data", values(rotation=-3 * math.pi / 4)))
+        if path == "mtlx":
+            report.different("mtlx anisotropy changes the reflection", full, bare, 5)
+            report.different("mtlx anisotropy rotation changes the axis", turned, full, 5)
+            report.different("mtlx anisotropy distinguishes opposite rotations", ccw, cw)
+        else:
+            for label, result in (("strength", full), ("axis", turned), ("CCW", ccw), ("CW", cw), ("texture", image_weight)):
+                report.same(f"preview ignores anisotropy {label}", result, bare)
+    qt[2].doneCurrent()
+
+
 def check_iridescence(renderer, report):
     """Check thin-film color, strength, ior and raw R/G sampling against uniform inputs.
 
@@ -1074,7 +1135,7 @@ def main():
 
     report = Report(arguments.verbose)
     renderer = Renderer(output, plugin, report)
-    for check in (check_reflections, check_lights, check_unlit, check_ior, check_specular, check_iridescence, check_sheen, check_clearcoat,
+    for check in (check_reflections, check_lights, check_unlit, check_ior, check_specular, check_anisotropy, check_iridescence, check_sheen, check_clearcoat,
                   check_transmission,
                   check_volume, check_alpha_modes, check_base_color_textures, check_pbr_textures,
                   check_normal_textures, check_texture_transforms, check_ktx2_textures, check_measurements):

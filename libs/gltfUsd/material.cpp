@@ -93,6 +93,9 @@ struct PbrFactors
     float iridescenceIor;
     float iridescenceMinimum;
     float iridescenceMaximum;
+    // KHR_materials_anisotropy: strength and counter-clockwise rotation in radians.
+    float anisotropy;
+    float anisotropyRotation;
 };
 
 // glTF's default, and the default of both shaders' ior inputs.
@@ -144,7 +147,11 @@ pbrFactors(const fastgltf::Material& source)
             source.iridescence ? float(source.iridescence->iridescenceFactor) : 0.0f,
             source.iridescence ? float(source.iridescence->iridescenceIor) : 1.3f,
             source.iridescence ? float(source.iridescence->iridescenceThicknessMinimum) : 100.0f,
-            source.iridescence ? float(source.iridescence->iridescenceThicknessMaximum) : 400.0f};
+            source.iridescence ? float(source.iridescence->iridescenceThicknessMaximum) : 400.0f,
+            source.anisotropy ? float(source.anisotropy->anisotropyStrength) : 0.0f,
+            source.anisotropy ? float(std::remainder(double(source.anisotropy->anisotropyRotation),
+                                                     2.0 * std::acos(-1.0)))
+                              : 0.0f};
 }
 
 // glTF disables the clearcoat layer at a factor of 0, and an unlit material reflects nothing.
@@ -188,6 +195,12 @@ bool
 hasIridescence(const PbrFactors& factors)
 {
     return !factors.unlit && factors.iridescence > 0.0f;
+}
+
+bool
+hasAnisotropy(const PbrFactors& factors)
+{
+    return !factors.unlit && factors.anisotropy > 0.0f;
 }
 
 // The ior to author, if it is not the shaders' default. An unlit material reflects nothing, so
@@ -320,6 +333,7 @@ struct MaterialTextures
     // Read by MaterialX only: UsdPreviewSurface has no thin film.
     std::optional<TextureInput> iridescence;
     std::optional<TextureInput> iridescenceThickness;
+    std::optional<TextureInput> anisotropy;
 };
 
 // gltf_pbr's specular weight and color are glTF's: the weight scales a dielectric's F0 and F90,
@@ -856,6 +870,67 @@ connectMtlxIridescenceThickness(const UsdShadeNodeGraph& graph, UsdShadeShader& 
                .ConnectToSource(mix.CreateOutput(TfToken("out"), SdfValueTypeNames->Float));
 }
 
+// glTF's linear B is strength, and remapped RG supplies a direction in the renderer's frame.
+bool
+connectMtlxAnisotropy(const UsdShadeNodeGraph& graph, UsdShadeShader& surface,
+                      const PbrFactors& factors, const TextureInput& texture)
+{
+    const auto image = authorMtlxImage(graph, "anisotropyImage", texture, false);
+    const auto strength =
+        image ? authorMtlxImageComponent(graph, "anisotropyChannel", image, 2) : UsdShadeOutput();
+    const auto scaled =
+        image ? authorMtlxMultiply(graph, "anisotropyDirectionScale", "ND_multiply_vector4",
+                                   SdfValueTypeNames->Float4, image, GfVec4f(2))
+              : UsdShadeOutput();
+    auto remap = scaled ? defineMtlxNode(graph, "anisotropyDirection", "ND_subtract_vector4")
+                        : UsdShadeShader();
+    if (!strength || !remap ||
+        !remap.CreateInput(TfToken("in1"), SdfValueTypeNames->Float4).ConnectToSource(scaled) ||
+        !setInput(remap, "in2", SdfValueTypeNames->Float4, GfVec4f(1)))
+    {
+        return false;
+    }
+    const auto direction = remap.CreateOutput(TfToken("out"), SdfValueTypeNames->Float4);
+    const auto x = authorMtlxImageComponent(graph, "anisotropyX", direction, 0);
+    const auto y = authorMtlxImageComponent(graph, "anisotropyY", direction, 1);
+    const auto xy = authorMtlxImageChannel(graph, "anisotropyXy", "ND_convert_vector4_vector2",
+                                           direction, SdfValueTypeNames->Float2);
+    auto length = defineMtlxNode(graph, "anisotropyDirectionLength", "ND_dotproduct_vector2");
+    auto angle = defineMtlxNode(graph, "anisotropyAngle", "ND_atan2_float");
+    auto selected = defineMtlxNode(graph, "anisotropyValidAngle", "ND_ifgreater_float");
+    if (!x || !y || !xy || !length || !angle || !selected ||
+        !length.CreateInput(TfToken("in1"), SdfValueTypeNames->Float2).ConnectToSource(xy) ||
+        !length.CreateInput(TfToken("in2"), SdfValueTypeNames->Float2).ConnectToSource(xy) ||
+        !angle.CreateInput(TfToken("inx"), SdfValueTypeNames->Float).ConnectToSource(x) ||
+        !angle.CreateInput(TfToken("iny"), SdfValueTypeNames->Float).ConnectToSource(y) ||
+        !selected.CreateInput(TfToken("value1"), SdfValueTypeNames->Float)
+             .ConnectToSource(length.CreateOutput(TfToken("out"), SdfValueTypeNames->Float)) ||
+        !setInput(selected, "value2", SdfValueTypeNames->Float, 0.0f) ||
+        !selected.CreateInput(TfToken("in1"), SdfValueTypeNames->Float)
+             .ConnectToSource(angle.CreateOutput(TfToken("out"), SdfValueTypeNames->Float)) ||
+        !setInput(selected, "in2", SdfValueTypeNames->Float, 0.0f))
+    {
+        return false;
+    }
+    // atan2 supplies the angle without needing to normalize RG. For a zero direction, use +X.
+    auto rotation = selected.CreateOutput(TfToken("out"), SdfValueTypeNames->Float);
+    if (factors.anisotropyRotation != 0.0f)
+    {
+        auto add = defineMtlxNode(graph, "anisotropyRotation", "ND_add_float");
+        if (!add ||
+            !add.CreateInput(TfToken("in1"), SdfValueTypeNames->Float).ConnectToSource(rotation) ||
+            !setInput(add, "in2", SdfValueTypeNames->Float, factors.anisotropyRotation))
+        {
+            return false;
+        }
+        rotation = add.CreateOutput(TfToken("out"), SdfValueTypeNames->Float);
+    }
+    return rotation && surface.GetInput(TfToken("anisotropy_rotation")).ConnectToSource(rotation) &&
+           connectMtlxInput(graph, surface, "anisotropy_strength", strength, UsdShadeOutput(),
+                            nullptr, "anisotropyFactor", "ND_multiply_float",
+                            SdfValueTypeNames->Float, factors.anisotropy);
+}
+
 // The clearcoat normal defaults to the geometric normal, as in glTF, not to the base normal map.
 bool
 connectMtlxClearcoat(const UsdShadeNodeGraph& graph, UsdShadeShader& surface,
@@ -904,7 +979,9 @@ connectMtlxTextures(const UsdShadeNodeGraph& graph, UsdShadeShader& surface,
                                *textures.iridescence)) &&
            (!textures.iridescenceThickness ||
             connectMtlxIridescenceThickness(graph, surface, factors,
-                                            *textures.iridescenceThickness));
+                                            *textures.iridescenceThickness)) &&
+           (!textures.anisotropy ||
+            connectMtlxAnisotropy(graph, surface, factors, *textures.anisotropy));
 }
 
 bool
@@ -999,6 +1076,7 @@ authorMtlx(const UsdShadeMaterial& material, const PbrFactors& factors, bool ver
     const bool sheen = hasSheen(factors);
     const bool sheenRoughness = hasSheenRoughness(factors);
     const bool iridescence = hasIridescence(factors);
+    const bool anisotropy = hasAnisotropy(factors);
     const auto filmIor =
         iridescence ? surface.CreateInput(TfToken("iridescence_ior"), SdfValueTypeNames->Float)
                     : UsdShadeInput();
@@ -1008,6 +1086,10 @@ authorMtlx(const UsdShadeMaterial& material, const PbrFactors& factors, bool ver
            setInput(surface, "metallic", SdfValueTypeNames->Float,
                     unlit ? 0.0f : factors.metallic) &&
            setInput(surface, "roughness", SdfValueTypeNames->Float, factors.roughness) &&
+           (!anisotropy || (setInput(surface, "anisotropy_strength", SdfValueTypeNames->Float,
+                                     factors.anisotropy) &&
+                            setInput(surface, "anisotropy_rotation", SdfValueTypeNames->Float,
+                                     factors.anisotropyRotation))) &&
            (!unlit || setInput(surface, "specular", SdfValueTypeNames->Float, 0.0f)) &&
            (!specular ||
             setInput(surface, "specular", SdfValueTypeNames->Float, factors.specular)) &&
@@ -1245,6 +1327,7 @@ MaterialAuthor::Bind(std::size_t index, std::size_t uvSetCount, const pxr::VtVec
     const auto* specular = source.specular ? &*source.specular : nullptr;
     const auto* sheen = source.sheen ? &*source.sheen : nullptr;
     const auto* iridescence = source.iridescence ? &*source.iridescence : nullptr;
+    const auto* anisotropy = source.anisotropy ? &*source.anisotropy : nullptr;
     if (!hasUvSet(pbr.baseColorTexture) || !hasUvSet(pbr.metallicRoughnessTexture) ||
         !hasUvSet(source.normalTexture) || !hasUvSet(source.occlusionTexture) ||
         !hasUvSet(source.emissiveTexture) ||
@@ -1258,7 +1341,8 @@ MaterialAuthor::Bind(std::size_t index, std::size_t uvSetCount, const pxr::VtVec
         (sheen &&
          (!hasUvSet(sheen->sheenColorTexture) || !hasUvSet(sheen->sheenRoughnessTexture))) ||
         (iridescence && (!hasUvSet(iridescence->iridescenceTexture) ||
-                         !hasUvSet(iridescence->iridescenceThicknessTexture))))
+                         !hasUvSet(iridescence->iridescenceThicknessTexture))) ||
+        (anisotropy && !hasUvSet(anisotropy->anisotropyTexture)))
     {
         error = "material texture uses a texture coordinate set the primitive does not have";
         return false;
@@ -1363,6 +1447,16 @@ MaterialAuthor::Bind(std::size_t index, std::size_t uvSetCount, const pxr::VtVec
         error = "material sheen roughness factor is non-finite or out of range";
         return false;
     }
+    if (anisotropy && !inUnitRange(anisotropy->anisotropyStrength))
+    {
+        error = "material anisotropy strength is non-finite or out of range";
+        return false;
+    }
+    if (anisotropy && !std::isfinite(anisotropy->anisotropyRotation))
+    {
+        error = "material anisotropy rotation is non-finite";
+        return false;
+    }
     if (iridescence && !inUnitRange(iridescence->iridescenceFactor))
     {
         error = "material iridescence factor is non-finite or out of range";
@@ -1422,10 +1516,12 @@ MaterialAuthor::Bind(std::size_t index, std::size_t uvSetCount, const pxr::VtVec
             (sheened && !resolve(sheen->sheenColorTexture, textures.sheenColor)) ||
             (hasSheenRoughness(factors) &&
              !resolve(sheen->sheenRoughnessTexture, textures.sheenRoughness)) ||
-            (film &&
-             (!resolve(iridescence->iridescenceTexture, textures.iridescence) ||
-              (factors.iridescenceMinimum != factors.iridescenceMaximum &&
-               !resolve(iridescence->iridescenceThicknessTexture, textures.iridescenceThickness)))))
+            (film && (!resolve(iridescence->iridescenceTexture, textures.iridescence) ||
+                      (factors.iridescenceMinimum != factors.iridescenceMaximum &&
+                       !resolve(iridescence->iridescenceThicknessTexture,
+                                textures.iridescenceThickness)))) ||
+            (hasAnisotropy(factors) &&
+             !resolve(anisotropy->anisotropyTexture, textures.anisotropy)))
         {
             return false;
         }
@@ -1470,6 +1566,22 @@ MaterialAuthor::Bind(std::size_t index, std::size_t uvSetCount, const pxr::VtVec
             TF_WARN("glTF material %zu: KHR_materials_specular is ignored, because the material "
                     "is unlit",
                     index);
+        }
+        if (source.unlit && anisotropy)
+        {
+            TF_WARN("glTF material %zu: KHR_materials_anisotropy is ignored, because the material "
+                    "is unlit",
+                    index);
+        }
+        if (hasAnisotropy(factors))
+        {
+            TF_WARN("glTF material %zu: UsdPreviewSurface has no anisotropy; its network ignores "
+                    "KHR_materials_anisotropy",
+                    index);
+            TF_WARN(
+                "glTF material %zu: MaterialX anisotropy uses a renderer-derived tangent frame; "
+                "supplied glTF tangents and handedness are not used for shading",
+                index);
         }
         if (source.unlit && iridescence)
         {

@@ -38,6 +38,9 @@ here.
 
 - `KHR_materials_iridescence`, optional or required: thin-film strength, ior and thickness, with
   strength and thickness textures in MaterialX; UsdPreviewSurface ignores it with a warning.
+- `KHR_materials_anisotropy`, optional or required: strength, rotation and linear texture direction
+  in MaterialX using a renderer-derived tangent frame, with a warning about that approximation;
+  UsdPreviewSurface ignores it with a warning.
 
 ### Changed
 
