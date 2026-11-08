@@ -82,6 +82,9 @@ struct PbrFactors
     float thickness;
     float attenuationDistance;
     GfVec3f attenuationColor;
+    // KHR_materials_specular, 1 and white without it, which change nothing.
+    float specular;
+    GfVec3f specularColor;
 };
 
 // glTF's default, and the default of both shaders' ior inputs.
@@ -119,7 +122,12 @@ pbrFactors(const fastgltf::Material& source)
             source.volume
                 ? GfVec3f(source.volume->attenuationColor[0], source.volume->attenuationColor[1],
                           source.volume->attenuationColor[2])
-                : GfVec3f(1)};
+                : GfVec3f(1),
+            source.specular ? float(source.specular->specularFactor) : 1.0f,
+            source.specular ? GfVec3f(source.specular->specularColorFactor[0],
+                                      source.specular->specularColorFactor[1],
+                                      source.specular->specularColorFactor[2])
+                            : GfVec3f(1)};
 }
 
 // glTF disables the clearcoat layer at a factor of 0, and an unlit material reflects nothing.
@@ -265,7 +273,25 @@ struct MaterialTextures
     std::optional<TextureInput> transmission;
     // Read by MaterialX only: UsdPreviewSurface has no volume.
     std::optional<TextureInput> thickness;
+    // Read by MaterialX only: UsdPreviewSurface's metallic workflow has no specular weight or color.
+    std::optional<TextureInput> specular;
+    std::optional<TextureInput> specularColor;
 };
+
+// gltf_pbr's specular weight and color are glTF's: the weight scales a dielectric's F0 and F90,
+// and the color tints its F0. Each is authored only where it differs from the default of 1, and
+// an unlit material reflects nothing.
+bool
+hasSpecularWeight(const PbrFactors& factors, const MaterialTextures& textures)
+{
+    return !factors.unlit && (factors.specular != 1.0f || textures.specular);
+}
+
+bool
+hasSpecularColor(const PbrFactors& factors, const MaterialTextures& textures)
+{
+    return !factors.unlit && (factors.specularColor != GfVec3f(1) || textures.specularColor);
+}
 
 // Textures sharing a UV set share a reader: defining it again changes nothing.
 std::string
@@ -737,18 +763,19 @@ connectMtlxOcclusion(const UsdShadeNodeGraph& graph, UsdShadeShader& surface,
     return source && surface.GetInput(TfToken("occlusion")).ConnectToSource(source);
 }
 
+// The color of a color image times its factor.
 bool
-connectMtlxEmissive(const UsdShadeNodeGraph& graph, UsdShadeShader& surface,
-                    const PbrFactors& factors, const TextureInput& texture)
+connectMtlxColor(const UsdShadeNodeGraph& graph, UsdShadeShader& surface, const std::string& name,
+                 const char* input, const GfVec3f& factor, const TextureInput& texture)
 {
-    const auto image = authorMtlxImage(graph, "emissiveImage", texture, true);
-    const auto rgb = image
-                         ? authorMtlxImageChannel(graph, "emissiveRgb", "ND_convert_color4_color3",
-                                                  image, SdfValueTypeNames->Color3f)
-                         : UsdShadeOutput();
-    return rgb && connectMtlxInput(graph, surface, "emissive", rgb, UsdShadeOutput(), nullptr,
-                                   "emissiveFactor", "ND_multiply_color3",
-                                   SdfValueTypeNames->Color3f, factors.emissive);
+    const auto image = authorMtlxImage(graph, (name + "Image").c_str(), texture, true);
+    const auto rgb = image ? authorMtlxImageChannel(graph, (name + "Rgb").c_str(),
+                                                    "ND_convert_color4_color3", image,
+                                                    SdfValueTypeNames->Color3f)
+                           : UsdShadeOutput();
+    return rgb && connectMtlxInput(graph, surface, input, rgb, UsdShadeOutput(), nullptr,
+                                   (name + "Factor").c_str(), "ND_multiply_color3",
+                                   SdfValueTypeNames->Color3f, factor);
 }
 
 // One channel of a non-color image times its factor.
@@ -790,14 +817,19 @@ connectMtlxTextures(const UsdShadeNodeGraph& graph, UsdShadeShader& surface,
                                                   factors.normalScale, *textures.normal)) &&
            (!textures.occlusion ||
             connectMtlxOcclusion(graph, surface, factors, *textures.occlusion)) &&
-           (!textures.emissive ||
-            connectMtlxEmissive(graph, surface, factors, *textures.emissive)) &&
+           (!textures.emissive || connectMtlxColor(graph, surface, "emissive", "emissive",
+                                                   factors.emissive, *textures.emissive)) &&
            (!hasClearcoat(factors) || connectMtlxClearcoat(graph, surface, factors, textures)) &&
            (!textures.transmission ||
             connectMtlxChannel(graph, surface, "transmission", "transmission", 0,
                                factors.transmission, *textures.transmission)) &&
            (!textures.thickness || connectMtlxChannel(graph, surface, "thickness", "thickness", 1,
-                                                      factors.thickness, *textures.thickness));
+                                                      factors.thickness, *textures.thickness)) &&
+           (!textures.specular || connectMtlxChannel(graph, surface, "specular", "specular", 3,
+                                                     factors.specular, *textures.specular)) &&
+           (!textures.specularColor ||
+            connectMtlxColor(graph, surface, "specularColor", "specular_color",
+                             factors.specularColor, *textures.specularColor));
 }
 
 bool
@@ -883,6 +915,10 @@ authorMtlx(const UsdShadeMaterial& material, const PbrFactors& factors, bool ver
     const auto attenuationColor =
         attenuation ? surface.CreateInput(TfToken("attenuation_color"), SdfValueTypeNames->Color3f)
                     : UsdShadeInput();
+    // gltf_pbr's dielectric F0 is min(F0 of the ior * specular_color, 1) * specular, and its F90
+    // specular, as glTF's are.
+    const bool specular = hasSpecularWeight(factors, textures);
+    const bool specularColor = hasSpecularColor(factors, textures);
     return surface.CreateIdAttr().Set(TfToken("ND_gltf_pbr_surfaceshader")) &&
            setInput(surface, "base_color", SdfValueTypeNames->Color3f,
                     unlit ? GfVec3f(0) : factors.baseColor) &&
@@ -890,6 +926,10 @@ authorMtlx(const UsdShadeMaterial& material, const PbrFactors& factors, bool ver
                     unlit ? 0.0f : factors.metallic) &&
            setInput(surface, "roughness", SdfValueTypeNames->Float, factors.roughness) &&
            (!unlit || setInput(surface, "specular", SdfValueTypeNames->Float, 0.0f)) &&
+           (!specular ||
+            setInput(surface, "specular", SdfValueTypeNames->Float, factors.specular)) &&
+           (!specularColor || setInput(surface, "specular_color", SdfValueTypeNames->Color3f,
+                                       factors.specularColor)) &&
            setInput(surface, "emissive", SdfValueTypeNames->Color3f,
                     unlit ? factors.baseColor : factors.emissive) &&
            (!ior || (iorInput && iorInput.GetAttr().SetVariability(SdfVariabilityUniform) &&
@@ -1109,6 +1149,7 @@ MaterialAuthor::Bind(std::size_t index, std::size_t uvSetCount, const pxr::VtVec
     const auto* clearcoat = source.clearcoat ? &*source.clearcoat : nullptr;
     const auto* transmission = source.transmission ? &*source.transmission : nullptr;
     const auto* volume = source.volume ? &*source.volume : nullptr;
+    const auto* specular = source.specular ? &*source.specular : nullptr;
     if (!hasUvSet(pbr.baseColorTexture) || !hasUvSet(pbr.metallicRoughnessTexture) ||
         !hasUvSet(source.normalTexture) || !hasUvSet(source.occlusionTexture) ||
         !hasUvSet(source.emissiveTexture) ||
@@ -1116,7 +1157,9 @@ MaterialAuthor::Bind(std::size_t index, std::size_t uvSetCount, const pxr::VtVec
                        !hasUvSet(clearcoat->clearcoatRoughnessTexture) ||
                        !hasUvSet(clearcoat->clearcoatNormalTexture))) ||
         (transmission && !hasUvSet(transmission->transmissionTexture)) ||
-        (volume && !hasUvSet(volume->thicknessTexture)))
+        (volume && !hasUvSet(volume->thicknessTexture)) ||
+        (specular &&
+         (!hasUvSet(specular->specularTexture) || !hasUvSet(specular->specularColorTexture))))
     {
         error = "material texture uses a texture coordinate set the primitive does not have";
         return false;
@@ -1193,6 +1236,21 @@ MaterialAuthor::Bind(std::size_t index, std::size_t uvSetCount, const pxr::VtVec
             return false;
         }
     }
+    if (specular && !inUnitRange(specular->specularFactor))
+    {
+        error = "material specular factor is non-finite or out of range";
+        return false;
+    }
+    // glTF bounds the specular color below only: its product with the ior's F0 is clamped to 1.
+    for (std::size_t i = 0; specular && i < 3; ++i)
+    {
+        if (!(std::isfinite(specular->specularColorFactor[i]) &&
+              specular->specularColorFactor[i] >= 0))
+        {
+            error = "material specular color factor is non-finite or negative";
+            return false;
+        }
+    }
     auto& material = colors ? _vertexColorMaterials[index] : _materials[index];
     if (!material)
     {
@@ -1203,11 +1261,15 @@ MaterialAuthor::Bind(std::size_t index, std::size_t uvSetCount, const pxr::VtVec
         };
         // KHR_materials_unlit defines every other texture as a fallback for clients without it.
         // A clearcoat or transmission of factor 0 is disabled, and so is a volume without
-        // transmission or thickness, so their textures are not read either.
+        // transmission or thickness, so their textures are not read either. A specular weight of
+        // 0 removes the reflection whatever its texture or color, and a black specular color
+        // factor makes the color black whatever its texture.
         const auto factors = pbrFactors(source);
         const bool coated = hasClearcoat(factors);
         const bool transmits = hasTransmission(factors);
         const bool thick = hasVolume(factors);
+        const bool reflects = specular && !source.unlit && factors.specular > 0.0f;
+        const bool tinted = reflects && factors.specularColor != GfVec3f(0);
         MaterialTextures textures;
         if (!resolve(pbr.baseColorTexture, textures.baseColor) ||
             (!source.unlit && (!resolve(pbr.metallicRoughnessTexture, textures.metallicRoughness) ||
@@ -1219,7 +1281,9 @@ MaterialAuthor::Bind(std::size_t index, std::size_t uvSetCount, const pxr::VtVec
               !resolve(clearcoat->clearcoatRoughnessTexture, textures.clearcoatRoughness) ||
               !resolve(clearcoat->clearcoatNormalTexture, textures.clearcoatNormal))) ||
             (transmits && !resolve(transmission->transmissionTexture, textures.transmission)) ||
-            (thick && !resolve(volume->thicknessTexture, textures.thickness)))
+            (thick && !resolve(volume->thicknessTexture, textures.thickness)) ||
+            (reflects && !resolve(specular->specularTexture, textures.specular)) ||
+            (tinted && !resolve(specular->specularColorTexture, textures.specularColor)))
         {
             return false;
         }
@@ -1257,6 +1321,18 @@ MaterialAuthor::Bind(std::size_t index, std::size_t uvSetCount, const pxr::VtVec
         {
             TF_WARN("glTF material %zu: KHR_materials_volume is ignored, because the material is "
                     "unlit",
+                    index);
+        }
+        if (source.unlit && specular)
+        {
+            TF_WARN("glTF material %zu: KHR_materials_specular is ignored, because the material "
+                    "is unlit",
+                    index);
+        }
+        if (hasSpecularWeight(factors, textures) || hasSpecularColor(factors, textures))
+        {
+            TF_WARN("glTF material %zu: UsdPreviewSurface's metallic workflow has no specular "
+                    "weight or color; its network ignores KHR_materials_specular",
                     index);
         }
         if (transmits)

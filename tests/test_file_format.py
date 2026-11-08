@@ -4244,6 +4244,289 @@ class FileFormatTest(unittest.TestCase):
                             layer.Reload(True)
                         self.assertEqual(layer_text(layer), before)
 
+    def test_specular_materials(self):
+        def open_with_stderr(path):
+            return subprocess.run(
+                [sys.executable, "-c",
+                 "from pxr import Usd; import sys; assert Usd.Stage.Open(sys.argv[1])", str(path)],
+                capture_output=True, text=True, check=False,
+            )
+
+        ignored = "KHR_materials_specular is ignored, because the material is unlit"
+        preview_warning = ("UsdPreviewSurface's metallic workflow has no specular weight or color; its network "
+                           "ignores KHR_materials_specular")
+        # The specular weight and color authored in MaterialX, or None where they keep their defaults of 1.
+        cases = (
+            ("weight", {"specularFactor": 0.5}, {}, 0.5, None),
+            ("zero weight", {"specularFactor": 0}, {}, 0, None),
+            # glTF bounds the color below only.
+            ("color", {"specularColorFactor": [0.5, 1, 2]}, {}, None, (0.5, 1, 2)),
+            ("both", {"specularFactor": 0.25, "specularColorFactor": [1, 0, 0]}, {}, 0.25, (1, 0, 0)),
+            ("defaults", {"specularFactor": 1, "specularColorFactor": [1, 1, 1]}, {}, None, None),
+            ("empty", {}, {}, None, None),
+            # gltf_pbr ignores the specular inputs of a metal, as glTF does, so they are authored all the same.
+            ("metal", {"specularFactor": 0.5}, {"metallicFactor": 1}, 0.5, None),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            for extension in ("gltf", "glb"):
+                for (case, specular, pbr, weight, color), required in itertools.product(cases, (False, True)):
+                    with self.subTest(extension=extension, case=case, required=required):
+                        name = f"{case.replace(' ', '_')}_{'required' if required else 'optional'}"
+                        path = pathlib.Path(directory) / f"specular_{name}.{extension}"
+                        document, binary = mesh_document(extension)
+                        document["extensionsUsed"] = ["KHR_materials_specular"]
+                        if required:
+                            document["extensionsRequired"] = ["KHR_materials_specular"]
+                        document["meshes"][0]["primitives"][0]["material"] = 0
+                        document["meshes"][0]["primitives"][1]["material"] = 1
+                        lit = {"pbrMetallicRoughness": {"baseColorFactor": [0.2, 0.4, 0.6, 1],
+                                                        "metallicFactor": 0, "roughnessFactor": 0.5, **pbr}}
+                        document["materials"] = [{**lit, "extensions": {"KHR_materials_specular": specular}},
+                                                 lit]
+                        write_asset(path, document, binary)
+                        result = open_with_stderr(path)
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertNotIn("'KHR_materials_specular' is not supported", result.stderr)
+                        self.assertNotIn(ignored, result.stderr)
+                        self.assertEqual(preview_warning in result.stderr, weight is not None or color is not None,
+                                         result.stderr)
+
+                        stage = Usd.Stage.Open(str(path))
+                        material = UsdShade.Material.Get(stage, "/Asset/mtl/Material_0")
+                        preview = UsdShade.Shader.Get(stage, "/Asset/mtl/Material_0/preview/surface")
+                        mtlx = UsdShade.Shader.Get(stage, "/Asset/mtl/Material_0/mtlx/surface")
+                        self.assert_material_nodegraphs(material, preview, mtlx)
+                        if weight is None:
+                            self.assertFalse(mtlx.GetInput("specular"))
+                        else:
+                            self.assertAlmostEqual(mtlx.GetInput("specular").Get(), weight, places=6)
+                        if color is None:
+                            self.assertFalse(mtlx.GetInput("specular_color"))
+                        else:
+                            self.assertTrue(Gf.IsClose(mtlx.GetInput("specular_color").Get(), Gf.Vec3f(*color), 1e-6))
+                        # UsdPreviewSurface keeps the metallic workflow, which has neither.
+                        for input_name in ("useSpecularWorkflow", "specularColor"):
+                            self.assertFalse(preview.GetInput(input_name), input_name)
+                        # The specular changes nothing else.
+                        self.assertFalse(mtlx.GetInput("ior"))
+                        self.assertTrue(Gf.IsClose(mtlx.GetInput("base_color").Get(), Gf.Vec3f(0.2, 0.4, 0.6), 1e-6))
+                        self.assertAlmostEqual(mtlx.GetInput("metallic").Get(), 1 if case == "metal" else 0, places=6)
+                        self.assertAlmostEqual(mtlx.GetInput("roughness").Get(), 0.5, places=6)
+                        # A material without the extension authors no specular.
+                        plain_mtlx = UsdShade.Shader.Get(stage, "/Asset/mtl/Material_1/mtlx/surface")
+                        for input_name in ("specular", "specular_color"):
+                            self.assertFalse(plain_mtlx.GetInput(input_name), input_name)
+
+                with self.subTest(extension=extension, case="unlit"):
+                    path = pathlib.Path(directory) / f"specular_unlit.{extension}"
+                    document, binary = mesh_document(extension)
+                    document["extensionsUsed"] = ["KHR_materials_specular", "KHR_materials_unlit"]
+                    document["meshes"][0]["primitives"][0]["material"] = 0
+                    document["materials"] = [{"extensions": {
+                        "KHR_materials_specular": {"specularFactor": 0.5, "specularColorFactor": [1, 0, 0]},
+                        "KHR_materials_unlit": {}}}]
+                    write_asset(path, document, binary)
+                    result = open_with_stderr(path)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIn(ignored, result.stderr)
+                    self.assertNotIn(preview_warning, result.stderr)
+                    stage = Usd.Stage.Open(str(path))
+                    mtlx = UsdShade.Shader.Get(stage, "/Asset/mtl/Material_0/mtlx/surface")
+                    # An unlit material reflects nothing.
+                    self.assertEqual(mtlx.GetInput("specular").Get(), 0)
+                    self.assertFalse(mtlx.GetInput("specular_color"))
+
+    def test_specular_textures(self):
+        def open_with_stderr(path):
+            return subprocess.run(
+                [sys.executable, "-c",
+                 "from pxr import Usd; import sys; assert Usd.Stage.Open(sys.argv[1])", str(path)],
+                capture_output=True, text=True, check=False,
+            )
+
+        def source_of(shader, name):
+            connection = shader.GetInput(name).GetConnectedSource() if shader.GetInput(name) else None
+            return (UsdShade.Shader(connection[0].GetPrim()), connection[1]) if connection else (None, None)
+
+        def specular_prims(material, graph):
+            return [prim for prim in Usd.PrimRange(material.GetPrim().GetChild(graph))
+                    if prim.GetName().startswith("specular")]
+
+        def reader_of(shader):
+            while shader and shader.GetIdAttr().Get() != "ND_geompropvalue_vector2":
+                shader = source_of(shader, "in1")[0] or source_of(shader, "in")[0]
+            return shader
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            for extension in ("gltf", "glb"):
+                with self.subTest(extension=extension, case="textures"):
+                    path = root / ("specular." + extension)
+                    document, binary = textured_document(extension, None, PNG)
+                    document["extensionsUsed"] = ["KHR_materials_specular", "KHR_texture_transform"]
+                    document["samplers"] = [{"wrapS": 33648, "wrapT": 33071}]
+                    document["textures"].append({"source": 0, "sampler": 0})
+                    document["materials"][0]["extensions"] = {"KHR_materials_specular": {
+                        "specularFactor": 0.5,
+                        "specularTexture": {"index": 1, "texCoord": 1, "extensions": {
+                            "KHR_texture_transform": {"offset": [0.25, 0]}}},
+                        "specularColorFactor": [0.5, 0.25, 2],
+                        "specularColorTexture": {"index": 0},
+                    }}
+                    write_asset(path, document, binary)
+                    result = open_with_stderr(path)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    stage = Usd.Stage.Open(str(path))
+                    usd_material = UsdShade.Material.Get(stage, "/Asset/mtl/Material_0")
+                    mtlx, _, _ = usd_material.ComputeSurfaceSource("mtlx")
+
+                    factor, _ = source_of(mtlx, "specular")
+                    self.assertEqual(factor.GetPath().name, "specularFactor")
+                    self.assertEqual(factor.GetIdAttr().Get(), "ND_multiply_float")
+                    self.assertAlmostEqual(factor.GetInput("in2").Get(), 0.5)
+                    channel, _ = source_of(factor, "in1")
+                    self.assertEqual(channel.GetPath().name, "specularChannel")
+                    # glTF's specular weight is the texture's A channel, as non-color data.
+                    self.assertEqual(channel.GetInput("index").Get(), 3)
+                    image, _ = source_of(channel, "in")
+                    self.assertEqual(image.GetPath().name, "specularImage")
+                    self.assertEqual(image.GetIdAttr().Get(), "ND_image_vector4")
+                    self.assertFalse(image.GetInput("file").GetAttr().HasColorSpace())
+                    self.assertEqual(image.GetInput("uaddressmode").Get(), "mirror")
+                    self.assertEqual(image.GetInput("vaddressmode").Get(), "clamp")
+                    # The transform sits between the reader of TEXCOORD_1 and the image.
+                    translate, _ = source_of(image, "texcoord")
+                    self.assertEqual(translate.GetIdAttr().Get(), "ND_add_vector2")
+                    self.assertEqual(reader_of(translate).GetInput("geomprop").Get(), "st1")
+                    asset = image.GetInput("file").Get()
+                    self.assertEqual(asset.path, f"./{path.name}[images/0.png]")
+                    self.assertEqual(asset_bytes(asset.resolvedPath), PNG)
+
+                    factor, _ = source_of(mtlx, "specular_color")
+                    self.assertEqual(factor.GetPath().name, "specularColorFactor")
+                    self.assertEqual(factor.GetIdAttr().Get(), "ND_multiply_color3")
+                    self.assertTrue(Gf.IsClose(factor.GetInput("in2").Get(), Gf.Vec3f(0.5, 0.25, 2), 1e-6))
+                    rgb, _ = source_of(factor, "in1")
+                    self.assertEqual(rgb.GetPath().name, "specularColorRgb")
+                    self.assertEqual(rgb.GetIdAttr().Get(), "ND_convert_color4_color3")
+                    image, _ = source_of(rgb, "in")
+                    self.assertEqual(image.GetPath().name, "specularColorImage")
+                    # glTF's specular color texture is sRGB-encoded.
+                    self.assertEqual(image.GetIdAttr().Get(), "ND_image_color4")
+                    self.assertEqual(image.GetInput("file").GetAttr().GetColorSpace(), "srgb_texture")
+                    self.assertEqual(image.GetInput("uaddressmode").Get(), "periodic")
+                    self.assertEqual(reader_of(source_of(image, "texcoord")[0]).GetInput("geomprop").Get(), "st")
+                    # UsdPreviewSurface has no specular weight or color to connect them to.
+                    self.assertFalse(specular_prims(usd_material, "preview"))
+                    preview, _, _ = usd_material.ComputeSurfaceSource()
+                    self.assertFalse(preview.GetInput("specularColor"))
+
+                with self.subTest(extension=extension, case="factors of one"):
+                    path = root / ("specular_one." + extension)
+                    document, binary = textured_document(extension, None, PNG)
+                    document["extensionsUsed"] = ["KHR_materials_specular"]
+                    document["materials"][0]["extensions"] = {"KHR_materials_specular": {
+                        "specularTexture": {"index": 0}, "specularColorTexture": {"index": 0}}}
+                    write_asset(path, document, binary)
+                    stage = Usd.Stage.Open(str(path))
+                    usd_material = UsdShade.Material.Get(stage, "/Asset/mtl/Material_0")
+                    mtlx, _, _ = usd_material.ComputeSurfaceSource("mtlx")
+                    # A factor of 1 needs no multiply.
+                    self.assertEqual(source_of(mtlx, "specular")[0].GetPath().name, "specularChannel")
+                    self.assertEqual(source_of(mtlx, "specular_color")[0].GetPath().name, "specularColorRgb")
+
+                # A texture whose product is fixed is never read, so a damaged one does not matter.
+                for case, specular, weight, color in (
+                    ("zero weight", {"specularFactor": 0, "specularColorFactor": [1, 0, 0],
+                                     "specularTexture": {"index": 1}, "specularColorTexture": {"index": 1}},
+                     0, (1, 0, 0)),
+                    ("black color", {"specularFactor": 0.5, "specularColorFactor": [0, 0, 0],
+                                     "specularColorTexture": {"index": 1}}, 0.5, (0, 0, 0)),
+                    ("unlit", {"specularTexture": {"index": 1}, "specularColorTexture": {"index": 1}}, 0, None),
+                ):
+                    with self.subTest(extension=extension, case=case):
+                        path = root / (f"specular_{case.replace(' ', '_')}." + extension)
+                        document, binary = textured_document(extension, None, PNG)
+                        document["extensionsUsed"] = ["KHR_materials_specular"]
+                        document["images"].append({"uri": "data:image/png;base64,AA=="})
+                        document["textures"].append({"source": 1})
+                        extensions = {"KHR_materials_specular": specular}
+                        if case == "unlit":
+                            document["extensionsUsed"].append("KHR_materials_unlit")
+                            extensions["KHR_materials_unlit"] = {}
+                        document["materials"][0]["extensions"] = extensions
+                        write_asset(path, document, binary)
+                        result = open_with_stderr(path)
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        stage = Usd.Stage.Open(str(path))
+                        usd_material = UsdShade.Material.Get(stage, "/Asset/mtl/Material_0")
+                        self.assertFalse(specular_prims(usd_material, "mtlx"))
+                        mtlx = usd_material.ComputeSurfaceSource("mtlx")[0]
+                        self.assertEqual(mtlx.GetInput("specular").Get(), weight)
+                        if color is None:
+                            self.assertFalse(mtlx.GetInput("specular_color"))
+                        else:
+                            self.assertEqual(mtlx.GetInput("specular_color").Get(), Gf.Vec3f(*color))
+
+    def test_specular_failures_preserve_layer(self):
+        texture_range = "material texture uses a texture coordinate set the primitive does not have"
+        wrong_type = "KHR_materials_specular has a field of the wrong type"
+        out_of_range = "KHR_materials_specular is out of range"
+        factor_range = "material specular factor is non-finite or out of range"
+        color_range = "material specular color factor is non-finite or negative"
+        cases = (
+            ("not an object", [1], "KHR_materials_specular is not an object"),
+            ("factor of the wrong type", {"specularFactor": "1"}, wrong_type),
+            ("color not an array", {"specularColorFactor": 1}, wrong_type),
+            # fastgltf accepts a short color, keeping 1 for the rest.
+            ("short color", {"specularColorFactor": [0.5, 0.5]}, wrong_type),
+            ("long color", {"specularColorFactor": [0.5, 0.5, 0.5, 0.5]}, wrong_type),
+            ("color of the wrong type", {"specularColorFactor": [0.5, "0.5", 0.5]}, wrong_type),
+            ("texture not an object", {"specularTexture": 0}, wrong_type),
+            ("color texture without an index", {"specularColorTexture": {"texCoord": 0}}, wrong_type),
+            ("factor overflow", {"specularFactor": 1e39}, out_of_range),
+            ("color overflow", {"specularColorFactor": [1e39, 0, 0]}, out_of_range),
+            ("factor above one", {"specularFactor": 1.5}, factor_range),
+            ("negative factor", {"specularFactor": -0.5}, factor_range),
+            ("negative color", {"specularColorFactor": [1, 1, -0.5]}, color_range),
+            ("missing UV set", {"specularTexture": {"index": 0, "texCoord": 1}}, texture_range),
+            ("missing color UV set", {"specularColorTexture": {"index": 0, "texCoord": 1}}, texture_range),
+            ("texture out of range", {"specularTexture": {"index": 5}}, "texture index is out of range|cannot parse"),
+            # Ignoring the texture or the extension does not make an invalid value or a missing UV set valid.
+            ("zero weight missing UV set", {"specularFactor": 0, "specularTexture": {"index": 0, "texCoord": 1}},
+             texture_range),
+            ("unlit negative color", {"specularColorFactor": [-1, 1, 1]}, color_range),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            for extension in ("gltf", "glb"):
+                path = pathlib.Path(directory) / ("specular." + extension)
+                document, binary = textured_document(extension, None, PNG)
+                document["extensionsUsed"] = ["KHR_materials_specular"]
+                document["materials"][0]["extensions"] = {"KHR_materials_specular": {"specularFactor": 0.5}}
+                # The second primitive has one UV set only.
+                document["materials"].append({})
+                document["meshes"][0]["primitives"][1]["material"] = 1
+                write_asset(path, document, binary)
+                stage = Usd.Stage.Open(str(path))
+                layer = stage.GetRootLayer()
+                before = layer_text(layer)
+                mtlx = UsdShade.Shader.Get(stage, "/Asset/mtl/Material_0/mtlx/surface")
+                self.assertAlmostEqual(mtlx.GetInput("specular").Get(), 0.5, places=6)
+                for case, value, message in cases:
+                    with self.subTest(extension=extension, case=case):
+                        invalid, invalid_binary = textured_document(extension, None, PNG)
+                        invalid["extensionsUsed"] = ["KHR_materials_specular"]
+                        invalid["meshes"][0]["primitives"][1]["material"] = 1
+                        extensions = {"KHR_materials_specular": value}
+                        if case.startswith("unlit"):
+                            invalid["extensionsUsed"].append("KHR_materials_unlit")
+                            extensions["KHR_materials_unlit"] = {}
+                        invalid["materials"].append({"extensions": extensions})
+                        write_asset(path, invalid, invalid_binary)
+                        with self.assertRaisesRegex(Tf.ErrorException, message):
+                            layer.Reload(True)
+                        self.assertEqual(layer_text(layer), before)
+
     def test_animation_outside_selected_scene_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             for extension in ("gltf", "glb"):

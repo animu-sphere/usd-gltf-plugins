@@ -71,6 +71,17 @@ does not change metallic, roughness, `specular` or any other input. An ior of 0,
 1 at every angle, is authored as 1000000, and a value below 1 other than 0 fails. An unlit material
 authors none. See [ADR 0016](../adr/0016-ior.md).
 
+## Specular
+
+A `KHR_materials_specular` weight is authored as MaterialX `specular`, the factor times the A channel of
+its texture, read as non-color data, and its color as `specular_color`, the factor times the RGB of its
+texture, read as sRGB like base color. Each is authored only where it differs from the default of 1.
+`gltf_pbr` computes glTF's dielectric F0 of `min(F0 of the ior * color, 1) * weight` and F90 of
+`weight`, and leaves the metal's lobe alone. UsdPreviewSurface's metallic workflow has no specular
+weight or color, so its network ignores the extension with a warning and draws glTF's default specular.
+A weight of 0 reads neither texture, a color factor of 0 does not read the color texture, and an unlit
+material authors none. See [ADR 0020](../adr/0020-specular.md).
+
 ## Clearcoat
 
 A `KHR_materials_clearcoat` layer with a factor above 0 is authored as UsdPreviewSurface `clearcoat`
@@ -105,7 +116,7 @@ author nothing. See [ADR 0019](../adr/0019-volume.md).
 
 ## Other extensions
 
-Each extension, including sheen and specular,
+Each extension, including sheen,
 requires its own explicit capability entry and tests. Do not silently
 claim complete support for unsupported features. Required extension handling
 is governed by the
