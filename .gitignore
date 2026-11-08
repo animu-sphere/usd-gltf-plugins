@@ -1,6 +1,6 @@
 /build/
 /.strata/
-/strata.lock
+*.lock
 /dist/
 /plugins/usdGltfFileFormat/.strata/
 /plugins/usdGltfFileFormat/build/
