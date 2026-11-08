@@ -281,26 +281,26 @@ not in this repository: 339 files in 150 models. The result for each file is in
 [`tests/sample_baseline.json`](../../tests/sample_baseline.json), and
 [ADR 0010](../adr/0010-sample-baseline.md) explains what is compared and its limits.
 
-Last result for opening and meaning: with the specular added, on Windows with OpenUSD 26.08 and the
-OpenStrata lookdev runtime, without rendering. It is the first result with the clearcoat, transmission
-and volume comparisons, which were added after the previous one. Each file that uses
-`KHR_materials_clearcoat`, `KHR_materials_transmission`, `KHR_materials_volume` or
-`KHR_materials_specular` now compares it and no longer ignores it, and both ClearCoatCarPaint files,
-which require the clearcoat, open and are verified. No file's meaning differs, and every other file
-matched the previous result: the ior result on Linux x86-64 with OpenUSD 26.08 from the `usd-core`
-wheel, which for every file whose result WebP or unlit materials do not change matched the result on
+Last result for opening and meaning: with the sheen added, on Windows with OpenUSD 26.08 and the
+OpenStrata lookdev runtime. The 17 files that change all use `KHR_materials_sheen`, which they now
+compare instead of ignoring: the SheenTestGrid and SpecularSilkPouf files, which require it, open and
+are verified, 9 others go from partial to verified, and the GlamVelvetSofa and SheenChair files remain
+partial, because they also use `KHR_materials_variants`. No file's meaning differs. The result
+before it, with the specular added, was the first with the clearcoat, transmission, volume and specular
+comparisons, and every file it did not change matched the ior result on Linux x86-64 with OpenUSD 26.08
+from the `usd-core` wheel, which for every file whose result WebP or unlit materials do not change matched the result on
 `7de8b8f` on Windows with the same runtime and an NVIDIA RTX A5000, also the last render. It is not part
 of CI. NodePerformanceTest's GLB times out, because its 10,000 materials read 20,000 embedded images, and
 outside a resolver cache scope each read parses the 38 MB file again, about 0.1 second each.
 
 | Result | Files | What it means |
 | --- | --- | --- |
-| Opened | 239 | The stage opens. No file crashed, and one timed out after 600 seconds. |
-| Rejected | 99 | Each has a diagnostic naming a cause the file really has. |
-| Meaning verified | 163 | USD agrees with values decoded from the file, in all that is compared, and the file uses no ignored extension. |
-| Meaning partial | 76 | The same, but the file uses an optional extension that is ignored, with a warning. What it changes is not compared. |
+| Opened | 243 | The stage opens. No file crashed, and one timed out after 600 seconds. |
+| Rejected | 95 | Each has a diagnostic naming a cause the file really has. |
+| Meaning verified | 176 | USD agrees with values decoded from the file, in all that is compared, and the file uses no ignored extension. |
+| Meaning partial | 67 | The same, but the file uses an optional extension that is ignored, with a warning. What it changes is not compared. |
 | Meaning differs | 0 | |
-| Rendered | 230 | Storm drew something through both shader paths. No pixel was judged, so this is not evidence of correct display. The 9 files that WebP, unlit materials and the clearcoat open have not been rendered, and those that use an ior, a clearcoat, a transmission, a volume or a specular were last rendered without it. |
+| Rendered | 236 | Storm drew something through both shader paths. No pixel was judged, so this is not evidence of correct display. The 17 files that use a sheen were rendered with it, on the same machine with an NVIDIA RTX A5000. The 7 files that WebP, unlit materials and the clearcoat open have not been rendered, and those that use an ior, a clearcoat, a transmission, a volume or a specular were last rendered without it. |
 
 Why files are rejected, read from each file. Most files have several causes, so a count of files that
 have a cause is not what supporting it would open:
@@ -311,11 +311,11 @@ have a cause is not what supporting it would open:
 | Skin | 24 | 0 |
 | Requires `KHR_draco_mesh_compression` | 18 | 11 |
 | Morph targets | 10 | 2 |
-| Requires a material extension | 9 | 9 |
+| Requires a material extension | 5 | 5 |
 | Requires `KHR_node_visibility` | 4 | 0 |
 | Requires meshopt compression | 5 | 2 |
 | Points or lines | 3 | 3 |
 | Sparse accessor | 2 | 2 |
 
 Ignored optional extensions, in files that opened, include `KHR_materials_iridescence` (16),
-`KHR_materials_variants` (15), `KHR_materials_anisotropy` (13) and `KHR_materials_sheen` (13).
+`KHR_materials_variants` (15) and `KHR_materials_anisotropy` (13).
