@@ -35,7 +35,7 @@ import numpy
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 BASELINE = ROOT / "tests" / "sample_baseline.json"
 IMPLEMENTED_EXTENSIONS = {"EXT_texture_webp", "KHR_lights_punctual", "KHR_materials_clearcoat", "KHR_materials_ior",
-                          "KHR_materials_specular", "KHR_materials_transmission", "KHR_materials_unlit", "KHR_materials_volume",
+                          "KHR_materials_sheen", "KHR_materials_specular", "KHR_materials_transmission", "KHR_materials_unlit", "KHR_materials_volume",
                           "KHR_mesh_quantization", "KHR_texture_basisu", "KHR_texture_transform"}
 PATHS = ("mtlx", "preview")
 CAMERA = "/SampleCheckCamera"
@@ -71,14 +71,17 @@ SLOTS = {"baseColorTexture": "baseColor", "metallicRoughnessTexture": "metallicR
          "normalTexture": "normal", "occlusionTexture": "occlusion", "emissiveTexture": "emissive",
          "clearcoatTexture": "clearcoat", "clearcoatRoughnessTexture": "clearcoatRoughness",
          "transmissionTexture": "transmission", "thicknessTexture": "thickness", "specularTexture": "specular",
-         "specularColorTexture": "specularColor"}
+         "specularColorTexture": "specularColor", "sheenColorTexture": "sheenColor",
+         "sheenRoughnessTexture": "sheenRoughness"}
 CLEARCOAT_SLOTS = {"clearcoatTexture", "clearcoatRoughnessTexture"}
 TRANSMISSION_SLOTS = {"transmissionTexture"}
 VOLUME_SLOTS = {"thicknessTexture"}
 SPECULAR_SLOTS = {"specularTexture", "specularColorTexture"}
+SHEEN_SLOTS = {"sheenColorTexture", "sheenRoughnessTexture"}
 # Slots that UsdPreviewSurface has no input for.
-MTLX_ONLY_SLOTS = {"transmissionTexture", "thicknessTexture", "specularTexture", "specularColorTexture"}
-COLOR_SLOTS = {"baseColorTexture", "emissiveTexture", "specularColorTexture"}
+MTLX_ONLY_SLOTS = {"transmissionTexture", "thicknessTexture", "specularTexture", "specularColorTexture",
+                   "sheenColorTexture", "sheenRoughnessTexture"}
+COLOR_SLOTS = {"baseColorTexture", "emissiveTexture", "specularColorTexture", "sheenColorTexture"}
 PBR_SLOTS = {"baseColorTexture", "metallicRoughnessTexture"}
 
 
@@ -520,6 +523,7 @@ def check_material(check, asset, stage, path, material, has_colors, images):
     transmission = material.get("extensions", {}).get("KHR_materials_transmission")
     volume = material.get("extensions", {}).get("KHR_materials_volume")
     specular = material.get("extensions", {}).get("KHR_materials_specular")
+    sheen = material.get("extensions", {}).get("KHR_materials_sheen")
 
     def owner(key):
         if key in PBR_SLOTS:
@@ -532,6 +536,8 @@ def check_material(check, asset, stage, path, material, has_colors, images):
             return volume or {}
         if key in SPECULAR_SLOTS:
             return specular or {}
+        if key in SHEEN_SLOTS:
+            return sheen or {}
         return material
 
     infos = {key: owner(key).get(key) for key in SLOTS}
@@ -567,6 +573,13 @@ def check_material(check, asset, stage, path, material, has_colors, images):
         infos["specularTexture"] = None
     if not reflects or not any(specular.get("specularColorFactor", (1, 1, 1))):
         infos["specularColorTexture"] = None
+    # A black sheen color disables the layer, and a roughness factor of 0 fixes the roughness, so their
+    # textures are not read, and an unlit material has none.
+    sheened = sheen is not None and not unlit and any(sheen.get("sheenColorFactor", (0, 0, 0)))
+    if not sheened:
+        infos["sheenColorTexture"] = None
+    if not sheened or not sheen.get("sheenRoughnessFactor", 0):
+        infos["sheenRoughnessTexture"] = None
     names = {prim.GetName() for prim in Usd.PrimRange(stage.GetPrimAtPath(path))}
     if not coated:
         check.expect(not {name for name in names if name.startswith("clearcoat")},
@@ -580,6 +593,9 @@ def check_material(check, asset, stage, path, material, has_colors, images):
     if not any(infos[key] for key in SPECULAR_SLOTS):
         check.expect(not {name for name in names if name.startswith("specular")},
                      f"{label} authors a specular texture it does not read")
+    if not any(infos[key] for key in SHEEN_SLOTS):
+        check.expect(not {name for name in names if name.startswith("sheen")},
+                     f"{label} authors a sheen texture it does not read")
     for key, info in infos.items():
         if info:
             textures[key] = check_texture(check, asset, stage, path, key, info, label, images)
@@ -642,6 +658,7 @@ def check_material(check, asset, stage, path, material, has_colors, images):
     check_transmission(check, surface, pbr_surface, transmission if transmits else None, textures, label)
     check_volume(check, surface, pbr_surface, volume if thick else None, textures, label)
     check_specular(check, surface, pbr_surface, specular, unlit, textures, label)
+    check_sheen(check, surface, pbr_surface, sheen if sheened else None, textures, label)
 
     # Both shaders default to glTF's 1.5, an ior of 0 stands for a very large one, and an unlit material has none.
     ior = material.get("extensions", {}).get("KHR_materials_ior", {}).get("ior", 1.5)
@@ -757,21 +774,47 @@ def check_specular(check, surface, pbr_surface, specular, unlit, textures, label
     if tuple(color) == (1, 1, 1) and not image:
         check.expect(not authored, f"{label} MaterialX authors a white specular color")
         return
-    if not check.expect(authored, f"{label} MaterialX specular_color is not authored"):
+    if check.expect(authored, f"{label} MaterialX specular_color is not authored"):
+        check_mtlx_color(check, authored, color, image, f"{label} MaterialX specular_color")
+
+
+def check_sheen(check, surface, pbr_surface, sheen, textures, label):
+    """The sheen color, times its texture's RGB, and roughness, times its texture's A, in MaterialX only;
+    the roughness where it is not glTF's and gltf_pbr's default of 0. Preview has no sheen.
+
+    `sheen` is None for a material without a sheen color other than black."""
+    check.expect(not [i for i in surface.GetInputs() if "sheen" in i.GetBaseName().lower()],
+                 f"{label} Preview authors a sheen")
+    color, roughness = pbr_surface.GetInput("sheen_color"), pbr_surface.GetInput("sheen_roughness")
+    if sheen is None:
+        check.expect(not color and not roughness, f"{label} MaterialX authors a sheen it does not have")
         return
-    check.close(authored.Get(), color, f"{label} MaterialX specular_color")
+    if check.expect(color, f"{label} MaterialX sheen_color is not authored"):
+        check_mtlx_color(check, color, sheen.get("sheenColorFactor", (0, 0, 0)), textures.get("sheenColorTexture"),
+                         f"{label} MaterialX sheen_color")
+    factor = sheen.get("sheenRoughnessFactor", 0)
+    if not factor:
+        check.expect(not roughness, f"{label} MaterialX authors a sheen roughness of 0")
+    elif check.expect(roughness, f"{label} MaterialX sheen_roughness is not authored"):
+        check_mtlx_channel(check, roughness, factor, textures.get("sheenRoughnessTexture"), 3,
+                           f"{label} MaterialX sheen_roughness")
+
+
+def check_mtlx_color(check, authored, factor, image, description):
+    """A MaterialX color input of a factor, times the RGB of its sRGB texture if it has one."""
+    check.close(authored.Get(), factor, description)
     if not image:
         return
     source = connected_shader(authored)
     # A factor of 1 reads the color directly; otherwise a multiply scales it.
     if source and source.GetShaderId() == "ND_multiply_color3":
-        check.close(source.GetInput("in2").Get(), color, f"{label} MaterialX specular_color factor")
+        check.close(source.GetInput("in2").Get(), factor, f"{description} factor")
         source = connected_shader(source.GetInput("in1"))
     else:
-        check.expect(tuple(color) == (1, 1, 1), f"{label} MaterialX specular_color is not scaled by its factor")
+        check.expect(tuple(factor) == (1, 1, 1), f"{description} is not scaled by its factor")
     rgb_image = connected_shader(source.GetInput("in")) if source and source.GetInput("in") else None
     check.expect(source and source.GetShaderId() == "ND_convert_color4_color3" and rgb_image
-                 and rgb_image.GetPath() == image.GetPath(), f"{label} MaterialX specular_color does not read its texture")
+                 and rgb_image.GetPath() == image.GetPath(), f"{description} does not read its texture")
 
 
 def check_mtlx_channel(check, authored, factor, image, index, description):

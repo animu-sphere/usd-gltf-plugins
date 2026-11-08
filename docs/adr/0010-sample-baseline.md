@@ -67,7 +67,9 @@ has neither; otherwise, that no transmission is authored. For a [volume](0019-vo
 above 0 on a transmissive material, its thickness, texture slot and any attenuation in MaterialX, and
 that Preview has none; otherwise, that no volume is authored. For a [specular](0020-specular.md) weight
 or color other than 1 or with a texture, its value and texture slot in MaterialX, and that Preview has neither;
-otherwise, that neither is authored.
+otherwise, that neither is authored. For a [sheen](0021-sheen.md) color other than black, its color, any
+roughness other than 0 and their texture slots in MaterialX, and that Preview has none; otherwise, that
+no sheen is authored.
 
 ## Evidence that it can fail
 

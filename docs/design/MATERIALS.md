@@ -82,6 +82,17 @@ weight or color, so its network ignores the extension with a warning and draws g
 A weight of 0 reads neither texture, a color factor of 0 does not read the color texture, and an unlit
 material authors none. See [ADR 0020](../adr/0020-specular.md).
 
+## Sheen
+
+A `KHR_materials_sheen` color factor other than black is authored as MaterialX `sheen_color`, the factor
+times the RGB of its texture, read as sRGB like base color, and a roughness factor other than 0 as
+`sheen_roughness`, the factor times the A channel of its texture, read as non-color data. `gltf_pbr`
+weights its sheen lobe by the color's largest component, gives it a Charlie roughness of
+`sheen_roughness` squared, and layers it over the base and under the clearcoat, as glTF does.
+UsdPreviewSurface has no sheen, so its network ignores the extension with a warning and draws the base
+alone. A black color factor reads neither texture, a roughness factor of 0 does not read the roughness
+texture, and an unlit material authors none. See [ADR 0021](../adr/0021-sheen.md).
+
 ## Clearcoat
 
 A `KHR_materials_clearcoat` layer with a factor above 0 is authored as UsdPreviewSurface `clearcoat`
@@ -116,7 +127,7 @@ author nothing. See [ADR 0019](../adr/0019-volume.md).
 
 ## Other extensions
 
-Each extension, including sheen,
+Each other extension
 requires its own explicit capability entry and tests. Do not silently
 claim complete support for unsupported features. Required extension handling
 is governed by the
