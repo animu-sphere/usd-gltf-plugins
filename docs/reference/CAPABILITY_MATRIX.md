@@ -28,6 +28,7 @@ CI success is not evidence of display compatibility.
 | `.gltf` / `.glb` registration and import | Verified (USD data, CI) | Read only; writing and editing are declared unsupported. Eager conversion on read. | `tests/test_file_format.py::test_registration_and_capabilities` |
 | Scene selection | Verified (USD data, CI) | Declared default scene, or scene 0 with a warning. No scenes or an invalid default fail. Scenes are never merged. | `tests/scene_selection.cpp`, `tests/test_file_format.py::test_first_scene_fallback_warns`, `tests/test_file_format.py::test_failures_report_diagnostics` |
 | Node hierarchy and transforms | Verified (USD data, CI) | TRS and matrix nodes. Invalid quaternions and perspective matrices fail. A quaternion within the tolerance of unit length is normalized. Multiply referenced meshes are duplicated, not shared. | `tests/test_file_format.py::test_scene_hierarchy_and_transforms`, `tests/test_file_format.py::test_rotations_are_normalized_within_the_tolerance`, `tests/test_file_format.py::test_node_order_and_optional_extension_warning` |
+| Import measurements | Experimental | Fresh-process stage-open time, peak resident memory and repeated point/topology arrays. Local Windows observations only; see [measurements](#import-measurements) and [ADR 0024](../adr/0024-import-measurements.md). | `tests/measure_import.py`, `tests/test_file_format.py::test_import_measurement_counts_repeated_geometry` |
 | Cameras | Verified (USD data, CI) | Perspective, finite and infinite, and orthographic, below each node that uses them, with the node's scale cancelled as glTF ignores it. An undefined aspect ratio is authored as 1 and keeps `yfov` only where the renderer matches the viewport's height, and an infinite projection ends at 1,000,000. Degenerate, reflected and sheared nodes and values outside the specification fail. Compared as a renderer combines view and projection, not rendered. See the [decision record](../adr/0012-cameras.md). | `tests/test_file_format.py::test_cameras`, `tests/test_file_format.py::test_cameras_reference_into_a_scaled_stage`, `tests/test_file_format.py::test_camera_failures_preserve_layer`, `tests/test_file_format.py::test_cameras_outside_selected_scene_are_not_checked` |
 | Lights (`KHR_lights_punctual`) | Experimental | Directional, point and spot, optional or required, below each node that uses them, with the node's scale, shear and reflection cancelled. A directional light is a distant light in lux. A point or spot light is a sphere of 1 millimeter whose intensity gives glTF's candela, so a renderer that ignores `treatAsPoint` draws a small sphere. The cone's softness approximates glTF's spot falloff, and Storm ignores the cone. `range` is ignored, with a warning. Degenerate nodes and values outside the specification fail. Tested in CI, with the [display check](#display-checks) on Windows. See the [decision record](../adr/0013-lights.md). | `tests/test_file_format.py::test_lights`, `tests/test_file_format.py::test_lights_reference_into_a_scaled_stage`, `tests/test_file_format.py::test_light_range_is_ignored_with_a_warning`, `tests/test_file_format.py::test_light_failures_preserve_layer`, `tests/test_file_format.py::test_lights_required_and_outside_selected_scene`, `tests/check_display.py` |
 | Triangle-based meshes | Verified (USD data, CI) | Indexed and non-indexed TRIANGLES, TRIANGLE_STRIP and TRIANGLE_FAN with float or quantized POSITION. Interleaved accessors are accepted. | `tests/test_file_format.py::test_triangle_meshes`, `tests/test_file_format.py::test_triangle_strips_and_fans`, `tests/test_file_format.py::test_triangle_strip_and_fan_index_types_and_nonindexed_counts`, `tests/test_file_format.py::test_mesh_schema_attributes` |
@@ -67,6 +68,35 @@ CI success is not evidence of display compatibility.
 | Export | Unsupported | Not implemented. | |
 | Anisotropy (`KHR_materials_anisotropy`) | Experimental | Optional or required. MaterialX `gltf_pbr` strength and rotation; texture B times strength and `atan2(2G - 1, 2R - 1)` plus rotation, as non-color data, with UV sets, transforms and wrap modes. Finite factor angles reduce modulo a full turn, and a zero direction selects angle 0. A strength of 0 and an unlit material author none and read no anisotropy image; input values and UV sets are still checked. UsdPreviewSurface ignores anisotropy with a warning. MaterialX uses a renderer-derived tangent frame, with a warning: supplied glTF tangents and handedness do not control shading, so orientation can differ from glTF. Tested locally on Windows, including the [display check](#display-checks) and [sample check](#sample-assets); no glTF reference-renderer equivalence is claimed. See [ADR 0023](../adr/0023-anisotropy.md). | `tests/test_file_format.py::test_anisotropy_materials`, `tests/test_file_format.py::test_anisotropy_textures`, `tests/test_file_format.py::test_anisotropy_failures_preserve_layer`, `tests/check_display.py`, `tests/probe_anisotropy.py` |
 | General renderer compatibility | Unsupported | No renderer, including Storm, has a general compatibility claim. | |
+
+## Import measurements
+
+[`tests/measure_import.py`](../../tests/measure_import.py) measures `Usd.Stage.Open` before
+inspecting mesh arrays. The [README](../../README.md#development) has the command and
+[ADR 0024](../adr/0024-import-measurements.md) defines the measurements and sharing decision.
+
+On Windows 11 x86-64, MSVC and OpenUSD 26.08 in the OpenStrata cy2026 USD runtime,
+with Python 3.13.14 and an AMD64 Family 25 Model 97 processor, three fresh processes per
+asset gave the ranges below. Samples are from commit `8f49239`. Runs within each
+measurement command were serial, with OS file caches left intact; sample inspection
+and tests also ran during collection, so these are exploratory observations, not
+isolated benchmark results. The tool does not explicitly resolve shader image assets
+or render in the timed region; the importer's image validation is included.
+Peak resident memory was sampled immediately after opening and includes Python and USD.
+
+| Asset | Open seconds, min to max | Peak resident MiB, min to max | Mesh occurrences / unique point-topology arrays | Array bytes / unique bytes |
+| --- | --- | --- | --- | --- |
+| `tests/fixtures/base_color_textures.gltf` | 0.069 to 0.077 | 74.84 to 75.33 | 10 / 10 | 800 / 800 |
+| `NodePerformanceTest/glTF-Binary/NodePerformanceTest.glb` | 15.018 to 16.525 | 513.77 to 515.95 | 10000 / 10000 | 13074488 / 13074488 |
+| `NodePerformanceTest/glTF/NodePerformanceTest.gltf` | 21.072 to 23.220 | 494.32 to 505.25 | 10000 / 10000 | 13074488 / 13074488 |
+| `ABeautifulGame/glTF/ABeautifulGame.gltf` | 0.214 to 0.238 | 137.20 to 137.55 | 49 / 8 | 35215292 / 8438344 |
+
+Array bytes count points, face counts and face indices only. Identical arrays do not
+establish that materials, normals, UVs or other primvars can be shared, and their
+difference is not predicted RSS savings. NodePerformanceTest has no repeated arrays
+by this metric, while ABeautifulGame is a candidate for later sharing experiments.
+The importer still duplicates meshes. These measurements do not cover KTX2 decode
+time, renderer loading, concurrent import throughput or other platforms.
 
 ## Tested environments
 
@@ -304,7 +334,15 @@ not in this repository: 339 files in 150 models. The result for each file is in
 [`tests/sample_baseline.json`](../../tests/sample_baseline.json), and
 [ADR 0010](../adr/0010-sample-baseline.md) explains what is compared and its limits.
 
-Last update: the 13 files in the AnisotropyBarnLamp, AnisotropyDiscTest, AnisotropyRotationTest,
+Last update: both NodePerformanceTest files passed opening and USD meaning comparison on
+Windows with OpenUSD 26.08 and the OpenStrata cy2026 USD runtime. The GLB's previous
+600-second timeout occurred during the combined open-and-inspect process, rather
+than demonstrating a timeout in `Stage.Open` itself. Holding the existing resolver
+cache scope during the meaning comparison avoids reparsing the GLB for every image
+reference. Its GLB now verifies 10000 meshes and has not been rendered; the `.gltf`
+entry is unchanged. The other 337 files were not rerun for this update.
+
+The preceding update checked the 13 files in the AnisotropyBarnLamp, AnisotropyDiscTest, AnisotropyRotationTest,
 AnisotropyStrengthTest, CarbonFibre and CompareAnisotropy groups were checked and rendered through
 both paths on Windows with OpenUSD 26.08, the OpenStrata lookdev runtime and an NVIDIA RTX A5000.
 Ten go from partial to verified in the inputs and networks compared; the three BarnLamp files remain
@@ -322,15 +360,13 @@ the 17 sheen files were also rendered. Before it, the specular update was the fi
 clearcoat, transmission, volume and specular comparisons. Every file unchanged by that update matched
 the ior result on Linux x86-64 with OpenUSD 26.08 from the `usd-core` wheel. Every file unchanged by
 WebP or unlit materials had in turn matched the result on `7de8b8f` on Windows with the same runtime
-and GPU, also the last render of the whole collection. It is not part of CI. NodePerformanceTest's
-GLB times out, because its 10,000 materials read 20,000 embedded images, and outside a resolver cache
-scope each read parses the 38 MB file again, about 0.1 second each.
+and GPU, also the last render of the whole collection. It is not part of CI.
 
 | Result | Files | What it means |
 | --- | --- | --- |
-| Opened | 244 | The stage opens. No file crashed, and one timed out after 600 seconds. |
+| Opened | 245 | The stage opens. No file crashed or timed out in the recorded results. |
 | Rejected | 94 | Each has a diagnostic naming a cause the file really has. |
-| Meaning verified | 198 | USD agrees with values decoded from the file, in all that is compared, and the file uses no ignored extension. |
+| Meaning verified | 199 | USD agrees with values decoded from the file, in all that is compared, and the file uses no ignored extension. |
 | Meaning partial | 46 | The same, but the file uses an optional extension that is ignored, with a warning. What it changes is not compared. |
 | Meaning differs | 0 | |
 | Rendered | 238 | Storm drew something through both shader paths. No pixel was judged, so this is not evidence of correct display. The 13 anisotropy files, 17 changed iridescence files and 17 sheen files were rendered with their extensions. The 6 other files opened by WebP, unlit materials or clearcoat have not been rendered. Other files with an ior, clearcoat, transmission, volume or specular retain their older renders from before those features were added. |

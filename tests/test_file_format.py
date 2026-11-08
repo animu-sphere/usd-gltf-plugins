@@ -629,6 +629,24 @@ def topology_document(extension, mode, indices, external=False, normal=False, in
 
 
 class FileFormatTest(unittest.TestCase):
+    def test_import_measurement_counts_repeated_geometry(self):
+        from measure_import import inspect_asset
+
+        with tempfile.TemporaryDirectory() as directory:
+            for extension in ("gltf", "glb"):
+                with self.subTest(extension=extension):
+                    path = pathlib.Path(directory) / ("repeated." + extension)
+                    write_asset(path, *mesh_document(extension))
+                    result = inspect_asset(path)
+                    # Two nodes each use the same mesh with two different primitives.
+                    self.assertEqual(result["mesh_occurrences"], 4)
+                    self.assertEqual(result["point_occurrences"], 12)
+                    self.assertEqual(result["unique_point_topology_arrays"], 2)
+                    self.assertEqual(result["point_topology_bytes"],
+                                     2 * result["unique_point_topology_bytes"])
+                    self.assertGreater(result["open_seconds"], 0)
+                    self.assertGreater(result["peak_resident_bytes"], 0)
+
     def assert_material_nodegraphs(self, material, preview, mtlx):
         stage = material.GetPrim().GetStage()
         material_path = material.GetPath()

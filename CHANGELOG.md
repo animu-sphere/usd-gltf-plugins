@@ -10,6 +10,8 @@ here.
 
 ### Added
 
+- Import measurement tool, `tests/measure_import.py`, with fresh-process timings, peak resident
+  memory and counts of repeated mesh points and topology.
 - Release packages on GHCR, with a pin table in each release.
 - Sample check, `tests/check_samples.py`, which records whether every Khronos sample asset opens,
   agrees with the file in USD and draws, and compares that with a committed baseline.
@@ -49,6 +51,8 @@ here.
 
 ### Fixed
 
+- The sample check holds a resolver cache scope while comparing USD meaning, avoiding reparsing
+  the source for every embedded image reference in large GLB assets.
 - A rotation within the tolerance of unit length is normalized, and no longer scales and shears its
   node.
 

@@ -224,7 +224,7 @@
     "MultipleScenes/glTF/MultipleScenes.gltf": {"meaning": "verified", "meshes": 1, "opened": "opened", "rendered": {"mtlx": "drawn", "preview": "drawn"}, "warnings": []},
     "NegativeScaleTest/glTF-Binary/NegativeScaleTest.glb": {"meaning": "verified", "meshes": 11, "opened": "opened", "rendered": {"mtlx": "drawn", "preview": "drawn"}, "warnings": []},
     "NegativeScaleTest/glTF/NegativeScaleTest.gltf": {"meaning": "verified", "meshes": 11, "opened": "opened", "rendered": {"mtlx": "drawn", "preview": "drawn"}, "warnings": []},
-    "NodePerformanceTest/glTF-Binary/NodePerformanceTest.glb": {"opened": "timeout"},
+    "NodePerformanceTest/glTF-Binary/NodePerformanceTest.glb": {"meaning": "verified", "meshes": 10000, "opened": "opened", "warnings": []},
     "NodePerformanceTest/glTF/NodePerformanceTest.gltf": {"meaning": "verified", "meshes": 10000, "opened": "opened", "rendered": {"mtlx": "drawn", "preview": "drawn"}, "warnings": []},
     "NodeVisibilityTest/glTF-Binary/NodeVisibilityTest.glb": {"ignored": ["KHR_node_visibility"], "meaning": "partial", "meshes": 8, "opened": "opened", "rendered": {"mtlx": "drawn", "preview": "drawn"}, "warnings": []},
     "NodeVisibilityTest/glTF/NodeVisibilityTest.gltf": {"ignored": ["KHR_node_visibility"], "meaning": "partial", "meshes": 8, "opened": "opened", "rendered": {"mtlx": "drawn", "preview": "drawn"}, "warnings": []},
