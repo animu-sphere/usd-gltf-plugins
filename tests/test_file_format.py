@@ -4810,6 +4810,207 @@ class FileFormatTest(unittest.TestCase):
                             layer.Reload(True)
                         self.assertEqual(layer_text(layer), before)
 
+    def test_iridescence_materials(self):
+        extension_name = "KHR_materials_iridescence"
+        warning = "UsdPreviewSurface has no iridescence; its network ignores " + extension_name
+        cases = (
+            ("defaults", {}, False),
+            ("disabled", {"iridescenceFactor": 0, "iridescenceIor": 2}, False),
+            ("enabled", {"iridescenceFactor": 1}, True),
+            ("half", {"iridescenceFactor": 0.5, "iridescenceIor": 2,
+                      "iridescenceThicknessMinimum": 800, "iridescenceThicknessMaximum": 200}, True),
+            ("zero thickness", {"iridescenceFactor": 1, "iridescenceIor": 1,
+                                "iridescenceThicknessMaximum": 0}, True),
+            ("metal", {"iridescenceFactor": 1}, True),
+            ("unlit", {"iridescenceFactor": 1}, False),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            for extension, (case, film, enabled), required in itertools.product(
+                    ("gltf", "glb"), cases, (False, True)):
+                with self.subTest(extension=extension, case=case, required=required):
+                    path = pathlib.Path(directory) / f"film_{case}_{required}.{extension}"
+                    document, binary = mesh_document(extension)
+                    document["extensionsUsed"] = [extension_name]
+                    if required:
+                        document["extensionsRequired"] = [extension_name]
+                    extensions = {extension_name: film}
+                    if case == "unlit":
+                        extensions["KHR_materials_unlit"] = {}
+                        document["extensionsUsed"].append("KHR_materials_unlit")
+                    plain = {"pbrMetallicRoughness": {"baseColorFactor": [0.2, 0.4, 0.6, 1],
+                                                    "metallicFactor": int(case == "metal"), "roughnessFactor": 0.5}}
+                    document["materials"] = [{**plain, "extensions": extensions}, plain]
+                    for i, primitive in enumerate(document["meshes"][0]["primitives"]):
+                        primitive["material"] = i
+                    write_asset(path, document, binary)
+                    result = subprocess.run([sys.executable, "-c",
+                                             "from pxr import Usd; import sys; assert Usd.Stage.Open(sys.argv[1])",
+                                             str(path)], capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertNotIn(f"'{extension_name}' is not supported", result.stderr)
+                    self.assertEqual(warning in result.stderr, enabled, result.stderr)
+                    self.assertEqual("is ignored, because the material is unlit" in result.stderr,
+                                     case == "unlit", result.stderr)
+                    stage = Usd.Stage.Open(str(path))
+                    material = UsdShade.Material.Get(stage, "/Asset/mtl/Material_0")
+                    preview = material.ComputeSurfaceSource()[0]
+                    mtlx = material.ComputeSurfaceSource("mtlx")[0]
+                    self.assert_material_nodegraphs(material, preview, mtlx)
+                    expected = {"iridescence": film.get("iridescenceFactor", 0),
+                                "iridescence_ior": film.get("iridescenceIor", 1.3),
+                                "iridescence_thickness": film.get("iridescenceThicknessMaximum", 400)}
+                    for name, value in expected.items():
+                        self.assertFalse(preview.GetInput(name))
+                        if enabled:
+                            self.assertAlmostEqual(mtlx.GetInput(name).Get(), value, places=6)
+                        else:
+                            self.assertFalse(mtlx.GetInput(name))
+                        plain_shader = UsdShade.Shader.Get(stage, "/Asset/mtl/Material_1/mtlx/surface")
+                        self.assertFalse(plain_shader.GetInput(name))
+                    if enabled:
+                        self.assertEqual(mtlx.GetInput("iridescence_ior").GetAttr().GetVariability(),
+                                         Sdf.VariabilityUniform)
+                        self.assertFalse(mtlx.GetInput("ior"))
+                        self.assertFalse(mtlx.GetInput("specular"))
+                        self.assertTrue(Gf.IsClose(mtlx.GetInput("base_color").Get(), Gf.Vec3f(0.2, 0.4, 0.6), 1e-6))
+
+    def test_iridescence_textures(self):
+        def source(shader, name):
+            connected = shader.GetInput(name).GetConnectedSource()
+            return UsdShade.Shader(connected[0].GetPrim()) if connected else None
+
+        # Exercise every supported image source, including GLB bufferViews, both range directions,
+        # the factor multiply and the direct channel at 1.
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            (root / "film.png").write_bytes(PNG)
+            for extension, uri, factor, endpoints in itertools.product(
+                    ("gltf", "glb"), (None, "film.png", "data:image/png;base64," + base64.b64encode(PNG).decode()),
+                    (0.5, 1), ((100, 400), (800, 200))):
+                with self.subTest(extension=extension, uri=uri, factor=factor, endpoints=endpoints):
+                    path = root / f"film_{extension}_{factor}_{endpoints[0]}_{len(uri or '')}.{extension}"
+                    document, binary = textured_document(extension, {"uri": uri} if uri else None, PNG)
+                    document["extensionsUsed"] = ["KHR_materials_iridescence", "KHR_texture_transform"]
+                    document["extensionsRequired"] = ["KHR_materials_iridescence"]
+                    document["samplers"] = [{"wrapS": 33648, "wrapT": 33071}]
+                    document["textures"].append({"source": 0, "sampler": 0})
+                    document["materials"][0]["extensions"] = {"KHR_materials_iridescence": {
+                        "iridescenceFactor": factor, "iridescenceTexture": {"index": 0},
+                        "iridescenceThicknessMinimum": endpoints[0], "iridescenceThicknessMaximum": endpoints[1],
+                        "iridescenceThicknessTexture": {"index": 1, "extensions": {
+                            "KHR_texture_transform": {"offset": [0.25, 0], "texCoord": 1}}}}}
+                    write_asset(path, document, binary)
+                    stage = Usd.Stage.Open(str(path))
+                    material = UsdShade.Material.Get(stage, "/Asset/mtl/Material_0")
+                    mtlx = material.ComputeSurfaceSource("mtlx")[0]
+                    weight = source(mtlx, "iridescence")
+                    if factor != 1:
+                        self.assertEqual(weight.GetIdAttr().Get(), "ND_multiply_float")
+                        self.assertEqual(weight.GetInput("in2").Get(), factor)
+                        weight = source(weight, "in1")
+                    self.assertEqual(weight.GetInput("index").Get(), 0)
+                    weight_image = source(weight, "in")
+                    mix = source(mtlx, "iridescence_thickness")
+                    self.assertEqual(mix.GetIdAttr().Get(), "ND_mix_float")
+                    self.assertEqual(mix.GetInput("bg").Get(), endpoints[0])
+                    self.assertEqual(mix.GetInput("fg").Get(), endpoints[1])
+                    channel = source(mix, "mix")
+                    self.assertEqual(channel.GetInput("index").Get(), 1)
+                    image = source(channel, "in")
+                    for reader in (image, weight_image):
+                        self.assertEqual(reader.GetIdAttr().Get(), "ND_image_vector4")
+                        self.assertFalse(reader.GetInput("file").GetAttr().HasColorSpace())
+                        self.assertEqual(asset_bytes(reader.GetInput("file").Get().resolvedPath), PNG)
+                    self.assertEqual(image.GetInput("uaddressmode").Get(), "mirror")
+                    self.assertEqual(image.GetInput("vaddressmode").Get(), "clamp")
+                    translate = source(image, "texcoord")
+                    self.assertEqual(translate.GetIdAttr().Get(), "ND_add_vector2")
+                    reader = translate
+                    while reader.GetIdAttr().Get() != "ND_geompropvalue_vector2":
+                        reader = source(reader, "in1" if reader.GetInput("in1") else "in")
+                    self.assertEqual(reader.GetInput("geomprop").Get(), "st1")
+                    self.assertFalse([p for p in Usd.PrimRange(material.GetPrim().GetChild("preview"))
+                                      if p.GetName().startswith("iridescence")])
+
+            # Do not resolve damaged images when the film is disabled or its thickness is fixed.
+            for extension, case in itertools.product(("gltf", "glb"), ("zero", "unlit", "fixed")):
+                with self.subTest(extension=extension, case=case):
+                    document, binary = textured_document(extension, None, PNG)
+                    document["extensionsUsed"] = ["KHR_materials_iridescence"]
+                    document["images"].append({"uri": "data:image/png;base64,AA=="})
+                    document["textures"].append({"source": 1})
+                    film = {"iridescenceFactor": 0 if case == "zero" else 1,
+                            "iridescenceThicknessTexture": {"index": 1}}
+                    if case == "fixed":
+                        film.update(iridescenceThicknessMinimum=200, iridescenceThicknessMaximum=200)
+                    else:
+                        film["iridescenceTexture"] = {"index": 1}
+                    document["materials"][0]["extensions"] = {"KHR_materials_iridescence": film}
+                    if case == "unlit":
+                        document["extensionsUsed"].append("KHR_materials_unlit")
+                        document["materials"][0]["extensions"]["KHR_materials_unlit"] = {}
+                    path = root / f"unused_{case}.{extension}"
+                    write_asset(path, document, binary)
+                    stage = Usd.Stage.Open(str(path))
+                    shader = UsdShade.Shader.Get(stage, "/Asset/mtl/Material_0/mtlx/surface")
+                    if case == "fixed":
+                        self.assertEqual(shader.GetInput("iridescence_thickness").Get(), 200)
+                        self.assertFalse(shader.GetInput("iridescence_thickness").HasConnectedSource())
+                    else:
+                        self.assertFalse(shader.GetInput("iridescence"))
+
+    def test_iridescence_failures_preserve_layer(self):
+        wrong = "KHR_materials_iridescence has a field of the wrong type"
+        overflow = "KHR_materials_iridescence is out of range"
+        uv = "material texture uses a texture coordinate set the primitive does not have"
+        cases = [("object", [], "KHR_materials_iridescence is not an object")]
+        for field in ("iridescenceFactor", "iridescenceIor", "iridescenceThicknessMinimum",
+                      "iridescenceThicknessMaximum"):
+            cases.extend(((field + " type", {field: "1"}, wrong), (field + " overflow", {field: 1e39}, overflow)))
+        cases.extend((
+            ("negative factor", {"iridescenceFactor": -0.1}, "material iridescence factor is non-finite or out of range"),
+            ("large factor", {"iridescenceFactor": 1.1}, "material iridescence factor is non-finite or out of range"),
+            ("ior below one", {"iridescenceIor": 0.9}, "material iridescence ior is non-finite or below 1"),
+            ("negative minimum", {"iridescenceThicknessMinimum": -1}, "material iridescence thickness is non-finite or negative"),
+            ("negative maximum", {"iridescenceThicknessMaximum": -1}, "material iridescence thickness is non-finite or negative"),
+            ("unlit invalid", {"iridescenceIor": 0}, "material iridescence ior is non-finite or below 1"),
+        ))
+        for slot in ("iridescenceTexture", "iridescenceThicknessTexture"):
+            cases.extend(((slot + " type", {slot: 0}, wrong),
+                          (slot + " index", {slot: {"texCoord": 0}}, wrong),
+                          (slot + " UV", {slot: {"index": 0, "texCoord": 1}}, uv),
+                          (slot + " range", {"iridescenceFactor": 1, slot: {"index": 5}},
+                           "texture index is out of range|cannot parse"),
+                          (slot + " damaged", {"iridescenceFactor": 1, slot: {"index": 1}},
+                           "image|PNG|png")))
+        with tempfile.TemporaryDirectory() as directory:
+            for extension, required in itertools.product(("gltf", "glb"), (False, True)):
+                path = pathlib.Path(directory) / f"film_{required}.{extension}"
+                document, binary = textured_document(extension, None, PNG)
+                write_asset(path, document, binary)
+                stage = Usd.Stage.Open(str(path))
+                layer = stage.GetRootLayer()
+                before = layer_text(layer)
+                for case, film, message in cases:
+                    with self.subTest(extension=extension, required=required, case=case):
+                        invalid, invalid_binary = textured_document(extension, None, PNG)
+                        invalid["extensionsUsed"] = ["KHR_materials_iridescence"]
+                        if required:
+                            invalid["extensionsRequired"] = ["KHR_materials_iridescence"]
+                        invalid["images"].append({"uri": "data:image/png;base64,AA=="})
+                        invalid["textures"].append({"source": 1})
+                        # Author the valid first primitive before failing on the second.
+                        invalid["meshes"][0]["primitives"][1]["material"] = 1
+                        extensions = {"KHR_materials_iridescence": film}
+                        if case.startswith("unlit"):
+                            invalid["extensionsUsed"].append("KHR_materials_unlit")
+                            extensions["KHR_materials_unlit"] = {}
+                        invalid["materials"].append({"extensions": extensions})
+                        write_asset(path, invalid, invalid_binary)
+                        with self.assertRaisesRegex(Tf.ErrorException, message):
+                            layer.Reload(True)
+                        self.assertEqual(layer_text(layer), before)
+
     def test_animation_outside_selected_scene_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             for extension in ("gltf", "glb"):

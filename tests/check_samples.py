@@ -34,7 +34,7 @@ import numpy
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 BASELINE = ROOT / "tests" / "sample_baseline.json"
-IMPLEMENTED_EXTENSIONS = {"EXT_texture_webp", "KHR_lights_punctual", "KHR_materials_clearcoat", "KHR_materials_ior",
+IMPLEMENTED_EXTENSIONS = {"EXT_texture_webp", "KHR_lights_punctual", "KHR_materials_clearcoat", "KHR_materials_ior", "KHR_materials_iridescence",
                           "KHR_materials_sheen", "KHR_materials_specular", "KHR_materials_transmission", "KHR_materials_unlit", "KHR_materials_volume",
                           "KHR_mesh_quantization", "KHR_texture_basisu", "KHR_texture_transform"}
 PATHS = ("mtlx", "preview")
@@ -72,15 +72,17 @@ SLOTS = {"baseColorTexture": "baseColor", "metallicRoughnessTexture": "metallicR
          "clearcoatTexture": "clearcoat", "clearcoatRoughnessTexture": "clearcoatRoughness",
          "transmissionTexture": "transmission", "thicknessTexture": "thickness", "specularTexture": "specular",
          "specularColorTexture": "specularColor", "sheenColorTexture": "sheenColor",
-         "sheenRoughnessTexture": "sheenRoughness"}
+         "sheenRoughnessTexture": "sheenRoughness", "iridescenceTexture": "iridescence",
+         "iridescenceThicknessTexture": "iridescenceThickness"}
 CLEARCOAT_SLOTS = {"clearcoatTexture", "clearcoatRoughnessTexture"}
 TRANSMISSION_SLOTS = {"transmissionTexture"}
 VOLUME_SLOTS = {"thicknessTexture"}
 SPECULAR_SLOTS = {"specularTexture", "specularColorTexture"}
 SHEEN_SLOTS = {"sheenColorTexture", "sheenRoughnessTexture"}
+IRIDESCENCE_SLOTS = {"iridescenceTexture", "iridescenceThicknessTexture"}
 # Slots that UsdPreviewSurface has no input for.
 MTLX_ONLY_SLOTS = {"transmissionTexture", "thicknessTexture", "specularTexture", "specularColorTexture",
-                   "sheenColorTexture", "sheenRoughnessTexture"}
+                   "sheenColorTexture", "sheenRoughnessTexture", *IRIDESCENCE_SLOTS}
 COLOR_SLOTS = {"baseColorTexture", "emissiveTexture", "specularColorTexture", "sheenColorTexture"}
 PBR_SLOTS = {"baseColorTexture", "metallicRoughnessTexture"}
 
@@ -524,6 +526,7 @@ def check_material(check, asset, stage, path, material, has_colors, images):
     volume = material.get("extensions", {}).get("KHR_materials_volume")
     specular = material.get("extensions", {}).get("KHR_materials_specular")
     sheen = material.get("extensions", {}).get("KHR_materials_sheen")
+    iridescence = material.get("extensions", {}).get("KHR_materials_iridescence")
 
     def owner(key):
         if key in PBR_SLOTS:
@@ -538,6 +541,8 @@ def check_material(check, asset, stage, path, material, has_colors, images):
             return specular or {}
         if key in SHEEN_SLOTS:
             return sheen or {}
+        if key in IRIDESCENCE_SLOTS:
+            return iridescence or {}
         return material
 
     infos = {key: owner(key).get(key) for key in SLOTS}
@@ -580,6 +585,12 @@ def check_material(check, asset, stage, path, material, has_colors, images):
         infos["sheenColorTexture"] = None
     if not sheened or not sheen.get("sheenRoughnessFactor", 0):
         infos["sheenRoughnessTexture"] = None
+    film = iridescence is not None and not unlit and iridescence.get("iridescenceFactor", 0) > 0
+    if not film:
+        for key in IRIDESCENCE_SLOTS:
+            infos[key] = None
+    elif iridescence.get("iridescenceThicknessMinimum", 100) == iridescence.get("iridescenceThicknessMaximum", 400):
+        infos["iridescenceThicknessTexture"] = None
     names = {prim.GetName() for prim in Usd.PrimRange(stage.GetPrimAtPath(path))}
     if not coated:
         check.expect(not {name for name in names if name.startswith("clearcoat")},
@@ -596,6 +607,9 @@ def check_material(check, asset, stage, path, material, has_colors, images):
     if not any(infos[key] for key in SHEEN_SLOTS):
         check.expect(not {name for name in names if name.startswith("sheen")},
                      f"{label} authors a sheen texture it does not read")
+    if not any(infos[key] for key in IRIDESCENCE_SLOTS):
+        check.expect(not {name for name in names if name.startswith("iridescence")},
+                     f"{label} authors an iridescence texture it does not read")
     for key, info in infos.items():
         if info:
             textures[key] = check_texture(check, asset, stage, path, key, info, label, images)
@@ -659,6 +673,7 @@ def check_material(check, asset, stage, path, material, has_colors, images):
     check_volume(check, surface, pbr_surface, volume if thick else None, textures, label)
     check_specular(check, surface, pbr_surface, specular, unlit, textures, label)
     check_sheen(check, surface, pbr_surface, sheen if sheened else None, textures, label)
+    check_iridescence(check, surface, pbr_surface, iridescence if film else None, textures, label)
 
     # Both shaders default to glTF's 1.5, an ior of 0 stands for a very large one, and an unlit material has none.
     ior = material.get("extensions", {}).get("KHR_materials_ior", {}).get("ior", 1.5)
@@ -798,6 +813,41 @@ def check_sheen(check, surface, pbr_surface, sheen, textures, label):
     elif check.expect(roughness, f"{label} MaterialX sheen_roughness is not authored"):
         check_mtlx_channel(check, roughness, factor, textures.get("sheenRoughnessTexture"), 3,
                            f"{label} MaterialX sheen_roughness")
+
+
+def check_iridescence(check, surface, pbr_surface, film, textures, label):
+    """MaterialX strength from R, uniform film ior, and a thickness range interpolated by G."""
+    names = ("iridescence", "iridescence_ior", "iridescence_thickness")
+    check.expect(not any(surface.GetInput(name) for name in names), f"{label} Preview authors iridescence")
+    if film is None:
+        check.expect(not any(pbr_surface.GetInput(name) for name in names),
+                     f"{label} MaterialX authors iridescence it does not have")
+        return
+    strength, ior, thickness = (pbr_surface.GetInput(name) for name in names)
+    if check.expect(strength, f"{label} MaterialX iridescence is not authored"):
+        check_mtlx_channel(check, strength, film.get("iridescenceFactor", 0), textures.get("iridescenceTexture"),
+                           0, f"{label} MaterialX iridescence")
+    if check.expect(ior, f"{label} MaterialX iridescence ior is not authored"):
+        from pxr import Sdf
+        check.close(ior.Get(), film.get("iridescenceIor", 1.3), f"{label} film ior")
+        check.expect(ior.GetAttr().GetVariability() == Sdf.VariabilityUniform, f"{label} film ior is not uniform")
+    if not check.expect(thickness, f"{label} MaterialX iridescence thickness is not authored"):
+        return
+    minimum, maximum = film.get("iridescenceThicknessMinimum", 100), film.get("iridescenceThicknessMaximum", 400)
+    check.close(thickness.Get(), maximum, f"{label} film thickness fallback")
+    image = textures.get("iridescenceThicknessTexture")
+    mix = connected_shader(thickness)
+    if not image:
+        check.expect(not mix, f"{label} constant film thickness has a connection")
+        return
+    if not check.expect(mix and mix.GetShaderId() == "ND_mix_float", f"{label} film thickness has no range mix"):
+        return
+    check.close(mix.GetInput("bg").Get(), minimum, f"{label} film minimum")
+    check.close(mix.GetInput("fg").Get(), maximum, f"{label} film maximum")
+    channel = connected_shader(mix.GetInput("mix"))
+    check.expect(channel and channel.GetInput("index").Get() == 1, f"{label} film thickness does not read G")
+    source = connected_shader(channel.GetInput("in")) if channel else None
+    check.expect(source and source.GetPath() == image.GetPath(), f"{label} film thickness reads another image")
 
 
 def check_mtlx_color(check, authored, factor, image, description):

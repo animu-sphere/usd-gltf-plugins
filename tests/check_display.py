@@ -764,6 +764,73 @@ def check_specular(renderer, report):
 SHEEN_LIGHT_ANGLE = math.radians(75)
 
 
+def check_iridescence(renderer, report):
+    """Check thin-film color, strength, ior and raw R/G sampling against uniform inputs.
+
+    These comparisons exercise gltf_pbr, without claiming equivalence to the glTF reference BRDF.
+    Preview ignores the film and must match the bare material in every case.
+    """
+    qt = offscreen_context(report, "iridescence")
+    if not qt:
+        return
+    for path in PATHS:
+        def render(name, values=None, images=(), metallic=0):
+            material = pbr(baseColorFactor=[0, 0, 0, 1] if not metallic else [0.5, 0.5, 0.5, 1],
+                           metallicFactor=metallic, roughnessFactor=0.5)
+            if values is not None:
+                material["extensions"] = {"KHR_materials_iridescence": values}
+            document = quad_document([material], images)
+            document["extensionsUsed"] = ["KHR_lights_punctual", "KHR_materials_iridescence"]
+            document["extensions"] = {"KHR_lights_punctual": {"lights": [
+                {"type": "point", "intensity": ILLUMINANCE * (0.4 if metallic else 4)}]}}
+            document["nodes"].append({"translation": [0.5, 0.5, 1],
+                                      "extensions": {"KHR_lights_punctual": {"light": 0}}})
+            document["scenes"][0]["nodes"].append(1)
+            asset = renderer.output / f"iridescence_{name}.gltf"
+            asset.write_text(json.dumps(document), encoding="utf-8")
+            _, stage = renderer.session(f"iridescence_{name}", asset, path, None)
+            image = engine_image(stage, [], Gf.Vec4f(0, 0, 0, 1))
+            image.save(str(renderer.output / f"iridescence_{name}_{path}.png"))
+            return Render(f"iridescence_{name} {path}", image, stage).sample(0)
+
+        bare = render("bare")
+        report.same(f"{path} iridescence defaults to disabled", render("default", {}), bare)
+        report.same(f"{path} a film strength of 0 is disabled",
+                    render("zero", {"iridescenceFactor": 0, "iridescenceIor": 2}), bare)
+        full = render("full", {"iridescenceFactor": 1})
+        half = render("half", {"iridescenceFactor": 0.5})
+        thin = render("thin", {"iridescenceFactor": 1, "iridescenceThicknessMaximum": 200})
+        ior = render("ior", {"iridescenceFactor": 1, "iridescenceIor": 2})
+        image_weight = render("weight_image", {"iridescenceFactor": 0.5, "iridescenceTexture": {"index": 0}},
+                              [(188, 0, 255, 0)])
+        image_thickness = render("thickness_image", {"iridescenceFactor": 1,
+                                 "iridescenceThicknessTexture": {"index": 0}}, [(0, 188, 255, 0)])
+        reverse = render("reverse_image", {"iridescenceFactor": 1, "iridescenceThicknessMinimum": 800,
+                         "iridescenceThicknessMaximum": 200, "iridescenceThicknessTexture": {"index": 0}},
+                         [(0, 188, 255, 0)])
+        metal_bare = render("metal_bare", metallic=1)
+        metal = render("metal", {"iridescenceFactor": 1}, metallic=1)
+        report.same(f"{path} iridescence R reads raw data and multiplies its factor", image_weight,
+                    render("weight_data", {"iridescenceFactor": 0.5 * DATA}))
+        report.same(f"{path} film thickness interpolates by raw G", image_thickness,
+                    render("thickness_data", {"iridescenceFactor": 1, "iridescenceThicknessMaximum": 100 + 300 * DATA}))
+        report.same(f"{path} film thickness range may descend", reverse,
+                    render("reverse_data", {"iridescenceFactor": 1, "iridescenceThicknessMaximum": 800 - 600 * DATA}))
+        if path == "mtlx":
+            report.different(f"{path} a film changes the base reflection", full, bare)
+            report.expect(f"{path} a film adds a hue", max(full[:3]) - min(full[:3]) >= DIFFERENT, str(full))
+            report.same(f"{path} half iridescence mixes bare and film", half,
+                        tuple(round((a + b) / 2) for a, b in zip(bare, full)))
+            report.different(f"{path} film thickness changes its color", thin, full)
+            report.different(f"{path} film ior changes its color", ior, full)
+            report.different(f"{path} a film changes a metal", metal, metal_bare)
+        else:
+            for name, result in (("full", full), ("half", half), ("thin", thin), ("ior", ior),
+                                 ("weight image", image_weight), ("thickness image", image_thickness), ("reverse", reverse)):
+                report.same(f"{path} UsdPreviewSurface ignores film {name}", result, bare)
+            report.same(f"{path} UsdPreviewSurface ignores a film over metal", metal, metal_bare)
+
+
 def check_sheen(renderer, report):
     """Renders a black quad of ior 1, which reflects nothing itself, with a sheen, under a directional
     light at a grazing angle. glTF's sheen is the color times a Charlie lobe, layered over the base, so on
@@ -1007,7 +1074,7 @@ def main():
 
     report = Report(arguments.verbose)
     renderer = Renderer(output, plugin, report)
-    for check in (check_reflections, check_lights, check_unlit, check_ior, check_specular, check_sheen, check_clearcoat,
+    for check in (check_reflections, check_lights, check_unlit, check_ior, check_specular, check_iridescence, check_sheen, check_clearcoat,
                   check_transmission,
                   check_volume, check_alpha_modes, check_base_color_textures, check_pbr_textures,
                   check_normal_textures, check_texture_transforms, check_ktx2_textures, check_measurements):

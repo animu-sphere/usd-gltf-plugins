@@ -69,7 +69,9 @@ that Preview has none; otherwise, that no volume is authored. For a [specular](0
 or color other than 1 or with a texture, its value and texture slot in MaterialX, and that Preview has neither;
 otherwise, that neither is authored. For a [sheen](0021-sheen.md) color other than black, its color, any
 roughness other than 0 and their texture slots in MaterialX, and that Preview has none; otherwise, that
-no sheen is authored.
+no sheen is authored. For an [iridescent film](0022-iridescence.md) of strength above 0, its
+strength and raw R texture, uniform film ior, and thickness from its maximum or a range interpolated
+by raw G in MaterialX, and that Preview has none; otherwise, that no film is authored.
 
 ## Evidence that it can fail
 
@@ -79,6 +81,9 @@ tangent; `doubleSided` changed; a moved node; another binding; a missing mesh an
 modes in each network; base color read as raw and a normal map as sRGB; another image in one or both
 networks; a missing image; another UV set; metallic-roughness and normal scales changed; no MaterialX
 output; other stage metrics; and MaterialX alpha mode and cutoff and Preview's threshold changed.
+
+For an iridescent film, separate session edits to its strength, film ior, thickness maximum,
+thickness minimum and thickness channel each produced a mismatch on a generated textured quad.
 
 On real assets it found a defect that the fixtures had not: a rotation slightly off unit length is
 applied without normalizing it.
