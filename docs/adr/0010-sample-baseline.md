@@ -65,7 +65,9 @@ networks, and its normal in MaterialX alone; otherwise, that no clearcoat is aut
 [transmission](0018-transmission.md) above 0, its value and texture slot in MaterialX, and that Preview
 has neither; otherwise, that no transmission is authored. For a [volume](0019-volume.md) of a thickness
 above 0 on a transmissive material, its thickness, texture slot and any attenuation in MaterialX, and
-that Preview has none; otherwise, that no volume is authored.
+that Preview has none; otherwise, that no volume is authored. For a [specular](0020-specular.md) weight
+or color other than 1 or with a texture, its value and texture slot in MaterialX, and that Preview has neither;
+otherwise, that neither is authored.
 
 ## Evidence that it can fail
 

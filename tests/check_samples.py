@@ -35,7 +35,7 @@ import numpy
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 BASELINE = ROOT / "tests" / "sample_baseline.json"
 IMPLEMENTED_EXTENSIONS = {"EXT_texture_webp", "KHR_lights_punctual", "KHR_materials_clearcoat", "KHR_materials_ior",
-                          "KHR_materials_transmission", "KHR_materials_unlit", "KHR_materials_volume",
+                          "KHR_materials_specular", "KHR_materials_transmission", "KHR_materials_unlit", "KHR_materials_volume",
                           "KHR_mesh_quantization", "KHR_texture_basisu", "KHR_texture_transform"}
 PATHS = ("mtlx", "preview")
 CAMERA = "/SampleCheckCamera"
@@ -70,13 +70,15 @@ IMAGE_SIGNATURES = (b"\x89PNG\r\n\x1a\n", b"\xff\xd8\xff")
 SLOTS = {"baseColorTexture": "baseColor", "metallicRoughnessTexture": "metallicRoughness",
          "normalTexture": "normal", "occlusionTexture": "occlusion", "emissiveTexture": "emissive",
          "clearcoatTexture": "clearcoat", "clearcoatRoughnessTexture": "clearcoatRoughness",
-         "transmissionTexture": "transmission", "thicknessTexture": "thickness"}
+         "transmissionTexture": "transmission", "thicknessTexture": "thickness", "specularTexture": "specular",
+         "specularColorTexture": "specularColor"}
 CLEARCOAT_SLOTS = {"clearcoatTexture", "clearcoatRoughnessTexture"}
 TRANSMISSION_SLOTS = {"transmissionTexture"}
 VOLUME_SLOTS = {"thicknessTexture"}
+SPECULAR_SLOTS = {"specularTexture", "specularColorTexture"}
 # Slots that UsdPreviewSurface has no input for.
-MTLX_ONLY_SLOTS = {"transmissionTexture", "thicknessTexture"}
-COLOR_SLOTS = {"baseColorTexture", "emissiveTexture"}
+MTLX_ONLY_SLOTS = {"transmissionTexture", "thicknessTexture", "specularTexture", "specularColorTexture"}
+COLOR_SLOTS = {"baseColorTexture", "emissiveTexture", "specularColorTexture"}
 PBR_SLOTS = {"baseColorTexture", "metallicRoughnessTexture"}
 
 
@@ -483,7 +485,12 @@ def check_texture(check, asset, stage, material_path, key, info, label, images):
     check.expect(mtlx.GetInput("uaddressmode").Get() == MTLX_WRAP[wrap_s], f"{label} {slot} MaterialX wrapS differs")
     check.expect(mtlx.GetInput("vaddressmode").Get() == MTLX_WRAP[wrap_t], f"{label} {slot} MaterialX wrapT differs")
     if mtlx_only:
-        check.expect(mtlx.GetIdAttr().Get() == "ND_image_vector4", f"{label} {slot} MaterialX image is not data")
+        if key in COLOR_SLOTS:
+            check.expect(mtlx.GetIdAttr().Get() == "ND_image_color4"
+                         and mtlx.GetInput("file").GetAttr().GetColorSpace() == "srgb_texture",
+                         f"{label} {slot} MaterialX image is not sRGB")
+        else:
+            check.expect(mtlx.GetIdAttr().Get() == "ND_image_vector4", f"{label} {slot} MaterialX image is not data")
         return mtlx
     check.expect(preview.GetInput("wrapS").Get() == PREVIEW_WRAP[wrap_s], f"{label} {slot} Preview wrapS differs")
     check.expect(preview.GetInput("wrapT").Get() == PREVIEW_WRAP[wrap_t], f"{label} {slot} Preview wrapT differs")
@@ -512,6 +519,7 @@ def check_material(check, asset, stage, path, material, has_colors, images):
     clearcoat = material.get("extensions", {}).get("KHR_materials_clearcoat")
     transmission = material.get("extensions", {}).get("KHR_materials_transmission")
     volume = material.get("extensions", {}).get("KHR_materials_volume")
+    specular = material.get("extensions", {}).get("KHR_materials_specular")
 
     def owner(key):
         if key in PBR_SLOTS:
@@ -522,6 +530,8 @@ def check_material(check, asset, stage, path, material, has_colors, images):
             return transmission or {}
         if key in VOLUME_SLOTS:
             return volume or {}
+        if key in SPECULAR_SLOTS:
+            return specular or {}
         return material
 
     infos = {key: owner(key).get(key) for key in SLOTS}
@@ -550,6 +560,13 @@ def check_material(check, asset, stage, path, material, has_colors, images):
     if not thick:
         for key in VOLUME_SLOTS:
             infos[key] = None
+    # A specular weight of 0 fixes the weight, and a black color factor the color, so their textures are
+    # not read, and an unlit material has neither.
+    reflects = specular is not None and not unlit and specular.get("specularFactor", 1) > 0
+    if not reflects:
+        infos["specularTexture"] = None
+    if not reflects or not any(specular.get("specularColorFactor", (1, 1, 1))):
+        infos["specularColorTexture"] = None
     names = {prim.GetName() for prim in Usd.PrimRange(stage.GetPrimAtPath(path))}
     if not coated:
         check.expect(not {name for name in names if name.startswith("clearcoat")},
@@ -560,6 +577,9 @@ def check_material(check, asset, stage, path, material, has_colors, images):
     if not thick:
         check.expect(not {name for name in names if name.startswith("thickness")},
                      f"{label} authors a thickness it does not have")
+    if not any(infos[key] for key in SPECULAR_SLOTS):
+        check.expect(not {name for name in names if name.startswith("specular")},
+                     f"{label} authors a specular texture it does not read")
     for key, info in infos.items():
         if info:
             textures[key] = check_texture(check, asset, stage, path, key, info, label, images)
@@ -621,6 +641,7 @@ def check_material(check, asset, stage, path, material, has_colors, images):
     check_clearcoat(check, surface, pbr_surface, clearcoat if coated else None, textures, names, label)
     check_transmission(check, surface, pbr_surface, transmission if transmits else None, textures, label)
     check_volume(check, surface, pbr_surface, volume if thick else None, textures, label)
+    check_specular(check, surface, pbr_surface, specular, unlit, textures, label)
 
     # Both shaders default to glTF's 1.5, an ior of 0 stands for a very large one, and an unlit material has none.
     ior = material.get("extensions", {}).get("KHR_materials_ior", {}).get("ior", 1.5)
@@ -713,6 +734,44 @@ def check_volume(check, surface, pbr_surface, volume, textures, label):
             check.expect(not attribute, f"{label} MaterialX authors {name} without an attenuation distance")
         elif check.expect(attribute, f"{label} MaterialX {name} is not authored"):
             check.close(attribute.Get(), expected, f"{label} MaterialX {name}")
+
+
+def check_specular(check, surface, pbr_surface, specular, unlit, textures, label):
+    """The specular weight, times its texture's A, and color, times its texture's RGB, in MaterialX only,
+    each where it differs from the default of 1. Preview keeps the metallic workflow, which has neither."""
+    check.expect(not surface.GetInput("specularColor") and not surface.GetInput("useSpecularWorkflow"),
+                 f"{label} Preview authors a specular color")
+    if unlit:
+        # The unlit check compares the specular of 0 that removes the reflection.
+        check.expect(not pbr_surface.GetInput("specular_color"), f"{label} MaterialX unlit authors a specular color")
+        return
+    specular = specular or {}
+    weight, image = specular.get("specularFactor", 1), textures.get("specularTexture")
+    authored = pbr_surface.GetInput("specular")
+    if weight == 1 and not image:
+        check.expect(not authored, f"{label} MaterialX authors a specular weight of 1")
+    elif check.expect(authored, f"{label} MaterialX specular is not authored"):
+        check_mtlx_channel(check, authored, weight, image, 3, f"{label} MaterialX specular")
+    color, image = specular.get("specularColorFactor", (1, 1, 1)), textures.get("specularColorTexture")
+    authored = pbr_surface.GetInput("specular_color")
+    if tuple(color) == (1, 1, 1) and not image:
+        check.expect(not authored, f"{label} MaterialX authors a white specular color")
+        return
+    if not check.expect(authored, f"{label} MaterialX specular_color is not authored"):
+        return
+    check.close(authored.Get(), color, f"{label} MaterialX specular_color")
+    if not image:
+        return
+    source = connected_shader(authored)
+    # A factor of 1 reads the color directly; otherwise a multiply scales it.
+    if source and source.GetShaderId() == "ND_multiply_color3":
+        check.close(source.GetInput("in2").Get(), color, f"{label} MaterialX specular_color factor")
+        source = connected_shader(source.GetInput("in1"))
+    else:
+        check.expect(tuple(color) == (1, 1, 1), f"{label} MaterialX specular_color is not scaled by its factor")
+    rgb_image = connected_shader(source.GetInput("in")) if source and source.GetInput("in") else None
+    check.expect(source and source.GetShaderId() == "ND_convert_color4_color3" and rgb_image
+                 and rgb_image.GetPath() == image.GetPath(), f"{label} MaterialX specular_color does not read its texture")
 
 
 def check_mtlx_channel(check, authored, factor, image, index, description):

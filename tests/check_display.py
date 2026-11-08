@@ -694,6 +694,71 @@ def check_ior(renderer, report):
     qt[2].doneCurrent()
 
 
+def check_specular(renderer, report):
+    """Renders the ior check's black dielectric quad with a specular weight or color. glTF's dielectric
+    F0 is min(((ior - 1) / (ior + 1))^2 * specular color, 1) * specular, and at the quad's center only
+    F0 shows, so a weight or a uniform color that gives the F0 of another ior reflects as that ior.
+    gltf_pbr computes this as glTF does. UsdPreviewSurface ignores the extension, so through it every
+    case reflects as the default."""
+    qt = offscreen_context(report, "specular")
+    if not qt:
+        return
+    black = {"baseColorFactor": [0, 0, 0, 1], "metallicFactor": 0, "roughnessFactor": 0.5}
+
+    def ior_of(f0):
+        return (1 + math.sqrt(f0)) / (1 - math.sqrt(f0))
+
+    for path in PATHS:
+
+        def render(name, material, images=()):
+            document = quad_document([material], images)
+            document["extensionsUsed"] = ["KHR_lights_punctual", "KHR_materials_ior", "KHR_materials_specular"]
+            document["extensions"] = {"KHR_lights_punctual": {"lights": [
+                {"type": "point", "intensity": ILLUMINANCE * 4}]}}
+            document["nodes"].append({"translation": [0.5, 0.5, 1],
+                                      "extensions": {"KHR_lights_punctual": {"light": 0}}})
+            document["scenes"][0]["nodes"].append(1)
+            asset = renderer.output / f"specular_{name}.gltf"
+            asset.write_text(json.dumps(document), encoding="utf-8")
+            _, stage = renderer.session(f"specular_{name}", asset, path, None)
+            image = engine_image(stage, [], Gf.Vec4f(0, 0, 0, 1))
+            image.save(str(renderer.output / f"specular_{name}_{path}.png"))
+            return Render(f"specular_{name} {path}", image, stage).sample(0)
+
+        def specular(**values):
+            return {**pbr(**black), "extensions": {"KHR_materials_specular": values}}
+
+        def ior(value):
+            return {**pbr(**black), "extensions": {"KHR_materials_ior": {"ior": value}}}
+
+        default = render("default", pbr(**black))
+        report.same(f"{path} a specular of 1 and white is the default",
+                    render("explicit", specular(specularFactor=1, specularColorFactor=[1, 1, 1])), default)
+        zero = render("zero", specular(specularFactor=0))
+        half = render("half", specular(specularFactor=0.5))
+        double = render("double", specular(specularColorFactor=[2, 2, 2]))
+        red = render("red", specular(specularColorFactor=[1, 0, 0]))
+        weight_image = render("weight_image", specular(specularTexture={"index": 0}), [(255, 255, 255, 188)])
+        color_image = render("color_image", specular(specularColorTexture={"index": 0}), [(188, 188, 188, 255)])
+        if path == "mtlx":
+            report.same(f"{path} a specular of 0 reflects nothing", zero, (0, 0, 0, 255))
+            report.same(f"{path} a specular of 0.5 reflects as an F0 of 0.02", half, render("half_ior", ior(ior_of(0.02))))
+            report.same(f"{path} a specular color of 2 reflects as an F0 of 0.08", double,
+                        render("double_ior", ior(ior_of(0.08))))
+            report.expect(f"{path} a red specular color reflects red only", abs(red[0] - default[0]) <= SAME
+                          and max(red[1], red[2]) <= LOW, f"{red} and {default}")
+            report.same(f"{path} a specular image alpha of 188 is a factor of 0.737", weight_image,
+                        render("weight_data", specular(specularFactor=DATA)))
+            report.same(f"{path} a specular color image reads as sRGB", color_image,
+                        render("color_srgb", specular(specularColorFactor=[SRGB, SRGB, SRGB])))
+        else:
+            for name, result in (("a specular of 0", zero), ("a specular of 0.5", half),
+                                 ("a specular color of 2", double), ("a red specular color", red),
+                                 ("a specular image", weight_image), ("a specular color image", color_image)):
+                report.same(f"{path} UsdPreviewSurface ignores {name}", result, default)
+    qt[2].doneCurrent()
+
+
 def check_clearcoat(renderer, report):
     """Renders a black quad with a clearcoat under a point light between it and the camera, as for the
     ior. glTF's clearcoat is a dielectric of ior 1.5 over the base, weighted by its factor, so the
@@ -869,7 +934,8 @@ def main():
 
     report = Report(arguments.verbose)
     renderer = Renderer(output, plugin, report)
-    for check in (check_reflections, check_lights, check_unlit, check_ior, check_clearcoat, check_transmission,
+    for check in (check_reflections, check_lights, check_unlit, check_ior, check_specular, check_clearcoat,
+                  check_transmission,
                   check_volume, check_alpha_modes, check_base_color_textures, check_pbr_textures,
                   check_normal_textures, check_texture_transforms, check_ktx2_textures, check_measurements):
         print(check.__name__.removeprefix("check_"), flush=True)

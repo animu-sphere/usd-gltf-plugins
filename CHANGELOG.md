@@ -31,6 +31,8 @@ here.
 - `KHR_materials_volume`, optional or required: the thickness, its texture and the attenuation as
   `gltf_pbr`'s volume inputs in MaterialX, which its graph does not connect, so every path draws a thin
   material; UsdPreviewSurface has none and ignores it with a warning.
+- `KHR_materials_specular`, optional or required: the specular weight, color and their textures in
+  MaterialX; UsdPreviewSurface's metallic workflow has neither and ignores it with a warning.
 
 ### Changed
 
