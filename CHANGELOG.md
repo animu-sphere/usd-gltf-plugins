@@ -8,6 +8,8 @@ here.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-09
+
 ### Added
 
 - Import measurement tool, `tests/measure_import.py`, with fresh-process timings, peak resident
@@ -37,7 +39,6 @@ here.
   MaterialX; UsdPreviewSurface's metallic workflow has neither and ignores it with a warning.
 - `KHR_materials_sheen`, optional or required: the sheen color, roughness and their textures in
   MaterialX; UsdPreviewSurface has no sheen and ignores it with a warning.
-
 - `KHR_materials_iridescence`, optional or required: thin-film strength, ior and thickness, with
   strength and thickness textures in MaterialX; UsdPreviewSurface ignores it with a warning.
 - `KHR_materials_anisotropy`, optional or required: strength, rotation and linear texture direction

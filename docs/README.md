@@ -21,7 +21,7 @@ than presenting planned behavior as implemented.
 | [Textures](design/TEXTURES.md) | URI, image conversion, cache and path lifetime specification | Texture support status |
 | [Capability matrix](reference/CAPABILITY_MATRIX.md) | **The only record of what is implemented and verified:** scope, limitations, evidence, environments | Future commitments, release plans |
 | [Roadmap](roadmap/README.md), [current](roadmap/current.md), [backlog](roadmap/backlog.md) | **The only version plan:** unfinished scope, completion criteria, open decisions, task lifecycle | Finished work, test history, long design rationale |
-| [Release records](releases/v0.1.0.md), `docs/releases/vX.Y.Z.md` | Each release's scope, constraints and evidence, written in its release pull request. | Current status, plans |
+| [Release records](releases/v0.2.0.md), `docs/releases/vX.Y.Z.md` | Each release's scope, constraints and evidence, written in its release pull request. | Current status, plans |
 
 Decision records keep the options considered, the reasoning and the evidence
 available when the decision was made; they are not progress reports:

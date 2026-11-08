@@ -4,23 +4,6 @@ Later versions, in planned order. Nothing here has started; see the
 [task lifecycle](README.md#task-lifecycle). The next release is in
 [current.md](current.md).
 
-## v0.3.0: animation and deformation
-
-Tasks are in implementation order, each building on the last.
-
-1. The mapping from glTF time, interpolation and samplers to USD time samples, with STEP, LINEAR and
-   CUBICSPLINE each verified.
-2. TRS animation, multiple clips, and a policy for animations outside the selected scene.
-3. Joints, inverse bind matrices and skins through `UsdSkel`, alongside node transforms.
-4. Morph targets and animated weights, with tests of skins combined with morphs.
-5. Placement such as `/Asset/rig` and `/Asset/anim`, decided in an ADR after composition and viewer
-   experiments. It is not a required structure today.
-
-**Completion criteria:** representative animated models are consistent in values and poses at
-multiple times, across multiple clips and reload. Invalid samplers have diagnostics, and unsupported
-interpolation and deformation are explicit. Display tests state their environment, and behavior that
-differs from glTF is recorded as a limit.
-
 ## v0.4.0: optimization and developer tools
 
 - If needed, a CLI calling the same conversion library, not a separate importer.

@@ -119,9 +119,10 @@ Storm through MaterialX and UsdPreviewSurface, and compares pixels. The
 [README](../../README.md#development) has the command, and
 [ADR 0007](../adr/0007-display-check.md) explains the comparisons and their limits.
 
-Last result: 681 comparisons passed, none failed, including 18 anisotropy comparisons, on Windows
-with OpenUSD 26.08, the OpenStrata lookdev runtime and an NVIDIA RTX A5000. The previous full suite, with iridescence,
-passed 663 comparisons; the preceding sheen suite passed 639. The earlier specular suite passed
+Last result: 681 comparisons passed, none failed, at the v0.2.0 release candidate after a clean
+build, on Windows with OpenUSD 26.08, the OpenStrata lookdev runtime and an NVIDIA RTX A5000. It was
+the second such result after the 18 anisotropy comparisons were added. The iridescence suite passed
+663 comparisons, and the preceding sheen suite 639. The earlier specular suite passed
 621 twice, and was the first with the unlit, ior, clearcoat, transmission, volume and specular
 comparisons. An earlier result, on
 `7de8b8f` with lights added, gave byte-identical images in two runs. This checks simple fixtures, not
@@ -335,42 +336,21 @@ not in this repository: 339 files in 150 models. The result for each file is in
 [`tests/sample_baseline.json`](../../tests/sample_baseline.json), and
 [ADR 0010](../adr/0010-sample-baseline.md) explains what is compared and its limits.
 
-Last update: both NodePerformanceTest files passed opening and USD meaning comparison on
-Windows with OpenUSD 26.08 and the OpenStrata cy2026 USD runtime. The GLB's previous
-600-second timeout occurred during the combined open-and-inspect process, rather
-than demonstrating a timeout in `Stage.Open` itself. Holding the existing resolver
-cache scope during the meaning comparison avoids reparsing the GLB for every image
-reference. Its GLB now verifies 10000 meshes and has not been rendered; the `.gltf`
-entry is unchanged. The other 337 files were not rerun for this update.
-
-The preceding update checked the 13 files in the AnisotropyBarnLamp, AnisotropyDiscTest, AnisotropyRotationTest,
-AnisotropyStrengthTest, CarbonFibre and CompareAnisotropy groups were checked and rendered through
-both paths on Windows with OpenUSD 26.08, the OpenStrata lookdev runtime and an NVIDIA RTX A5000.
-Ten go from partial to verified in the inputs and networks compared; the three BarnLamp files remain
-partial because they use another ignored extension. No file's meaning differs. This checks the
-documented renderer-frame approximation, without comparing its direction with supplied tangents.
-Other entries retain their previous evidence below; the entire 339-file collection was not rerun.
-
-The preceding update checked 19 files in the Iridescence, CarConcept and SunglassesKhronos groups.
-Seventeen changed: IridescenceSuzanne's required-extension GLB opened and was verified, 11 went
-from partial to verified, and five CarConcept files remained partial. Every opened file in those
-groups was rendered through both paths, without a difference in meaning.
-
-The previous update checked opening and meaning with the sheen added, in the same Windows runtime;
-the 17 sheen files were also rendered. Before it, the specular update was the first with the
-clearcoat, transmission, volume and specular comparisons. Every file unchanged by that update matched
-the ior result on Linux x86-64 with OpenUSD 26.08 from the `usd-core` wheel. Every file unchanged by
-WebP or unlit materials had in turn matched the result on `7de8b8f` on Windows with the same runtime
-and GPU, also the last render of the whole collection. It is not part of CI.
+Last result: the whole collection, rendered, at the v0.2.0 release candidate on Windows with OpenUSD
+26.08, the OpenStrata lookdev runtime and an NVIDIA RTX A5000. Opening, rejection and meaning matched
+the previous results for every file. The seven opened files that had never been rendered were rendered: six
+drew through both paths, and the NodePerformanceTest GLB, of 10000 meshes, took over 600 seconds
+through each path and is recorded as timed out, although its `.gltf` drew. Every other opened file drew
+again, now with every implemented extension. It is not part of CI.
 
 | Result | Files | What it means |
 | --- | --- | --- |
-| Opened | 245 | The stage opens. No file crashed or timed out in the recorded results. |
+| Opened | 245 | The stage opens. No file crashed or timed out while opening. |
 | Rejected | 94 | Each has a diagnostic naming a cause the file really has. |
 | Meaning verified | 199 | USD agrees with values decoded from the file, in all that is compared, and the file uses no ignored extension. |
 | Meaning partial | 46 | The same, but the file uses an optional extension that is ignored, with a warning. What it changes is not compared. |
 | Meaning differs | 0 | |
-| Rendered | 238 | Storm drew something through both shader paths. No pixel was judged, so this is not evidence of correct display. The 13 anisotropy files, 17 changed iridescence files and 17 sheen files were rendered with their extensions. The 6 other files opened by WebP, unlit materials or clearcoat have not been rendered. Other files with an ior, clearcoat, transmission, volume or specular retain their older renders from before those features were added. |
+| Rendered | 244 | Storm drew something through both shader paths. No pixel was judged, so this is not evidence of correct display. One more file timed out through both. |
 
 Why files are rejected, read from each file. Most files have several causes, so a count of files that
 have a cause is not what supporting it would open:
