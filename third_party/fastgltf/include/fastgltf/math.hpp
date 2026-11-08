@@ -31,7 +31,6 @@
 #include <array>
 #include <cmath>
 #include <functional>
-#include <initializer_list>
 #include <numbers>
 #include <tuple>
 #endif
@@ -86,7 +85,7 @@ namespace fastgltf::math {
 		/** Creates a new vector with N components from N values in the order X, Y, Z, W */
 		template <typename... Args>
 		requires (sizeof...(Args) == N)
-		constexpr explicit vec(Args... args) noexcept : _data { T(std::forward<Args>(args))... } {}
+		constexpr vec(Args... args) noexcept : _data { T(std::forward<Args>(args))... } {}
 
 		static constexpr auto fromPointer(T* ptr) noexcept {
 			vec<T, N> ret;
@@ -140,16 +139,6 @@ namespace fastgltf::math {
 			return *this;
 		}
 
-		constexpr vec(std::initializer_list<T> list) noexcept {
-			for (auto it = std::begin(list); it != std::end(list); ++it)
-				(*this)[std::distance(std::begin(list), it)] = *it;
-		}
-		constexpr vec& operator=(std::initializer_list<T> list) noexcept {
-			for (auto it = std::begin(list); it != std::end(list); ++it)
-				(*this)[std::distance(std::begin(list), it)] = *it;
-			return *this;
-		}
-
 		[[nodiscard]] constexpr std::size_t size() const noexcept {
 			return N;
 		}
@@ -170,12 +159,10 @@ namespace fastgltf::math {
 		[[nodiscard]] constexpr decltype(auto) y() noexcept FASTGLTF_LIFETIMEBOUND {
 			return (*this)[1];
 		}
-		[[nodiscard]] constexpr decltype(auto) z() noexcept FASTGLTF_LIFETIMEBOUND {
-			static_assert(N >= 3);
+		[[nodiscard]] constexpr decltype(auto) z() noexcept FASTGLTF_LIFETIMEBOUND requires (N >= 3) {
 			return (*this)[2];
 		}
-		[[nodiscard]] constexpr decltype(auto) w() noexcept FASTGLTF_LIFETIMEBOUND {
-			static_assert(N >= 4);
+		[[nodiscard]] constexpr decltype(auto) w() noexcept FASTGLTF_LIFETIMEBOUND requires (N >= 4) {
 			return (*this)[3];
 		}
 		[[nodiscard]] constexpr decltype(auto) x() const noexcept FASTGLTF_LIFETIMEBOUND {
@@ -184,12 +171,10 @@ namespace fastgltf::math {
 		[[nodiscard]] constexpr decltype(auto) y() const noexcept FASTGLTF_LIFETIMEBOUND {
 			return (*this)[1];
 		}
-		[[nodiscard]] constexpr decltype(auto) z() const noexcept FASTGLTF_LIFETIMEBOUND {
-			static_assert(N >= 3);
+		[[nodiscard]] constexpr decltype(auto) z() const noexcept FASTGLTF_LIFETIMEBOUND requires (N >= 3) {
 			return (*this)[2];
 		}
-		[[nodiscard]] constexpr decltype(auto) w() const noexcept FASTGLTF_LIFETIMEBOUND {
-			static_assert(N >= 4);
+		[[nodiscard]] constexpr decltype(auto) w() const noexcept FASTGLTF_LIFETIMEBOUND requires (N >= 4) {
 			return (*this)[3];
 		}
 
@@ -478,10 +463,8 @@ namespace fastgltf::math {
 	FASTGLTF_EXPORT using f64vec4 = f64vec<4>;
 
 	/** A quaternion */
-	FASTGLTF_EXPORT template <typename T>
+	FASTGLTF_EXPORT template <std::floating_point T>
 	class quat {
-		static_assert(std::is_floating_point_v<T>);
-
 		static constexpr std::size_t N = 4;
 		std::array<T, N> _data;
 
@@ -566,7 +549,7 @@ namespace fastgltf::math {
 		}
 
 		constexpr auto operator/(T scalar) const noexcept {
-			return quat<T>(*this) *= scalar;
+			return quat<T>(*this) /= scalar;
 		}
 		constexpr auto operator/=(T scalar) noexcept {
 			for (std::size_t i = 0; i < 4; ++i)
@@ -690,7 +673,7 @@ namespace fastgltf::math {
 
 		template <typename... Args, std::size_t... i>
 		constexpr void copy_values(const std::tuple<Args...>& tuple, std::integer_sequence<std::size_t, i...>) noexcept {
-			(..., (_data[i / M][i % N] = std::get<i>(std::move(tuple))));
+			(..., (_data[i / N][i % N] = std::get<i>(std::move(tuple))));
 		}
 
 	public:
@@ -782,7 +765,7 @@ namespace fastgltf::math {
 		}
 
 		[[nodiscard]] constexpr bool operator==(const mat<T, N, M>& other) const noexcept {
-			for (std::size_t i = 0; i < N; ++i)
+			for (std::size_t i = 0; i < columns(); ++i)
 				if (col(i) != other.col(i))
 					return false;
 			return true;
@@ -805,7 +788,7 @@ namespace fastgltf::math {
 			return ret;
 		}
 		constexpr auto operator*(vec<T, M> other) const noexcept {
-			vec<T, M> ret = col(0) * other[0];
+			vec<T, N> ret = col(0) * other[0];
 			for (std::size_t i = 1; i < columns(); ++i)
 				ret += col(i) * other[i];
 			return ret;
@@ -901,7 +884,7 @@ namespace fastgltf::math {
 	}
 
 	/** Computes the affine inverse of a 4x4 matrix */
-	template <typename T>
+	FASTGLTF_EXPORT template <typename T>
 	[[nodiscard]] auto affineInverse(const mat<T, 4, 4>& m) noexcept {
 		const auto inv = inverse(mat<T, 3, 3>(m));
 		const auto l = -inv * vec<T, 3>(m.col(3));

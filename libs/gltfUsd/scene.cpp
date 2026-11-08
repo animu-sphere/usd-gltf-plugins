@@ -68,15 +68,11 @@ nodeMatrix(const fastgltf::Node& node, GfMatrix4d& result)
         {
             return false;
         }
-        // The tolerance accepts rotations that would otherwise scale and shear the node. This does
-        // not use fastgltf::math::normalize, whose quaternion division multiplies in fastgltf 1.0.0.
-        const double length = std::sqrt(lengthSquared);
-        const fastgltf::math::nquat rotation(
-            fastgltf::num(q.x() / length), fastgltf::num(q.y() / length),
-            fastgltf::num(q.z() / length), fastgltf::num(q.w() / length));
+        // The tolerance accepts rotations that would otherwise scale and shear the node.
         matrix = fastgltf::math::scale(
             fastgltf::math::rotate(
-                fastgltf::math::translate(fastgltf::math::nmat4x4(), trs->translation), rotation),
+                fastgltf::math::translate(fastgltf::math::nmat4x4(), trs->translation),
+                fastgltf::math::normalize(q)),
             trs->scale);
     }
     else
