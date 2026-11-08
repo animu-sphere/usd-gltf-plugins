@@ -82,6 +82,18 @@ weight or color, so its network ignores the extension with a warning and draws g
 A weight of 0 reads neither texture, a color factor of 0 does not read the color texture, and an unlit
 material authors none. See [ADR 0020](../adr/0020-specular.md).
 
+## Iridescence
+
+A `KHR_materials_iridescence` factor above 0 is authored as MaterialX `iridescence`, the factor times
+its texture's R channel, read as non-color data. The film's `iridescenceIor` is the uniform
+`iridescence_ior`, separate from the base `ior`. `iridescence_thickness` is the maximum thickness in
+nanometers without a texture; with one, an `ND_mix_float` interpolates the minimum and maximum by its
+G channel, also non-color data. A descending range is valid, and equal endpoints read no thickness
+image. Always author the active film's thickness, because `gltf_pbr` defaults to 100 where glTF's
+untextured film defaults to 400. UsdPreviewSurface has no thin film and ignores it with a warning.
+A strength factor of 0 and an unlit material author no film and read neither image. See
+[ADR 0022](../adr/0022-iridescence.md).
+
 ## Sheen
 
 A `KHR_materials_sheen` color factor other than black is authored as MaterialX `sheen_color`, the factor

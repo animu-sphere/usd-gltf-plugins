@@ -238,11 +238,24 @@ describeMalformedMaterialExtension(std::string_view name, const simdjson::dom::e
     return {};
 }
 
-// Describes a malformed KHR_materials_sheen, KHR_materials_specular or KHR_materials_volume of a
-// material, which have fields of three numbers, or returns an empty string.
+// Describes extensions checked even when fastgltf accepts them, or returns an empty string.
 std::string
-describeMalformedColorExtension(const simdjson::dom::element& material)
+describeMalformedCheckedExtension(const simdjson::dom::element& material)
 {
+    simdjson::dom::element iridescence;
+    if (material["extensions"][fastgltf::extensions::KHR_materials_iridescence].get(iridescence) ==
+        simdjson::SUCCESS)
+    {
+        if (auto description = describeMalformedMaterialExtension(
+                fastgltf::extensions::KHR_materials_iridescence, iridescence,
+                {"iridescenceFactor", "iridescenceIor", "iridescenceThicknessMinimum",
+                 "iridescenceThicknessMaximum"},
+                {"iridescenceTexture", "iridescenceThicknessTexture"});
+            !description.empty())
+        {
+            return description;
+        }
+    }
     simdjson::dom::element sheen;
     if (material["extensions"][fastgltf::extensions::KHR_materials_sheen].get(sheen) ==
         simdjson::SUCCESS)
@@ -279,10 +292,10 @@ describeMalformedColorExtension(const simdjson::dom::element& material)
 }
 
 // fastgltf reads a sheenColorFactor, specularColorFactor or attenuationColor of fewer than three
-// numbers, keeping the default for the rest, so an extension it accepts is checked too. Returns an
+// numbers, keeping the default for the rest. Also check the iridescence fields. Returns an
 // empty string if every such extension is well formed.
 std::string
-describeMalformedColorExtensions(const std::byte* bytes, std::size_t size)
+describeMalformedCheckedExtensions(const std::byte* bytes, std::size_t size)
 {
     const auto json = jsonOf(bytes, size);
     simdjson::dom::parser parser;
@@ -295,7 +308,7 @@ describeMalformedColorExtensions(const std::byte* bytes, std::size_t size)
     }
     for (const auto material : materials)
     {
-        if (auto description = describeMalformedColorExtension(material); !description.empty())
+        if (auto description = describeMalformedCheckedExtension(material); !description.empty())
         {
             return description;
         }
@@ -374,7 +387,7 @@ describeMalformedMaterial(const std::byte* bytes, std::size_t size)
                 return description;
             }
         }
-        if (auto description = describeMalformedColorExtension(material); !description.empty())
+        if (auto description = describeMalformedCheckedExtension(material); !description.empty())
         {
             return description;
         }
@@ -391,6 +404,7 @@ IsImplementedExtension(std::string_view extension)
            extension == fastgltf::extensions::KHR_lights_punctual ||
            extension == fastgltf::extensions::KHR_materials_clearcoat ||
            extension == fastgltf::extensions::KHR_materials_ior ||
+           extension == fastgltf::extensions::KHR_materials_iridescence ||
            extension == fastgltf::extensions::KHR_materials_sheen ||
            extension == fastgltf::extensions::KHR_materials_specular ||
            extension == fastgltf::extensions::KHR_materials_transmission ||
@@ -413,6 +427,7 @@ Parse(const std::byte* bytes, std::size_t size, std::string& error)
     fastgltf::Parser parser(
         fastgltf::Extensions::EXT_texture_webp | fastgltf::Extensions::KHR_lights_punctual |
         fastgltf::Extensions::KHR_materials_clearcoat | fastgltf::Extensions::KHR_materials_ior |
+        fastgltf::Extensions::KHR_materials_iridescence |
         fastgltf::Extensions::KHR_materials_sheen | fastgltf::Extensions::KHR_materials_specular |
         fastgltf::Extensions::KHR_materials_transmission |
         fastgltf::Extensions::KHR_materials_unlit | fastgltf::Extensions::KHR_materials_volume |
@@ -439,7 +454,8 @@ Parse(const std::byte* bytes, std::size_t size, std::string& error)
             error = "KHR_lights_punctual has a field of the wrong type";
             return fastgltf::Error::InvalidGltf;
         }
-        if (auto description = describeMalformedColorExtensions(bytes, size); !description.empty())
+        if (auto description = describeMalformedCheckedExtensions(bytes, size);
+            !description.empty())
         {
             error = description;
             return fastgltf::Error::InvalidGltf;

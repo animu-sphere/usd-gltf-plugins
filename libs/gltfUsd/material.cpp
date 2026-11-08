@@ -88,6 +88,11 @@ struct PbrFactors
     // KHR_materials_sheen, black and 0 without it: a black color disables the layer.
     GfVec3f sheenColor;
     float sheenRoughness;
+    // KHR_materials_iridescence: strength, film ior and thickness range in nanometers.
+    float iridescence;
+    float iridescenceIor;
+    float iridescenceMinimum;
+    float iridescenceMaximum;
 };
 
 // glTF's default, and the default of both shaders' ior inputs.
@@ -135,7 +140,11 @@ pbrFactors(const fastgltf::Material& source)
                 ? GfVec3f(source.sheen->sheenColorFactor[0], source.sheen->sheenColorFactor[1],
                           source.sheen->sheenColorFactor[2])
                 : GfVec3f(0),
-            source.sheen ? float(source.sheen->sheenRoughnessFactor) : 0.0f};
+            source.sheen ? float(source.sheen->sheenRoughnessFactor) : 0.0f,
+            source.iridescence ? float(source.iridescence->iridescenceFactor) : 0.0f,
+            source.iridescence ? float(source.iridescence->iridescenceIor) : 1.3f,
+            source.iridescence ? float(source.iridescence->iridescenceThicknessMinimum) : 100.0f,
+            source.iridescence ? float(source.iridescence->iridescenceThicknessMaximum) : 400.0f};
 }
 
 // glTF disables the clearcoat layer at a factor of 0, and an unlit material reflects nothing.
@@ -172,6 +181,13 @@ bool
 hasSheenRoughness(const PbrFactors& factors)
 {
     return hasSheen(factors) && factors.sheenRoughness != 0.0f;
+}
+
+// A strength of 0 disables the film, and an unlit material reflects nothing.
+bool
+hasIridescence(const PbrFactors& factors)
+{
+    return !factors.unlit && factors.iridescence > 0.0f;
 }
 
 // The ior to author, if it is not the shaders' default. An unlit material reflects nothing, so
@@ -301,6 +317,9 @@ struct MaterialTextures
     // Read by MaterialX only: UsdPreviewSurface has no sheen.
     std::optional<TextureInput> sheenColor;
     std::optional<TextureInput> sheenRoughness;
+    // Read by MaterialX only: UsdPreviewSurface has no thin film.
+    std::optional<TextureInput> iridescence;
+    std::optional<TextureInput> iridescenceThickness;
 };
 
 // gltf_pbr's specular weight and color are glTF's: the weight scales a dielectric's F0 and F90,
@@ -794,10 +813,10 @@ connectMtlxColor(const UsdShadeNodeGraph& graph, UsdShadeShader& surface, const 
                  const char* input, const GfVec3f& factor, const TextureInput& texture)
 {
     const auto image = authorMtlxImage(graph, (name + "Image").c_str(), texture, true);
-    const auto rgb = image ? authorMtlxImageChannel(graph, (name + "Rgb").c_str(),
-                                                    "ND_convert_color4_color3", image,
-                                                    SdfValueTypeNames->Color3f)
-                           : UsdShadeOutput();
+    const auto rgb =
+        image ? authorMtlxImageChannel(graph, (name + "Rgb").c_str(), "ND_convert_color4_color3",
+                                       image, SdfValueTypeNames->Color3f)
+              : UsdShadeOutput();
     return rgb && connectMtlxInput(graph, surface, input, rgb, UsdShadeOutput(), nullptr,
                                    (name + "Factor").c_str(), "ND_multiply_color3",
                                    SdfValueTypeNames->Color3f, factor);
@@ -815,6 +834,26 @@ connectMtlxChannel(const UsdShadeNodeGraph& graph, UsdShadeShader& surface, cons
     return channel && connectMtlxInput(graph, surface, input, channel, UsdShadeOutput(), nullptr,
                                        (name + "Factor").c_str(), "ND_multiply_float",
                                        SdfValueTypeNames->Float, factor);
+}
+
+// glTF uses the G channel to interpolate the thickness range, which may be descending.
+bool
+connectMtlxIridescenceThickness(const UsdShadeNodeGraph& graph, UsdShadeShader& surface,
+                                const PbrFactors& factors, const TextureInput& texture)
+{
+    const auto image = authorMtlxImage(graph, "iridescenceThicknessImage", texture, false);
+    const auto channel =
+        image ? authorMtlxImageComponent(graph, "iridescenceThicknessChannel", image, 1)
+              : UsdShadeOutput();
+    auto mix = channel ? defineMtlxNode(graph, "iridescenceThicknessRange", "ND_mix_float")
+                       : UsdShadeShader();
+    const auto amount =
+        mix ? mix.CreateInput(TfToken("mix"), SdfValueTypeNames->Float) : UsdShadeInput();
+    return amount && amount.ConnectToSource(channel) &&
+           setInput(mix, "bg", SdfValueTypeNames->Float, factors.iridescenceMinimum) &&
+           setInput(mix, "fg", SdfValueTypeNames->Float, factors.iridescenceMaximum) &&
+           surface.GetInput(TfToken("iridescence_thickness"))
+               .ConnectToSource(mix.CreateOutput(TfToken("out"), SdfValueTypeNames->Float));
 }
 
 // The clearcoat normal defaults to the geometric normal, as in glTF, not to the base normal map.
@@ -859,7 +898,13 @@ connectMtlxTextures(const UsdShadeNodeGraph& graph, UsdShadeShader& surface,
                                                      factors.sheenColor, *textures.sheenColor)) &&
            (!textures.sheenRoughness ||
             connectMtlxChannel(graph, surface, "sheenRoughness", "sheen_roughness", 3,
-                               factors.sheenRoughness, *textures.sheenRoughness));
+                               factors.sheenRoughness, *textures.sheenRoughness)) &&
+           (!textures.iridescence ||
+            connectMtlxChannel(graph, surface, "iridescence", "iridescence", 0, factors.iridescence,
+                               *textures.iridescence)) &&
+           (!textures.iridescenceThickness ||
+            connectMtlxIridescenceThickness(graph, surface, factors,
+                                            *textures.iridescenceThickness));
 }
 
 bool
@@ -953,6 +998,10 @@ authorMtlx(const UsdShadeMaterial& material, const PbrFactors& factors, bool ver
     // base by its albedo, with a Charlie roughness of sheen_roughness squared, as glTF does.
     const bool sheen = hasSheen(factors);
     const bool sheenRoughness = hasSheenRoughness(factors);
+    const bool iridescence = hasIridescence(factors);
+    const auto filmIor =
+        iridescence ? surface.CreateInput(TfToken("iridescence_ior"), SdfValueTypeNames->Float)
+                    : UsdShadeInput();
     return surface.CreateIdAttr().Set(TfToken("ND_gltf_pbr_surfaceshader")) &&
            setInput(surface, "base_color", SdfValueTypeNames->Color3f,
                     unlit ? GfVec3f(0) : factors.baseColor) &&
@@ -968,6 +1017,12 @@ authorMtlx(const UsdShadeMaterial& material, const PbrFactors& factors, bool ver
             setInput(surface, "sheen_color", SdfValueTypeNames->Color3f, factors.sheenColor)) &&
            (!sheenRoughness || setInput(surface, "sheen_roughness", SdfValueTypeNames->Float,
                                         factors.sheenRoughness)) &&
+           (!iridescence ||
+            (setInput(surface, "iridescence", SdfValueTypeNames->Float, factors.iridescence) &&
+             filmIor && filmIor.GetAttr().SetVariability(SdfVariabilityUniform) &&
+             filmIor.Set(factors.iridescenceIor) &&
+             setInput(surface, "iridescence_thickness", SdfValueTypeNames->Float,
+                      factors.iridescenceMaximum))) &&
            setInput(surface, "emissive", SdfValueTypeNames->Color3f,
                     unlit ? factors.baseColor : factors.emissive) &&
            (!ior || (iorInput && iorInput.GetAttr().SetVariability(SdfVariabilityUniform) &&
@@ -1189,6 +1244,7 @@ MaterialAuthor::Bind(std::size_t index, std::size_t uvSetCount, const pxr::VtVec
     const auto* volume = source.volume ? &*source.volume : nullptr;
     const auto* specular = source.specular ? &*source.specular : nullptr;
     const auto* sheen = source.sheen ? &*source.sheen : nullptr;
+    const auto* iridescence = source.iridescence ? &*source.iridescence : nullptr;
     if (!hasUvSet(pbr.baseColorTexture) || !hasUvSet(pbr.metallicRoughnessTexture) ||
         !hasUvSet(source.normalTexture) || !hasUvSet(source.occlusionTexture) ||
         !hasUvSet(source.emissiveTexture) ||
@@ -1199,7 +1255,10 @@ MaterialAuthor::Bind(std::size_t index, std::size_t uvSetCount, const pxr::VtVec
         (volume && !hasUvSet(volume->thicknessTexture)) ||
         (specular &&
          (!hasUvSet(specular->specularTexture) || !hasUvSet(specular->specularColorTexture))) ||
-        (sheen && (!hasUvSet(sheen->sheenColorTexture) || !hasUvSet(sheen->sheenRoughnessTexture))))
+        (sheen &&
+         (!hasUvSet(sheen->sheenColorTexture) || !hasUvSet(sheen->sheenRoughnessTexture))) ||
+        (iridescence && (!hasUvSet(iridescence->iridescenceTexture) ||
+                         !hasUvSet(iridescence->iridescenceThicknessTexture))))
     {
         error = "material texture uses a texture coordinate set the primitive does not have";
         return false;
@@ -1304,6 +1363,25 @@ MaterialAuthor::Bind(std::size_t index, std::size_t uvSetCount, const pxr::VtVec
         error = "material sheen roughness factor is non-finite or out of range";
         return false;
     }
+    if (iridescence && !inUnitRange(iridescence->iridescenceFactor))
+    {
+        error = "material iridescence factor is non-finite or out of range";
+        return false;
+    }
+    if (iridescence &&
+        !(std::isfinite(iridescence->iridescenceIor) && iridescence->iridescenceIor >= 1))
+    {
+        error = "material iridescence ior is non-finite or below 1";
+        return false;
+    }
+    if (iridescence && !(std::isfinite(iridescence->iridescenceThicknessMinimum) &&
+                         iridescence->iridescenceThicknessMinimum >= 0 &&
+                         std::isfinite(iridescence->iridescenceThicknessMaximum) &&
+                         iridescence->iridescenceThicknessMaximum >= 0))
+    {
+        error = "material iridescence thickness is non-finite or negative";
+        return false;
+    }
     auto& material = colors ? _vertexColorMaterials[index] : _materials[index];
     if (!material)
     {
@@ -1318,6 +1396,7 @@ MaterialAuthor::Bind(std::size_t index, std::size_t uvSetCount, const pxr::VtVec
         // 0 removes the reflection whatever its texture or color, and a black specular color
         // factor makes the color black whatever its texture. A black sheen color factor disables the
         // sheen layer, and a sheen roughness factor of 0 makes the roughness 0 whatever its texture.
+        // An iridescence factor of 0 disables the film; equal thickness endpoints fix its thickness.
         const auto factors = pbrFactors(source);
         const bool coated = hasClearcoat(factors);
         const bool transmits = hasTransmission(factors);
@@ -1325,6 +1404,7 @@ MaterialAuthor::Bind(std::size_t index, std::size_t uvSetCount, const pxr::VtVec
         const bool reflects = specular && !source.unlit && factors.specular > 0.0f;
         const bool tinted = reflects && factors.specularColor != GfVec3f(0);
         const bool sheened = hasSheen(factors);
+        const bool film = hasIridescence(factors);
         MaterialTextures textures;
         if (!resolve(pbr.baseColorTexture, textures.baseColor) ||
             (!source.unlit && (!resolve(pbr.metallicRoughnessTexture, textures.metallicRoughness) ||
@@ -1341,7 +1421,11 @@ MaterialAuthor::Bind(std::size_t index, std::size_t uvSetCount, const pxr::VtVec
             (tinted && !resolve(specular->specularColorTexture, textures.specularColor)) ||
             (sheened && !resolve(sheen->sheenColorTexture, textures.sheenColor)) ||
             (hasSheenRoughness(factors) &&
-             !resolve(sheen->sheenRoughnessTexture, textures.sheenRoughness)))
+             !resolve(sheen->sheenRoughnessTexture, textures.sheenRoughness)) ||
+            (film &&
+             (!resolve(iridescence->iridescenceTexture, textures.iridescence) ||
+              (factors.iridescenceMinimum != factors.iridescenceMaximum &&
+               !resolve(iridescence->iridescenceThicknessTexture, textures.iridescenceThickness)))))
         {
             return false;
         }
@@ -1385,6 +1469,18 @@ MaterialAuthor::Bind(std::size_t index, std::size_t uvSetCount, const pxr::VtVec
         {
             TF_WARN("glTF material %zu: KHR_materials_specular is ignored, because the material "
                     "is unlit",
+                    index);
+        }
+        if (source.unlit && iridescence)
+        {
+            TF_WARN("glTF material %zu: KHR_materials_iridescence is ignored, because the material "
+                    "is unlit",
+                    index);
+        }
+        if (film)
+        {
+            TF_WARN("glTF material %zu: UsdPreviewSurface has no iridescence; its network ignores "
+                    "KHR_materials_iridescence",
                     index);
         }
         if (source.unlit && sheen)

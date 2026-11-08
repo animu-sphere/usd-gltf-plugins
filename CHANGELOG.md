@@ -36,6 +36,9 @@ here.
 - `KHR_materials_sheen`, optional or required: the sheen color, roughness and their textures in
   MaterialX; UsdPreviewSurface has no sheen and ignores it with a warning.
 
+- `KHR_materials_iridescence`, optional or required: thin-film strength, ior and thickness, with
+  strength and thickness textures in MaterialX; UsdPreviewSurface ignores it with a warning.
+
 ### Changed
 
 - A rejection names each unsupported required extension, and states the one skin, camera, light,

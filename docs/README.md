@@ -50,6 +50,7 @@ available when the decision was made; they are not progress reports:
 - [0019: Volume](adr/0019-volume.md)
 - [0020: Specular](adr/0020-specular.md)
 - [0021: Sheen](adr/0021-sheen.md)
+- [0022: Iridescence](adr/0022-iridescence.md)
 
 New decisions go in `docs/adr/NNNN-title.md`.
 
