@@ -2,7 +2,7 @@ manifest:
   schema: openstrata.plugin/v1alpha1
 plugin:
   name: usdGltfFileFormat
-  version: 0.1.0
+  version: 0.2.0
   kind: usd-fileformat
 license: Apache-2.0
 runtime:
