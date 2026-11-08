@@ -1215,6 +1215,13 @@ resolveTexture(const fastgltf::Asset& asset, const fastgltf::TextureInfo& info,
         sampler.wrapS = asset.samplers[*texture.samplerIndex].wrapS;
         sampler.wrapT = asset.samplers[*texture.samplerIndex].wrapT;
     }
+    // Ar would not route a path inside a packaged source to the package resolver, and a sibling
+    // file would not be the package's. See docs/adr/0025-packaged-sources.md.
+    if (ArIsPackageRelativePath(sourcePath))
+    {
+        error = "images are not supported in a source inside a package";
+        return false;
+    }
     gltfTexture::ImageLocation location;
     if (!gltfTexture::LocateImage(asset, *imageIndex, sourcePath, loadBuffer, location, error))
     {

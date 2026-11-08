@@ -55,6 +55,8 @@ here.
   the source for every embedded image reference in large GLB assets.
 - A rotation within the tolerance of unit length is normalized, and no longer scales and shears its
   node.
+- A source inside a package such as a `.usdz` fails when it needs an image or external buffer,
+  instead of authoring texture paths that resolve to nothing or reading files beside the package.
 
 ## [0.1.0] - 2026-11-02
 

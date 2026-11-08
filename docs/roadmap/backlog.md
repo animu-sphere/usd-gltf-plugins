@@ -62,3 +62,5 @@ regression tests and a reproducible release process.
 Record the investigation and outcome in an ADR before relying on these:
 
 - Mesh sharing and animated-node placement.
+- Resource resolution through custom asset resolvers and shared parent directories, with its
+  security model. [ADR 0025](../adr/0025-packaged-sources.md) decides only sources inside packages.

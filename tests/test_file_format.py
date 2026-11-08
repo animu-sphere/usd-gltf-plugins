@@ -3076,6 +3076,52 @@ class FileFormatTest(unittest.TestCase):
                 write_asset(path, unused, unused_binary)
                 self.assertTrue(layer.Reload(True))
 
+    def test_packaged_sources_read_only_their_own_bytes(self):
+        # A source inside a usdz reads no images or external buffers; see
+        # docs/adr/0025-packaged-sources.md. Copies of every resource lie both inside the package
+        # and beside it on disk, so neither can satisfy a reference.
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            (root / "root.usda").write_text("#usda 1.0\n")
+            (root / "tex.png").write_bytes(PNG)
+            external, external_binary = uv_document("gltf", external=True)
+            (root / "mesh.bin").write_bytes(external_binary)
+            sources = {
+                "factor.glb": mesh_document("glb"),
+                "factor.gltf": mesh_document("gltf"),
+                "external-buffer.gltf": (external, None),
+            }
+            for extension in ("gltf", "glb"):
+                sources[f"embedded.{extension}"] = textured_document(extension, None, PNG)
+                sources[f"data.{extension}"] = textured_document(
+                    extension, {"uri": "data:image/png;base64," + base64.b64encode(PNG).decode()}, PNG)
+                sources[f"external-image.{extension}"] = textured_document(
+                    extension, {"uri": "tex.png"}, PNG)
+            package = root / "package.usdz"
+            writer = Sdf.ZipFileWriter.CreateNew(str(package))
+            for name in ("root.usda", "tex.png", "mesh.bin"):
+                writer.AddFile(str(root / name), name)
+            for name, (document, binary) in sources.items():
+                write_asset(root / name, document, binary)
+                writer.AddFile(str(root / name), name)
+            writer.Save()
+
+            for name in sources:
+                identifier = f"{package}[{name}]"
+                with self.subTest(source=name):
+                    if name.startswith("factor."):
+                        layer = Sdf.Layer.FindOrOpen(identifier)
+                        self.assertTrue(layer)
+                        stage = Usd.Stage.Open(layer)
+                        self.assertTrue(stage.GetPrimAtPath("/Asset"))
+                        self.assertTrue(any(prim.IsA(UsdGeom.Mesh) for prim in stage.Traverse()))
+                        continue
+                    message = ("external buffers are not supported in a source inside a package"
+                               if name.startswith("external-buffer.") else
+                               "images are not supported in a source inside a package")
+                    with self.assertRaisesRegex(Tf.ErrorException, message):
+                        Sdf.Layer.FindOrOpen(identifier)
+
     def test_material_failures_preserve_layer(self):
         with tempfile.TemporaryDirectory() as directory:
             for extension in ("gltf", "glb"):
