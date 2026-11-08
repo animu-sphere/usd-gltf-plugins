@@ -10,8 +10,6 @@ implementation order, which investigation may change. Each feature follows the
 
 Each of these moves to the [backlog](backlog.md) if it does not fit this version.
 
-- Other material extensions, such as `KHR_materials_anisotropy`, one pull request each, after
-  investigating what renderers can express.
 - Wider external resource resolution through `ArResolver`, after an ADR decides the scenarios and
   the security model.
 - Measurements of load performance and mesh duplication in large scenes, weighing sharing against

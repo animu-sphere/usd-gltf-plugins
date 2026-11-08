@@ -34,7 +34,7 @@ import numpy
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 BASELINE = ROOT / "tests" / "sample_baseline.json"
-IMPLEMENTED_EXTENSIONS = {"EXT_texture_webp", "KHR_lights_punctual", "KHR_materials_clearcoat", "KHR_materials_ior", "KHR_materials_iridescence",
+IMPLEMENTED_EXTENSIONS = {"EXT_texture_webp", "KHR_lights_punctual", "KHR_materials_anisotropy", "KHR_materials_clearcoat", "KHR_materials_ior", "KHR_materials_iridescence",
                           "KHR_materials_sheen", "KHR_materials_specular", "KHR_materials_transmission", "KHR_materials_unlit", "KHR_materials_volume",
                           "KHR_mesh_quantization", "KHR_texture_basisu", "KHR_texture_transform"}
 PATHS = ("mtlx", "preview")
@@ -73,7 +73,7 @@ SLOTS = {"baseColorTexture": "baseColor", "metallicRoughnessTexture": "metallicR
          "transmissionTexture": "transmission", "thicknessTexture": "thickness", "specularTexture": "specular",
          "specularColorTexture": "specularColor", "sheenColorTexture": "sheenColor",
          "sheenRoughnessTexture": "sheenRoughness", "iridescenceTexture": "iridescence",
-         "iridescenceThicknessTexture": "iridescenceThickness"}
+         "iridescenceThicknessTexture": "iridescenceThickness", "anisotropyTexture": "anisotropy"}
 CLEARCOAT_SLOTS = {"clearcoatTexture", "clearcoatRoughnessTexture"}
 TRANSMISSION_SLOTS = {"transmissionTexture"}
 VOLUME_SLOTS = {"thicknessTexture"}
@@ -82,7 +82,7 @@ SHEEN_SLOTS = {"sheenColorTexture", "sheenRoughnessTexture"}
 IRIDESCENCE_SLOTS = {"iridescenceTexture", "iridescenceThicknessTexture"}
 # Slots that UsdPreviewSurface has no input for.
 MTLX_ONLY_SLOTS = {"transmissionTexture", "thicknessTexture", "specularTexture", "specularColorTexture",
-                   "sheenColorTexture", "sheenRoughnessTexture", *IRIDESCENCE_SLOTS}
+                   "sheenColorTexture", "sheenRoughnessTexture", "anisotropyTexture", *IRIDESCENCE_SLOTS}
 COLOR_SLOTS = {"baseColorTexture", "emissiveTexture", "specularColorTexture", "sheenColorTexture"}
 PBR_SLOTS = {"baseColorTexture", "metallicRoughnessTexture"}
 
@@ -527,6 +527,7 @@ def check_material(check, asset, stage, path, material, has_colors, images):
     specular = material.get("extensions", {}).get("KHR_materials_specular")
     sheen = material.get("extensions", {}).get("KHR_materials_sheen")
     iridescence = material.get("extensions", {}).get("KHR_materials_iridescence")
+    anisotropy = material.get("extensions", {}).get("KHR_materials_anisotropy")
 
     def owner(key):
         if key in PBR_SLOTS:
@@ -543,6 +544,8 @@ def check_material(check, asset, stage, path, material, has_colors, images):
             return sheen or {}
         if key in IRIDESCENCE_SLOTS:
             return iridescence or {}
+        if key == "anisotropyTexture":
+            return anisotropy or {}
         return material
 
     infos = {key: owner(key).get(key) for key in SLOTS}
@@ -591,6 +594,9 @@ def check_material(check, asset, stage, path, material, has_colors, images):
             infos[key] = None
     elif iridescence.get("iridescenceThicknessMinimum", 100) == iridescence.get("iridescenceThicknessMaximum", 400):
         infos["iridescenceThicknessTexture"] = None
+    anisotropic = anisotropy is not None and not unlit and anisotropy.get("anisotropyStrength", 0) > 0
+    if not anisotropic:
+        infos["anisotropyTexture"] = None
     names = {prim.GetName() for prim in Usd.PrimRange(stage.GetPrimAtPath(path))}
     if not coated:
         check.expect(not {name for name in names if name.startswith("clearcoat")},
@@ -610,6 +616,9 @@ def check_material(check, asset, stage, path, material, has_colors, images):
     if not any(infos[key] for key in IRIDESCENCE_SLOTS):
         check.expect(not {name for name in names if name.startswith("iridescence")},
                      f"{label} authors an iridescence texture it does not read")
+    if not infos["anisotropyTexture"]:
+        check.expect(not {name for name in names if name.startswith("anisotropy")},
+                     f"{label} authors an anisotropy texture it does not read")
     for key, info in infos.items():
         if info:
             textures[key] = check_texture(check, asset, stage, path, key, info, label, images)
@@ -674,6 +683,7 @@ def check_material(check, asset, stage, path, material, has_colors, images):
     check_specular(check, surface, pbr_surface, specular, unlit, textures, label)
     check_sheen(check, surface, pbr_surface, sheen if sheened else None, textures, label)
     check_iridescence(check, surface, pbr_surface, iridescence if film else None, textures, label)
+    check_anisotropy(check, surface, pbr_surface, anisotropy if anisotropic else None, textures, label)
 
     # Both shaders default to glTF's 1.5, an ior of 0 stands for a very large one, and an unlit material has none.
     ior = material.get("extensions", {}).get("KHR_materials_ior", {}).get("ior", 1.5)
@@ -813,6 +823,59 @@ def check_sheen(check, surface, pbr_surface, sheen, textures, label):
     elif check.expect(roughness, f"{label} MaterialX sheen_roughness is not authored"):
         check_mtlx_channel(check, roughness, factor, textures.get("sheenRoughnessTexture"), 3,
                            f"{label} MaterialX sheen_roughness")
+
+
+def check_anisotropy(check, surface, pbr_surface, anisotropy, textures, label):
+    names = ("anisotropy_strength", "anisotropy_rotation")
+    check.expect(not any(surface.GetInput(name) for name in names), f"{label} Preview authors anisotropy")
+    if anisotropy is None:
+        check.expect(not any(pbr_surface.GetInput(name) for name in names),
+                     f"{label} MaterialX authors anisotropy it does not have")
+        return
+    strength, rotation = (pbr_surface.GetInput(name) for name in names)
+    if not check.expect(strength and rotation, f"{label} MaterialX anisotropy is not authored"):
+        return
+    image = textures.get("anisotropyTexture")
+    check_mtlx_channel(check, strength, anisotropy.get("anisotropyStrength", 0), image, 2, f"{label} anisotropy strength")
+    # fastgltf stores floats; the converter reduces the angle to keep radian-to-degree math finite.
+    expected = math.remainder(float(numpy.float32(anisotropy.get("anisotropyRotation", 0))), 2 * math.pi)
+    check.close(rotation.Get(), expected, f"{label} anisotropy rotation")
+    check.expect(not pbr_surface.GetInput("tangent"), f"{label} anisotropy does not use the documented renderer frame")
+    selected = connected_shader(rotation)
+    if not image:
+        check.expect(not selected, f"{label} uniform anisotropy rotation is connected")
+        return
+    if expected:
+        if not check.expect(selected and selected.GetShaderId() == "ND_add_float", f"{label} anisotropy rotation has no offset"):
+            return
+        check.close(selected.GetInput("in2").Get(), expected, f"{label} anisotropy angle offset")
+        selected = connected_shader(selected.GetInput("in1"))
+    if not check.expect(selected and selected.GetShaderId() == "ND_ifgreater_float", f"{label} anisotropy direction has no zero guard"):
+        return
+    check.close(selected.GetInput("value2").Get(), 0, f"{label} anisotropy zero test")
+    check.close(selected.GetInput("in2").Get(), 0, f"{label} anisotropy zero direction")
+    angle = connected_shader(selected.GetInput("in1"))
+    if not check.expect(angle and angle.GetShaderId() == "ND_atan2_float", f"{label} anisotropy direction has no angle"):
+        return
+    for port, index in (("inx", 0), ("iny", 1)):
+        channel = connected_shader(angle.GetInput(port))
+        if not check.expect(channel and channel.GetInput("index").Get() == index, f"{label} anisotropy angle reads another channel"):
+            continue
+        remap = connected_shader(channel.GetInput("in"))
+        if not check.expect(remap and remap.GetShaderId() == "ND_subtract_vector4", f"{label} anisotropy direction has no bias"):
+            continue
+        check.close(remap.GetInput("in2").Get(), (1, 1, 1, 1), f"{label} anisotropy direction bias")
+        scale = connected_shader(remap.GetInput("in1"))
+        if not check.expect(scale and scale.GetShaderId() == "ND_multiply_vector4", f"{label} anisotropy direction has no scale"):
+            continue
+        check.close(scale.GetInput("in2").Get(), (2, 2, 2, 2), f"{label} anisotropy direction scale")
+        source = connected_shader(scale.GetInput("in1"))
+        check.expect(source and source.GetPath() == image.GetPath(), f"{label} anisotropy direction reads another image")
+    length = connected_shader(selected.GetInput("value1"))
+    if check.expect(length and length.GetShaderId() == "ND_dotproduct_vector2", f"{label} anisotropy zero guard has no length"):
+        for port in ("in1", "in2"):
+            xy = connected_shader(length.GetInput(port))
+            check.expect(xy and xy.GetShaderId() == "ND_convert_vector4_vector2", f"{label} anisotropy length is not RG")
 
 
 def check_iridescence(check, surface, pbr_surface, film, textures, label):

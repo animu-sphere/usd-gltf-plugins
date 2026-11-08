@@ -65,6 +65,7 @@ CI success is not evidence of display compatibility.
 | Skins and morphs | Unsupported | Rejected when used in the selected scene, including morph targets and node or mesh morph weights. | `tests/test_file_format.py::test_unsupported_features_fail_without_publishing` |
 | Animation | Unsupported | Any asset with animations is rejected, including animations outside the selected scene. | `tests/test_file_format.py::test_unsupported_features_fail_without_publishing`, `tests/test_file_format.py::test_animation_outside_selected_scene_is_rejected` |
 | Export | Unsupported | Not implemented. | |
+| Anisotropy (`KHR_materials_anisotropy`) | Experimental | Optional or required. MaterialX `gltf_pbr` strength and rotation; texture B times strength and `atan2(2G - 1, 2R - 1)` plus rotation, as non-color data, with UV sets, transforms and wrap modes. Finite factor angles reduce modulo a full turn, and a zero direction selects angle 0. A strength of 0 and an unlit material author none and read no anisotropy image; input values and UV sets are still checked. UsdPreviewSurface ignores anisotropy with a warning. MaterialX uses a renderer-derived tangent frame, with a warning: supplied glTF tangents and handedness do not control shading, so orientation can differ from glTF. Tested locally on Windows, including the [display check](#display-checks) and [sample check](#sample-assets); no glTF reference-renderer equivalence is claimed. See [ADR 0023](../adr/0023-anisotropy.md). | `tests/test_file_format.py::test_anisotropy_materials`, `tests/test_file_format.py::test_anisotropy_textures`, `tests/test_file_format.py::test_anisotropy_failures_preserve_layer`, `tests/check_display.py`, `tests/probe_anisotropy.py` |
 | General renderer compatibility | Unsupported | No renderer, including Storm, has a general compatibility claim. | |
 
 ## Tested environments
@@ -87,9 +88,10 @@ Storm through MaterialX and UsdPreviewSurface, and compares pixels. The
 [README](../../README.md#development) has the command, and
 [ADR 0007](../adr/0007-display-check.md) explains the comparisons and their limits.
 
-Last result: 639 comparisons passed, none failed, with the sheen added, on Windows with OpenUSD 26.08,
-the OpenStrata lookdev runtime and an NVIDIA RTX A5000. The result before it, with the specular added,
-passed 621 twice, and was the first with the unlit, ior, clearcoat, transmission, volume and specular
+Last result: 681 comparisons passed, none failed, including 18 anisotropy comparisons, on Windows
+with OpenUSD 26.08, the OpenStrata lookdev runtime and an NVIDIA RTX A5000. The previous full suite, with iridescence,
+passed 663 comparisons; the preceding sheen suite passed 639. The earlier specular suite passed
+621 twice, and was the first with the unlit, ior, clearcoat, transmission, volume and specular
 comparisons. An earlier result, on
 `7de8b8f` with lights added, gave byte-identical images in two runs. This checks simple fixtures, not
 general shading correctness.
@@ -242,6 +244,16 @@ range descending from 800 to 200. Under a point light one tenth as bright, a gra
 bare material. These are comparisons within each shader, without a glTF reference render or an
 angular or environment-light comparison.
 
+Anisotropy is checked on a black dielectric quad of roughness 0.35 under an off-axis point light.
+Through MaterialX its center is (24, 24, 24) without anisotropy, (17, 17, 17) at strength 0.85,
+(6, 6, 6) after a quarter turn, and (43, 43, 43) at a counter-clockwise 30 degrees. Raw B times
+strength and RG direction plus rotation match their uniform equivalents within 3. Preview stays
+(26, 26, 26) for every case. These comparisons use the renderer-derived frame, without a glTF
+reference renderer. The separate [`tests/probe_anisotropy.py`](../../tests/probe_anisotropy.py)
+passed 9 comparisons on the same environment: a connected tangent primvar changes the reflection,
+whereas changing the retained glTF tangent or its handedness does not. It authors shader inputs in
+a USD session after import, and is not evidence of importing the extension or transformed frames.
+
 The sheen is checked on a generated black quad of ior 1 and roughness 1, which reflects nothing itself,
 under a directional light at 75 degrees from its normal, because a Charlie lobe adds nothing where the
 half vector is the normal. On the same machine, through MaterialX, a black sheen is black, a white sheen
@@ -292,13 +304,18 @@ not in this repository: 339 files in 150 models. The result for each file is in
 [`tests/sample_baseline.json`](../../tests/sample_baseline.json), and
 [ADR 0010](../adr/0010-sample-baseline.md) explains what is compared and its limits.
 
-Last update: the 19 files in the Iridescence, CarConcept and SunglassesKhronos model groups were
-checked on Windows with OpenUSD 26.08, the OpenStrata lookdev runtime and an NVIDIA RTX A5000. Of the
-17 files with changed results, IridescenceSuzanne's GLB, which requires the extension, now opens and
-is verified, 11 go from partial to verified, and the 5 CarConcept files remain partial because they
-also use other optional extensions. Every opened file in those groups was rendered through both
-paths, and no file's meaning differs. Other entries retain their previous evidence below; the entire
-339-file collection was not rerun for this update.
+Last update: the 13 files in the AnisotropyBarnLamp, AnisotropyDiscTest, AnisotropyRotationTest,
+AnisotropyStrengthTest, CarbonFibre and CompareAnisotropy groups were checked and rendered through
+both paths on Windows with OpenUSD 26.08, the OpenStrata lookdev runtime and an NVIDIA RTX A5000.
+Ten go from partial to verified in the inputs and networks compared; the three BarnLamp files remain
+partial because they use another ignored extension. No file's meaning differs. This checks the
+documented renderer-frame approximation, without comparing its direction with supplied tangents.
+Other entries retain their previous evidence below; the entire 339-file collection was not rerun.
+
+The preceding update checked 19 files in the Iridescence, CarConcept and SunglassesKhronos groups.
+Seventeen changed: IridescenceSuzanne's required-extension GLB opened and was verified, 11 went
+from partial to verified, and five CarConcept files remained partial. Every opened file in those
+groups was rendered through both paths, without a difference in meaning.
 
 The previous update checked opening and meaning with the sheen added, in the same Windows runtime;
 the 17 sheen files were also rendered. Before it, the specular update was the first with the
@@ -313,10 +330,10 @@ scope each read parses the 38 MB file again, about 0.1 second each.
 | --- | --- | --- |
 | Opened | 244 | The stage opens. No file crashed, and one timed out after 600 seconds. |
 | Rejected | 94 | Each has a diagnostic naming a cause the file really has. |
-| Meaning verified | 188 | USD agrees with values decoded from the file, in all that is compared, and the file uses no ignored extension. |
-| Meaning partial | 56 | The same, but the file uses an optional extension that is ignored, with a warning. What it changes is not compared. |
+| Meaning verified | 198 | USD agrees with values decoded from the file, in all that is compared, and the file uses no ignored extension. |
+| Meaning partial | 46 | The same, but the file uses an optional extension that is ignored, with a warning. What it changes is not compared. |
 | Meaning differs | 0 | |
-| Rendered | 238 | Storm drew something through both shader paths. No pixel was judged, so this is not evidence of correct display. The 17 changed iridescence files and the 17 sheen files were rendered with their extensions. The 6 other files opened by WebP, unlit materials or clearcoat have not been rendered. Other files with an ior, clearcoat, transmission, volume or specular retain their older renders from before those features were added. |
+| Rendered | 238 | Storm drew something through both shader paths. No pixel was judged, so this is not evidence of correct display. The 13 anisotropy files, 17 changed iridescence files and 17 sheen files were rendered with their extensions. The 6 other files opened by WebP, unlit materials or clearcoat have not been rendered. Other files with an ior, clearcoat, transmission, volume or specular retain their older renders from before those features were added. |
 
 Why files are rejected, read from each file. Most files have several causes, so a count of files that
 have a cause is not what supporting it would open:
@@ -333,5 +350,5 @@ have a cause is not what supporting it would open:
 | Points or lines | 3 | 3 |
 | Sparse accessor | 2 | 2 |
 
-Ignored optional extensions, in files that opened, include `KHR_materials_variants` (15),
-`KHR_materials_anisotropy` (13) and `KHR_materials_emissive_strength` (12).
+Ignored optional extensions, in files that opened, include `KHR_materials_variants` (15)
+and `KHR_materials_emissive_strength` (12).

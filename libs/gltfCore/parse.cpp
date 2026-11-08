@@ -242,6 +242,18 @@ describeMalformedMaterialExtension(std::string_view name, const simdjson::dom::e
 std::string
 describeMalformedCheckedExtension(const simdjson::dom::element& material)
 {
+    simdjson::dom::element anisotropy;
+    if (material["extensions"][fastgltf::extensions::KHR_materials_anisotropy].get(anisotropy) ==
+        simdjson::SUCCESS)
+    {
+        if (auto description = describeMalformedMaterialExtension(
+                fastgltf::extensions::KHR_materials_anisotropy, anisotropy,
+                {"anisotropyStrength", "anisotropyRotation"}, {"anisotropyTexture"});
+            !description.empty())
+        {
+            return description;
+        }
+    }
     simdjson::dom::element iridescence;
     if (material["extensions"][fastgltf::extensions::KHR_materials_iridescence].get(iridescence) ==
         simdjson::SUCCESS)
@@ -402,6 +414,7 @@ IsImplementedExtension(std::string_view extension)
 {
     return extension == fastgltf::extensions::EXT_texture_webp ||
            extension == fastgltf::extensions::KHR_lights_punctual ||
+           extension == fastgltf::extensions::KHR_materials_anisotropy ||
            extension == fastgltf::extensions::KHR_materials_clearcoat ||
            extension == fastgltf::extensions::KHR_materials_ior ||
            extension == fastgltf::extensions::KHR_materials_iridescence ||
@@ -426,6 +439,7 @@ Parse(const std::byte* bytes, std::size_t size, std::string& error)
     }
     fastgltf::Parser parser(
         fastgltf::Extensions::EXT_texture_webp | fastgltf::Extensions::KHR_lights_punctual |
+        fastgltf::Extensions::KHR_materials_anisotropy |
         fastgltf::Extensions::KHR_materials_clearcoat | fastgltf::Extensions::KHR_materials_ior |
         fastgltf::Extensions::KHR_materials_iridescence |
         fastgltf::Extensions::KHR_materials_sheen | fastgltf::Extensions::KHR_materials_specular |

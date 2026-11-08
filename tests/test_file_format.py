@@ -4810,6 +4810,183 @@ class FileFormatTest(unittest.TestCase):
                             layer.Reload(True)
                         self.assertEqual(layer_text(layer), before)
 
+    def test_anisotropy_materials(self):
+        name = "KHR_materials_anisotropy"
+        cases = (("default", {}, False), ("disabled", {"anisotropyRotation": 0.5}, False),
+                 ("full", {"anisotropyStrength": 1}, True),
+                 ("negative rotation", {"anisotropyStrength": 0.5, "anisotropyRotation": -0.7}, True),
+                 ("large rotation", {"anisotropyStrength": 1, "anisotropyRotation": 1e30}, True),
+                 ("metal", {"anisotropyStrength": 1}, True),
+                 ("unlit", {"anisotropyStrength": 1}, False))
+        with tempfile.TemporaryDirectory() as directory:
+            for extension, required, (case, values, active) in itertools.product(
+                    ("gltf", "glb"), (False, True), cases):
+                with self.subTest(extension=extension, required=required, case=case):
+                    document, binary = mesh_document(extension)
+                    document["extensionsUsed"] = [name]
+                    if required:
+                        document["extensionsRequired"] = [name]
+                    extensions = {name: values}
+                    if case == "unlit":
+                        document["extensionsUsed"].append("KHR_materials_unlit")
+                        extensions["KHR_materials_unlit"] = {}
+                    plain = {"pbrMetallicRoughness": {"baseColorFactor": [0.2, 0.4, 0.6, 1],
+                                                    "metallicFactor": int(case == "metal"), "roughnessFactor": 0.5}}
+                    document["materials"] = [{**plain, "extensions": extensions}, plain]
+                    for i, primitive in enumerate(document["meshes"][0]["primitives"]):
+                        primitive["material"] = i
+                    path = pathlib.Path(directory) / f"anisotropy_{case}_{required}.{extension}"
+                    write_asset(path, document, binary)
+                    result = subprocess.run([sys.executable, "-c",
+                                             "from pxr import Usd; import sys; assert Usd.Stage.Open(sys.argv[1])",
+                                             str(path)], capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertNotIn(f"'{name}' is not supported", result.stderr)
+                    self.assertEqual("UsdPreviewSurface has no anisotropy" in result.stderr, active)
+                    self.assertEqual("renderer-derived tangent frame" in result.stderr, active)
+                    self.assertEqual("is ignored, because the material is unlit" in result.stderr, case == "unlit")
+                    stage = Usd.Stage.Open(str(path))
+                    material = UsdShade.Material.Get(stage, "/Asset/mtl/Material_0")
+                    preview, mtlx = material.ComputeSurfaceSource()[0], material.ComputeSurfaceSource("mtlx")[0]
+                    self.assert_material_nodegraphs(material, preview, mtlx)
+                    rotation = struct.unpack("<f", struct.pack("<f", values.get("anisotropyRotation", 0)))[0]
+                    expected = {"anisotropy_strength": values.get("anisotropyStrength", 0),
+                                "anisotropy_rotation": math.remainder(rotation, 2 * math.pi)}
+                    for input_name, value in expected.items():
+                        self.assertFalse(preview.GetInput(input_name))
+                        if active:
+                            self.assertAlmostEqual(mtlx.GetInput(input_name).Get(), value, places=6)
+                        else:
+                            self.assertFalse(mtlx.GetInput(input_name))
+                        self.assertFalse(UsdShade.Shader.Get(stage, "/Asset/mtl/Material_1/mtlx/surface").GetInput(input_name))
+                    self.assertFalse(mtlx.GetInput("tangent"))  # Explicit, warned renderer-frame approximation.
+
+    def test_anisotropy_textures(self):
+        def source(shader, name):
+            return UsdShade.Shader(shader.GetInput(name).GetConnectedSource()[0].GetPrim())
+
+        name = "KHR_materials_anisotropy"
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            (root / "anisotropy.png").write_bytes(PNG)
+            for case_index, (extension, uri, factor, rotation) in enumerate(itertools.product(
+                    ("gltf", "glb"), (None, "anisotropy.png", "data:image/png;base64," + base64.b64encode(PNG).decode()),
+                    (0.5, 1), (0, -0.7))):
+                with self.subTest(extension=extension, uri=uri, factor=factor, rotation=rotation):
+                    document, binary = textured_document(extension, None if uri is None else {"uri": uri}, PNG)
+                    document["extensionsUsed"] = [name, "KHR_texture_transform"]
+                    document["extensionsRequired"] = [name]
+                    document["samplers"] = [{"wrapS": 33648, "wrapT": 33071}]
+                    document["textures"][0]["sampler"] = 0
+                    document["materials"][0]["extensions"] = {name: {
+                        "anisotropyStrength": factor, "anisotropyRotation": rotation,
+                        "anisotropyTexture": {"index": 0, "extensions": {
+                            "KHR_texture_transform": {"texCoord": 1, "offset": [0.25, 0.5], "rotation": 0.3}}}}}
+                    path = root / f"anisotropy_{case_index}.{extension}"
+                    write_asset(path, document, binary)
+                    stage = Usd.Stage.Open(str(path))
+                    material = UsdShade.Material.Get(stage, "/Asset/mtl/Material_0")
+                    surface = material.ComputeSurfaceSource("mtlx")[0]
+                    weight = source(surface, "anisotropy_strength")
+                    if factor != 1:
+                        self.assertEqual(weight.GetIdAttr().Get(), "ND_multiply_float")
+                        self.assertEqual(weight.GetInput("in2").Get(), factor)
+                        weight = source(weight, "in1")
+                    self.assertEqual(weight.GetInput("index").Get(), 2)
+                    image = source(weight, "in")
+                    self.assertEqual(image.GetIdAttr().Get(), "ND_image_vector4")
+                    self.assertFalse(image.GetInput("file").GetAttr().HasColorSpace())
+                    self.assertEqual(asset_bytes(image.GetInput("file").Get().resolvedPath), PNG)
+                    self.assertEqual(image.GetInput("uaddressmode").Get(), "mirror")
+                    self.assertEqual(image.GetInput("vaddressmode").Get(), "clamp")
+                    reader = source(image, "texcoord")
+                    while reader.GetIdAttr().Get() != "ND_geompropvalue_vector2":
+                        reader = source(reader, "in1" if reader.GetInput("in1") else "in")
+                    self.assertEqual(reader.GetInput("geomprop").Get(), "st1")
+                    selected = source(surface, "anisotropy_rotation")
+                    if rotation:
+                        self.assertEqual(selected.GetIdAttr().Get(), "ND_add_float")
+                        self.assertAlmostEqual(selected.GetInput("in2").Get(), rotation, places=6)
+                        selected = source(selected, "in1")
+                    self.assertEqual(selected.GetIdAttr().Get(), "ND_ifgreater_float")
+                    self.assertEqual(selected.GetInput("in2").Get(), 0)
+                    angle = source(selected, "in1")
+                    self.assertEqual(angle.GetIdAttr().Get(), "ND_atan2_float")
+                    for input_name, index in (("inx", 0), ("iny", 1)):
+                        channel = source(angle, input_name)
+                        self.assertEqual(channel.GetInput("index").Get(), index)
+                        remap = source(channel, "in")
+                        self.assertEqual(remap.GetIdAttr().Get(), "ND_subtract_vector4")
+                        self.assertEqual(remap.GetInput("in2").Get(), Gf.Vec4f(1))
+                        scale = source(remap, "in1")
+                        self.assertEqual(scale.GetInput("in2").Get(), Gf.Vec4f(2))
+                        self.assertEqual(source(scale, "in1").GetPath(), image.GetPath())
+                    for prim in Usd.PrimRange(material.GetPrim().GetChild("mtlx")):
+                        if prim.IsA(UsdShade.Shader):
+                            shader = UsdShade.Shader(prim)
+                            node = Sdr.Registry().GetShaderNodeByIdentifier(shader.GetIdAttr().Get())
+                            self.assertTrue(node, shader.GetIdAttr().Get())
+                            for port in shader.GetInputs():
+                                self.assertIsNotNone(node.GetShaderInput(port.GetBaseName()), str(port))
+                    self.assertFalse([p for p in Usd.PrimRange(material.GetPrim().GetChild("preview"))
+                                      if p.GetName().startswith("anisotropy")])
+            for extension, unlit in itertools.product(("gltf", "glb"), (False, True)):
+                document, binary = textured_document(extension, None, PNG)
+                document["images"].append({"uri": "data:image/png;base64,AA=="})
+                document["textures"].append({"source": 1})
+                document["extensionsUsed"] = [name]
+                document["materials"][0]["extensions"] = {name: {
+                    "anisotropyStrength": int(unlit), "anisotropyTexture": {"index": 1}}}
+                if unlit:
+                    document["extensionsUsed"].append("KHR_materials_unlit")
+                    document["materials"][0]["extensions"]["KHR_materials_unlit"] = {}
+                path = root / f"unused_{unlit}.{extension}"
+                write_asset(path, document, binary)
+                stage = Usd.Stage.Open(str(path))
+                self.assertFalse(UsdShade.Shader.Get(stage, "/Asset/mtl/Material_0/mtlx/surface").GetInput("anisotropy_strength"))
+
+    def test_anisotropy_failures_preserve_layer(self):
+        name = "KHR_materials_anisotropy"
+        cases = [("object", [], name + " is not an object")]
+        for field in ("anisotropyStrength", "anisotropyRotation"):
+            cases.extend(((field + " type", {field: "1"}, name + " has a field of the wrong type"),
+                          (field + " overflow", {field: 1e39}, name + " is out of range")))
+        cases.extend((
+            ("negative", {"anisotropyStrength": -0.1}, "material anisotropy strength is non-finite or out of range"),
+            ("large", {"anisotropyStrength": 1.1}, "material anisotropy strength is non-finite or out of range"),
+            ("unlit invalid", {"anisotropyStrength": -1}, "material anisotropy strength is non-finite or out of range"),
+            ("texture type", {"anisotropyTexture": 0}, name + " has a field of the wrong type"),
+            ("texture index", {"anisotropyTexture": {}}, name + " has a field of the wrong type"),
+            ("UV", {"anisotropyTexture": {"index": 0, "texCoord": 1}}, "material texture uses a texture coordinate set"),
+            ("index range", {"anisotropyStrength": 1, "anisotropyTexture": {"index": 5}}, "texture index is out of range|cannot parse"),
+            ("damaged", {"anisotropyStrength": 1, "anisotropyTexture": {"index": 1}}, "image|PNG|png")))
+        with tempfile.TemporaryDirectory() as directory:
+            for extension, required in itertools.product(("gltf", "glb"), (False, True)):
+                path = pathlib.Path(directory) / f"anisotropy_{required}.{extension}"
+                document, binary = textured_document(extension, None, PNG)
+                write_asset(path, document, binary)
+                stage = Usd.Stage.Open(str(path))
+                layer = stage.GetRootLayer()
+                before = layer_text(layer)
+                for case, values, message in cases:
+                    with self.subTest(extension=extension, required=required, case=case):
+                        invalid, invalid_binary = textured_document(extension, None, PNG)
+                        invalid["extensionsUsed"] = [name]
+                        if required:
+                            invalid["extensionsRequired"] = [name]
+                        invalid["images"].append({"uri": "data:image/png;base64,AA=="})
+                        invalid["textures"].append({"source": 1})
+                        invalid["meshes"][0]["primitives"][1]["material"] = 1
+                        extensions = {name: values}
+                        if case.startswith("unlit"):
+                            invalid["extensionsUsed"].append("KHR_materials_unlit")
+                            extensions["KHR_materials_unlit"] = {}
+                        invalid["materials"].append({"extensions": extensions})
+                        write_asset(path, invalid, invalid_binary)
+                        with self.assertRaisesRegex(Tf.ErrorException, message):
+                            layer.Reload(True)
+                        self.assertEqual(layer_text(layer), before)
+
     def test_iridescence_materials(self):
         extension_name = "KHR_materials_iridescence"
         warning = "UsdPreviewSurface has no iridescence; its network ignores " + extension_name
