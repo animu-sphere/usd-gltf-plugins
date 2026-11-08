@@ -39,7 +39,7 @@ CI success is not evidence of display compatibility.
 | Coordinate system and units | Verified (USD data, CI) | Y-up and meters authored on direct open and reload; referencing into a Z-up centimeter stage. Not every transform combination. | `tests/test_file_format.py::test_coordinate_system_and_reference_composition` |
 | Reflections, winding and normals | Verified (USD data, CI) | Indexed and non-indexed triangles with odd and even reflections in hierarchical transforms and a mirrored reference. | `tests/test_file_format.py::test_hierarchical_reflection_winding_and_normals`, `tests/test_file_format.py::test_reflection_view_fixture` |
 | Failure and reload behavior | Verified (USD data, CI) | Tested failures emit a diagnostic and do not publish a partial layer. Not proven for every USD error; [the transfer itself is not atomic](../architecture/LAYER_AUTHORING.md#decision). | `tests/test_file_format.py::test_failed_reload_does_not_publish_partial_stage`, `tests/test_file_format.py::test_mesh_failures_and_reload_preservation`, `tests/test_file_format.py::test_nonfinite_position_is_rejected` |
-| Extensions | Experimental | `EXT_texture_webp`, `KHR_lights_punctual`, `KHR_materials_clearcoat`, `KHR_materials_ior`, `KHR_materials_specular`, `KHR_materials_transmission`, `KHR_materials_unlit`, `KHR_materials_volume`, `KHR_mesh_quantization`, `KHR_texture_basisu` and `KHR_texture_transform` are implemented; see their rows. Any other required extension fails, and the diagnostic names it. Other optional extensions warn and are ignored. See the [policy](../architecture/IMPORT_PIPELINE.md#failure-policy). | `tests/test_file_format.py::test_failures_report_diagnostics`, `tests/test_file_format.py::test_node_order_and_optional_extension_warning`, `tests/test_file_format.py::test_unsupported_features_fail_without_publishing` |
+| Extensions | Experimental | `EXT_texture_webp`, `KHR_lights_punctual`, `KHR_materials_clearcoat`, `KHR_materials_ior`, `KHR_materials_sheen`, `KHR_materials_specular`, `KHR_materials_transmission`, `KHR_materials_unlit`, `KHR_materials_volume`, `KHR_mesh_quantization`, `KHR_texture_basisu` and `KHR_texture_transform` are implemented; see their rows. Any other required extension fails, and the diagnostic names it. Other optional extensions warn and are ignored. See the [policy](../architecture/IMPORT_PIPELINE.md#failure-policy). | `tests/test_file_format.py::test_failures_report_diagnostics`, `tests/test_file_format.py::test_node_order_and_optional_extension_warning`, `tests/test_file_format.py::test_unsupported_features_fail_without_publishing` |
 | usdview/Storm display | Experimental | The [display check](#display-checks) of simple fixtures through both shader paths, run on one Windows machine. Not general renderer support. | `tests/check_display.py`, `tests/fixtures/reflections.gltf`, `tests/fixtures/alpha_modes.gltf`, `tests/fixtures/base_color_textures.gltf`, `tests/fixtures/pbr_textures.gltf`, `tests/fixtures/normal_textures.gltf`, `tests/fixtures/texture_transforms.gltf`, `tests/fixtures/ktx2_textures.gltf` |
 | OpenStrata workspace build and tests | Verified (Windows x86-64, Linux x86-64, macOS arm64; OpenUSD 26.08) | The environments listed under [tested environments](#tested-environments). | [tag workflow 41388405224](https://github.com/animu-sphere/usd-gltf-plugins/actions/runs/41388405224) |
 | Standalone OpenStrata bundle | Verified (Windows x86-64, Linux x86-64, macOS arm64; OpenUSD 26.08) | `ost plugin test` confirms discovery of the file format, not a successful import. | `plugins/usdGltfFileFormat/openstrata.plugin.yaml`, [tag workflow 41388405224](https://github.com/animu-sphere/usd-gltf-plugins/actions/runs/41388405224) |
@@ -49,6 +49,7 @@ CI success is not evidence of display compatibility.
 | Unlit materials (`KHR_materials_unlit`) | Experimental | Optional or required. The base color term, with its factor, texture, vertex colors and alpha, is emitted through both networks, which reflect nothing: Preview is a black metal and MaterialX `gltf_pbr` a black dielectric with `specular` 0. Alpha modes, cutoff and `doubleSided` apply. Fallback metallic-roughness, normal, occlusion and emissive properties are not authored, and their images not read; their values and UV sets are still checked. Through Storm's UsdPreviewSurface a dome light still adds a reflection, read from its shader source. A value that is not an object fails. Tested in CI, with the [display check](#display-checks) on Windows. See the [decision record](../adr/0015-unlit.md). | `tests/test_file_format.py::test_unlit_materials`, `tests/test_file_format.py::test_unlit_textures_and_vertex_colors`, `tests/test_file_format.py::test_unlit_failures_preserve_layer`, `tests/check_display.py` |
 | Index of refraction (`KHR_materials_ior`) | Experimental | Optional or required. An ior other than 1.5 is authored as the `ior` input of UsdPreviewSurface and MaterialX `gltf_pbr`, uniform in the latter, whose dielectric F0 is glTF's `((ior - 1) / (ior + 1))^2`, read from their sources. An ior of 0 is authored as 1000000, an F0 of 0.999996. Through `gltf_pbr` a little of a rough material's base color still shows at an ior of 0, read from its source. An unlit material authors none, with a warning. A value below 1 other than 0, one too large for a float, a field of the wrong type and a value that is not an object fail. Tested in CI, with the [display check](#display-checks) on Windows, and compared in the [sample check](#sample-assets). See the [decision record](../adr/0016-ior.md). | `tests/test_file_format.py::test_ior_materials`, `tests/test_file_format.py::test_ior_failures_preserve_layer`, `tests/check_display.py` |
 | Specular (`KHR_materials_specular`) | Experimental | Optional or required. A weight and color other than 1 are authored as MaterialX `gltf_pbr`'s `specular` and `specular_color`, with the weight texture's A as non-color data and the color texture's RGB as sRGB, factors, UV sets, transforms and wrap modes. `gltf_pbr` computes glTF's dielectric F0 of `min(F0 of the ior * color, 1) * weight` and F90 of the weight, and leaves a metal alone, read from its source. UsdPreviewSurface's metallic workflow has neither and ignores them, with a warning, drawing glTF's default specular. A weight of 0 reads neither texture, a color factor of 0 does not read the color texture, and an unlit material authors none and reads no specular image, with a warning; their values and UV sets are still checked. A weight outside 0 to 1, a negative color component, a number too large for a float, a color that is not three numbers, a field of the wrong type and a value that is not an object fail. Tested in CI, with the [display check](#display-checks) on Windows; the [sample check](#sample-assets) compares it. See the [decision record](../adr/0020-specular.md). | `tests/test_file_format.py::test_specular_materials`, `tests/test_file_format.py::test_specular_textures`, `tests/test_file_format.py::test_specular_failures_preserve_layer`, `tests/check_display.py` |
+| Sheen (`KHR_materials_sheen`) | Experimental | Optional or required. A color other than black is authored as MaterialX `gltf_pbr`'s `sheen_color`, and with it a roughness other than 0 as `sheen_roughness`, with the color texture's RGB as sRGB and the roughness texture's A as non-color data, factors, UV sets, transforms and wrap modes. `gltf_pbr` weights a Charlie lobe of roughness `sheen_roughness` squared by the color's largest component and layers it over the base, under the clearcoat, as glTF does; MaterialX's lobe uses the simpler visibility glTF allows and dims the base by its albedo at the view alone, read from its source. UsdPreviewSurface has no sheen and ignores it, with a warning, drawing the base alone. A black color reads neither texture, a roughness of 0 does not read the roughness texture, and an unlit material authors none and reads no sheen image, with a warning; their values and UV sets are still checked. A color component or roughness outside 0 to 1, a number too large for a float, a color that is not three numbers, a field of the wrong type and a value that is not an object fail. Tested in CI, with the [display check](#display-checks) on Windows; the [sample check](#sample-assets) compares it. See the [decision record](../adr/0021-sheen.md). | `tests/test_file_format.py::test_sheen_materials`, `tests/test_file_format.py::test_sheen_textures`, `tests/test_file_format.py::test_sheen_failures_preserve_layer`, `tests/check_display.py` |
 | Clearcoat (`KHR_materials_clearcoat`) | Experimental | Optional or required. A factor above 0 is authored as the clearcoat weight and roughness of UsdPreviewSurface and MaterialX `gltf_pbr`, with their textures' R and G as non-color data, factors, UV sets, transforms and wrap modes, and `clearcoatNormalTexture` as `gltf_pbr`'s `clearcoat_normal` only; Preview ignores it, with a warning. `gltf_pbr` layers a dielectric of ior 1.5 over the base, as glTF does, read from its source. Through Storm's UsdPreviewSurface the coat adds its reflection without dimming the base, follows the base normal map, and takes the material's ior, with a warning when that is not 1.5, read from its source. A factor of 0 and an unlit material author nothing and read no clearcoat image, the latter with a warning; their values and UV sets are still checked. A factor outside 0 to 1, one too large for a float, a field of the wrong type and a value that is not an object fail. Tested in CI, with the [display check](#display-checks) on Windows, and compared in the [sample check](#sample-assets). See the [decision record](../adr/0017-clearcoat.md). | `tests/test_file_format.py::test_clearcoat_materials`, `tests/test_file_format.py::test_clearcoat_textures`, `tests/test_file_format.py::test_clearcoat_failures_preserve_layer`, `tests/check_display.py` |
 | Transmission (`KHR_materials_transmission`) | Experimental | Optional or required. A factor above 0 is authored as MaterialX `gltf_pbr`'s `transmission`, with its texture's R as non-color data, factor, UV set, transform and wrap modes. `gltf_pbr` mixes its diffuse term toward a transmission tinted by the base color, under the dielectric reflection, as glTF does, read from its source; without a volume, `thickness` keeps its default of 0, glTF's thin material. Storm draws it as transparency, read from its source: the scene behind is blended through without refraction or blur, and dimmed by the tint's mean rather than filtered by it. UsdPreviewSurface has no transmission and ignores it, with a warning; its `opacity` remains glTF's alpha. A factor of 0 and an unlit material author nothing and read no transmission image, the latter with a warning; their values and UV sets are still checked. A factor outside 0 to 1, one too large for a float, a field of the wrong type and a value that is not an object fail. Tested in CI, with the [display check](#display-checks) on Windows, and compared in the [sample check](#sample-assets). See the [decision record](../adr/0018-transmission.md). | `tests/test_file_format.py::test_transmission_materials`, `tests/test_file_format.py::test_transmission_textures`, `tests/test_file_format.py::test_transmission_failures_preserve_layer`, `tests/check_display.py` |
 | Volume (`KHR_materials_volume`) | Experimental | Optional or required. On a material with a transmission above 0, a thickness factor above 0 is authored as MaterialX `gltf_pbr`'s `thickness`, with its texture's G as non-color data, factor, UV set, transform and wrap modes, and a given attenuation distance and color as the uniform `attenuation_distance` and `attenuation_color`; without a distance, neither is authored. `gltf_pbr` 1.39.5 connects none of these, read from its source, so no renderer in reach draws the volume: every path draws the thin material that glTF specifies for a client without the extension. UsdPreviewSurface has no volume and ignores it, with a warning. A thickness of 0, a material without transmission and an unlit material author nothing and read no thickness image, the last with a warning; their values and UV sets are still checked. Nothing converts the world-space attenuation distance when a stage scales the asset. A negative thickness, a distance of 0 or less, a color component outside 0 to 1, a number too large for a float, a color that is not three numbers, a field of the wrong type and a value that is not an object fail. Tested in CI, with the [display check](#display-checks) on Windows, and compared in the [sample check](#sample-assets). See the [decision record](../adr/0019-volume.md). | `tests/test_file_format.py::test_volume_materials`, `tests/test_file_format.py::test_volume_textures`, `tests/test_file_format.py::test_volume_failures_preserve_layer`, `tests/check_display.py` |
@@ -85,9 +86,10 @@ Storm through MaterialX and UsdPreviewSurface, and compares pixels. The
 [README](../../README.md#development) has the command, and
 [ADR 0007](../adr/0007-display-check.md) explains the comparisons and their limits.
 
-Last result: 621 comparisons passed, none failed, with the specular added, on Windows with OpenUSD 26.08,
-the OpenStrata lookdev runtime and an NVIDIA RTX A5000; a second run passed too. It is the first result
-with the unlit, ior, clearcoat, transmission, volume and specular comparisons. An earlier result, on
+Last result: 639 comparisons passed, none failed, with the sheen added, on Windows with OpenUSD 26.08,
+the OpenStrata lookdev runtime and an NVIDIA RTX A5000. The result before it, with the specular added,
+passed 621 twice, and was the first with the unlit, ior, clearcoat, transmission, volume and specular
+comparisons. An earlier result, on
 `7de8b8f` with lights added, gave byte-identical images in two runs. This checks simple fixtures, not
 general shading correctness.
 
@@ -229,6 +231,15 @@ and a red color (78, 0, 0). A weight image alpha of 188 matches a factor of 0.73
 188 a factor of 0.503, read as sRGB. Through Storm's UsdPreviewSurface every case reflects 79, the
 default.
 
+The sheen is checked on a generated black quad of ior 1 and roughness 1, which reflects nothing itself,
+under a directional light at 75 degrees from its normal, because a Charlie lobe adds nothing where the
+half vector is the normal. On the same machine, through MaterialX, a black sheen is black, a white sheen
+of roughness 0.5 reflects 104 in each channel, one of 0.5 52, half as much, and a red one (104, 0, 0). A
+roughness of 1 reflects 230, a roughness image alpha of 188 matches a factor of 0.737, and a color image
+of 188 a factor of 0.503, read as sRGB. Over a base of 0.125 gray, which reflects 126, a white sheen
+gives 225. Through Storm's UsdPreviewSurface every case is the quad without a sheen: black, and 126 over
+the gray base.
+
 The clearcoat is checked on a generated black quad of roughness 1, under the same light, with a coat of
 roughness 0.5. Expected in each path: a coat of factor 0 the same as none, a coat of factor 1 brighter,
 one of 0.5 between them, a rough coat different from a smooth one, and a coat image of 188 the same as
@@ -270,26 +281,26 @@ not in this repository: 339 files in 150 models. The result for each file is in
 [`tests/sample_baseline.json`](../../tests/sample_baseline.json), and
 [ADR 0010](../adr/0010-sample-baseline.md) explains what is compared and its limits.
 
-Last result for opening and meaning: with the specular added, on Windows with OpenUSD 26.08 and the
-OpenStrata lookdev runtime, without rendering. It is the first result with the clearcoat, transmission
-and volume comparisons, which were added after the previous one. Each file that uses
-`KHR_materials_clearcoat`, `KHR_materials_transmission`, `KHR_materials_volume` or
-`KHR_materials_specular` now compares it and no longer ignores it, and both ClearCoatCarPaint files,
-which require the clearcoat, open and are verified. No file's meaning differs, and every other file
-matched the previous result: the ior result on Linux x86-64 with OpenUSD 26.08 from the `usd-core`
-wheel, which for every file whose result WebP or unlit materials do not change matched the result on
+Last result for opening and meaning: with the sheen added, on Windows with OpenUSD 26.08 and the
+OpenStrata lookdev runtime. The 17 files that change all use `KHR_materials_sheen`, which they now
+compare instead of ignoring: the SheenTestGrid and SpecularSilkPouf files, which require it, open and
+are verified, 9 others go from partial to verified, and the GlamVelvetSofa and SheenChair files remain
+partial, because they also use `KHR_materials_variants`. No file's meaning differs. The result
+before it, with the specular added, was the first with the clearcoat, transmission, volume and specular
+comparisons, and every file it did not change matched the ior result on Linux x86-64 with OpenUSD 26.08
+from the `usd-core` wheel, which for every file whose result WebP or unlit materials do not change matched the result on
 `7de8b8f` on Windows with the same runtime and an NVIDIA RTX A5000, also the last render. It is not part
 of CI. NodePerformanceTest's GLB times out, because its 10,000 materials read 20,000 embedded images, and
 outside a resolver cache scope each read parses the 38 MB file again, about 0.1 second each.
 
 | Result | Files | What it means |
 | --- | --- | --- |
-| Opened | 239 | The stage opens. No file crashed, and one timed out after 600 seconds. |
-| Rejected | 99 | Each has a diagnostic naming a cause the file really has. |
-| Meaning verified | 163 | USD agrees with values decoded from the file, in all that is compared, and the file uses no ignored extension. |
-| Meaning partial | 76 | The same, but the file uses an optional extension that is ignored, with a warning. What it changes is not compared. |
+| Opened | 243 | The stage opens. No file crashed, and one timed out after 600 seconds. |
+| Rejected | 95 | Each has a diagnostic naming a cause the file really has. |
+| Meaning verified | 176 | USD agrees with values decoded from the file, in all that is compared, and the file uses no ignored extension. |
+| Meaning partial | 67 | The same, but the file uses an optional extension that is ignored, with a warning. What it changes is not compared. |
 | Meaning differs | 0 | |
-| Rendered | 230 | Storm drew something through both shader paths. No pixel was judged, so this is not evidence of correct display. The 9 files that WebP, unlit materials and the clearcoat open have not been rendered, and those that use an ior, a clearcoat, a transmission, a volume or a specular were last rendered without it. |
+| Rendered | 236 | Storm drew something through both shader paths. No pixel was judged, so this is not evidence of correct display. The 17 files that use a sheen were rendered with it, on the same machine with an NVIDIA RTX A5000. The 7 files that WebP, unlit materials and the clearcoat open have not been rendered, and those that use an ior, a clearcoat, a transmission, a volume or a specular were last rendered without it. |
 
 Why files are rejected, read from each file. Most files have several causes, so a count of files that
 have a cause is not what supporting it would open:
@@ -300,11 +311,11 @@ have a cause is not what supporting it would open:
 | Skin | 24 | 0 |
 | Requires `KHR_draco_mesh_compression` | 18 | 11 |
 | Morph targets | 10 | 2 |
-| Requires a material extension | 9 | 9 |
+| Requires a material extension | 5 | 5 |
 | Requires `KHR_node_visibility` | 4 | 0 |
 | Requires meshopt compression | 5 | 2 |
 | Points or lines | 3 | 3 |
 | Sparse accessor | 2 | 2 |
 
 Ignored optional extensions, in files that opened, include `KHR_materials_iridescence` (16),
-`KHR_materials_variants` (15), `KHR_materials_anisotropy` (13) and `KHR_materials_sheen` (13).
+`KHR_materials_variants` (15) and `KHR_materials_anisotropy` (13).

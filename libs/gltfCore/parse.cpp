@@ -238,11 +238,23 @@ describeMalformedMaterialExtension(std::string_view name, const simdjson::dom::e
     return {};
 }
 
-// Describes a malformed KHR_materials_specular or KHR_materials_volume of a material, which have
-// fields of three numbers, or returns an empty string.
+// Describes a malformed KHR_materials_sheen, KHR_materials_specular or KHR_materials_volume of a
+// material, which have fields of three numbers, or returns an empty string.
 std::string
 describeMalformedColorExtension(const simdjson::dom::element& material)
 {
+    simdjson::dom::element sheen;
+    if (material["extensions"][fastgltf::extensions::KHR_materials_sheen].get(sheen) ==
+        simdjson::SUCCESS)
+    {
+        if (auto description = describeMalformedMaterialExtension(
+                fastgltf::extensions::KHR_materials_sheen, sheen, {"sheenRoughnessFactor"},
+                {"sheenColorTexture", "sheenRoughnessTexture"}, {"sheenColorFactor"});
+            !description.empty())
+        {
+            return description;
+        }
+    }
     simdjson::dom::element specular;
     if (material["extensions"][fastgltf::extensions::KHR_materials_specular].get(specular) ==
         simdjson::SUCCESS)
@@ -266,9 +278,9 @@ describeMalformedColorExtension(const simdjson::dom::element& material)
                                               {"thicknessTexture"}, {"attenuationColor"});
 }
 
-// fastgltf reads a specularColorFactor or attenuationColor of fewer than three numbers, keeping 1
-// for the rest, so an extension it accepts is checked too. Returns an empty string if every such
-// extension is well formed.
+// fastgltf reads a sheenColorFactor, specularColorFactor or attenuationColor of fewer than three
+// numbers, keeping the default for the rest, so an extension it accepts is checked too. Returns an
+// empty string if every such extension is well formed.
 std::string
 describeMalformedColorExtensions(const std::byte* bytes, std::size_t size)
 {
@@ -379,6 +391,7 @@ IsImplementedExtension(std::string_view extension)
            extension == fastgltf::extensions::KHR_lights_punctual ||
            extension == fastgltf::extensions::KHR_materials_clearcoat ||
            extension == fastgltf::extensions::KHR_materials_ior ||
+           extension == fastgltf::extensions::KHR_materials_sheen ||
            extension == fastgltf::extensions::KHR_materials_specular ||
            extension == fastgltf::extensions::KHR_materials_transmission ||
            extension == fastgltf::extensions::KHR_materials_unlit ||
@@ -400,7 +413,7 @@ Parse(const std::byte* bytes, std::size_t size, std::string& error)
     fastgltf::Parser parser(
         fastgltf::Extensions::EXT_texture_webp | fastgltf::Extensions::KHR_lights_punctual |
         fastgltf::Extensions::KHR_materials_clearcoat | fastgltf::Extensions::KHR_materials_ior |
-        fastgltf::Extensions::KHR_materials_specular |
+        fastgltf::Extensions::KHR_materials_sheen | fastgltf::Extensions::KHR_materials_specular |
         fastgltf::Extensions::KHR_materials_transmission |
         fastgltf::Extensions::KHR_materials_unlit | fastgltf::Extensions::KHR_materials_volume |
         fastgltf::Extensions::KHR_mesh_quantization | fastgltf::Extensions::KHR_texture_basisu |

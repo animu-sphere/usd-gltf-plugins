@@ -85,6 +85,9 @@ struct PbrFactors
     // KHR_materials_specular, 1 and white without it, which change nothing.
     float specular;
     GfVec3f specularColor;
+    // KHR_materials_sheen, black and 0 without it: a black color disables the layer.
+    GfVec3f sheenColor;
+    float sheenRoughness;
 };
 
 // glTF's default, and the default of both shaders' ior inputs.
@@ -127,7 +130,12 @@ pbrFactors(const fastgltf::Material& source)
             source.specular ? GfVec3f(source.specular->specularColorFactor[0],
                                       source.specular->specularColorFactor[1],
                                       source.specular->specularColorFactor[2])
-                            : GfVec3f(1)};
+                            : GfVec3f(1),
+            source.sheen
+                ? GfVec3f(source.sheen->sheenColorFactor[0], source.sheen->sheenColorFactor[1],
+                          source.sheen->sheenColorFactor[2])
+                : GfVec3f(0),
+            source.sheen ? float(source.sheen->sheenRoughnessFactor) : 0.0f};
 }
 
 // glTF disables the clearcoat layer at a factor of 0, and an unlit material reflects nothing.
@@ -150,6 +158,20 @@ bool
 hasVolume(const PbrFactors& factors)
 {
     return hasTransmission(factors) && factors.thickness > 0.0f;
+}
+
+// glTF disables the sheen layer at a black color factor, and an unlit material reflects nothing.
+bool
+hasSheen(const PbrFactors& factors)
+{
+    return !factors.unlit && factors.sheenColor != GfVec3f(0);
+}
+
+// The sheen roughness is the factor times its texture, and gltf_pbr's default is glTF's 0.
+bool
+hasSheenRoughness(const PbrFactors& factors)
+{
+    return hasSheen(factors) && factors.sheenRoughness != 0.0f;
 }
 
 // The ior to author, if it is not the shaders' default. An unlit material reflects nothing, so
@@ -276,6 +298,9 @@ struct MaterialTextures
     // Read by MaterialX only: UsdPreviewSurface's metallic workflow has no specular weight or color.
     std::optional<TextureInput> specular;
     std::optional<TextureInput> specularColor;
+    // Read by MaterialX only: UsdPreviewSurface has no sheen.
+    std::optional<TextureInput> sheenColor;
+    std::optional<TextureInput> sheenRoughness;
 };
 
 // gltf_pbr's specular weight and color are glTF's: the weight scales a dielectric's F0 and F90,
@@ -829,7 +854,12 @@ connectMtlxTextures(const UsdShadeNodeGraph& graph, UsdShadeShader& surface,
                                                      factors.specular, *textures.specular)) &&
            (!textures.specularColor ||
             connectMtlxColor(graph, surface, "specularColor", "specular_color",
-                             factors.specularColor, *textures.specularColor));
+                             factors.specularColor, *textures.specularColor)) &&
+           (!textures.sheenColor || connectMtlxColor(graph, surface, "sheenColor", "sheen_color",
+                                                     factors.sheenColor, *textures.sheenColor)) &&
+           (!textures.sheenRoughness ||
+            connectMtlxChannel(graph, surface, "sheenRoughness", "sheen_roughness", 3,
+                               factors.sheenRoughness, *textures.sheenRoughness));
 }
 
 bool
@@ -919,6 +949,10 @@ authorMtlx(const UsdShadeMaterial& material, const PbrFactors& factors, bool ver
     // specular, as glTF's are.
     const bool specular = hasSpecularWeight(factors, textures);
     const bool specularColor = hasSpecularColor(factors, textures);
+    // gltf_pbr layers a sheen weighted by the color's largest component over the base, dimming the
+    // base by its albedo, with a Charlie roughness of sheen_roughness squared, as glTF does.
+    const bool sheen = hasSheen(factors);
+    const bool sheenRoughness = hasSheenRoughness(factors);
     return surface.CreateIdAttr().Set(TfToken("ND_gltf_pbr_surfaceshader")) &&
            setInput(surface, "base_color", SdfValueTypeNames->Color3f,
                     unlit ? GfVec3f(0) : factors.baseColor) &&
@@ -930,6 +964,10 @@ authorMtlx(const UsdShadeMaterial& material, const PbrFactors& factors, bool ver
             setInput(surface, "specular", SdfValueTypeNames->Float, factors.specular)) &&
            (!specularColor || setInput(surface, "specular_color", SdfValueTypeNames->Color3f,
                                        factors.specularColor)) &&
+           (!sheen ||
+            setInput(surface, "sheen_color", SdfValueTypeNames->Color3f, factors.sheenColor)) &&
+           (!sheenRoughness || setInput(surface, "sheen_roughness", SdfValueTypeNames->Float,
+                                        factors.sheenRoughness)) &&
            setInput(surface, "emissive", SdfValueTypeNames->Color3f,
                     unlit ? factors.baseColor : factors.emissive) &&
            (!ior || (iorInput && iorInput.GetAttr().SetVariability(SdfVariabilityUniform) &&
@@ -1150,6 +1188,7 @@ MaterialAuthor::Bind(std::size_t index, std::size_t uvSetCount, const pxr::VtVec
     const auto* transmission = source.transmission ? &*source.transmission : nullptr;
     const auto* volume = source.volume ? &*source.volume : nullptr;
     const auto* specular = source.specular ? &*source.specular : nullptr;
+    const auto* sheen = source.sheen ? &*source.sheen : nullptr;
     if (!hasUvSet(pbr.baseColorTexture) || !hasUvSet(pbr.metallicRoughnessTexture) ||
         !hasUvSet(source.normalTexture) || !hasUvSet(source.occlusionTexture) ||
         !hasUvSet(source.emissiveTexture) ||
@@ -1159,7 +1198,8 @@ MaterialAuthor::Bind(std::size_t index, std::size_t uvSetCount, const pxr::VtVec
         (transmission && !hasUvSet(transmission->transmissionTexture)) ||
         (volume && !hasUvSet(volume->thicknessTexture)) ||
         (specular &&
-         (!hasUvSet(specular->specularTexture) || !hasUvSet(specular->specularColorTexture))))
+         (!hasUvSet(specular->specularTexture) || !hasUvSet(specular->specularColorTexture))) ||
+        (sheen && (!hasUvSet(sheen->sheenColorTexture) || !hasUvSet(sheen->sheenRoughnessTexture))))
     {
         error = "material texture uses a texture coordinate set the primitive does not have";
         return false;
@@ -1251,6 +1291,19 @@ MaterialAuthor::Bind(std::size_t index, std::size_t uvSetCount, const pxr::VtVec
             return false;
         }
     }
+    for (std::size_t i = 0; sheen && i < 3; ++i)
+    {
+        if (!inUnitRange(sheen->sheenColorFactor[i]))
+        {
+            error = "material sheen color factor is non-finite or out of range";
+            return false;
+        }
+    }
+    if (sheen && !inUnitRange(sheen->sheenRoughnessFactor))
+    {
+        error = "material sheen roughness factor is non-finite or out of range";
+        return false;
+    }
     auto& material = colors ? _vertexColorMaterials[index] : _materials[index];
     if (!material)
     {
@@ -1263,13 +1316,15 @@ MaterialAuthor::Bind(std::size_t index, std::size_t uvSetCount, const pxr::VtVec
         // A clearcoat or transmission of factor 0 is disabled, and so is a volume without
         // transmission or thickness, so their textures are not read either. A specular weight of
         // 0 removes the reflection whatever its texture or color, and a black specular color
-        // factor makes the color black whatever its texture.
+        // factor makes the color black whatever its texture. A black sheen color factor disables the
+        // sheen layer, and a sheen roughness factor of 0 makes the roughness 0 whatever its texture.
         const auto factors = pbrFactors(source);
         const bool coated = hasClearcoat(factors);
         const bool transmits = hasTransmission(factors);
         const bool thick = hasVolume(factors);
         const bool reflects = specular && !source.unlit && factors.specular > 0.0f;
         const bool tinted = reflects && factors.specularColor != GfVec3f(0);
+        const bool sheened = hasSheen(factors);
         MaterialTextures textures;
         if (!resolve(pbr.baseColorTexture, textures.baseColor) ||
             (!source.unlit && (!resolve(pbr.metallicRoughnessTexture, textures.metallicRoughness) ||
@@ -1283,7 +1338,10 @@ MaterialAuthor::Bind(std::size_t index, std::size_t uvSetCount, const pxr::VtVec
             (transmits && !resolve(transmission->transmissionTexture, textures.transmission)) ||
             (thick && !resolve(volume->thicknessTexture, textures.thickness)) ||
             (reflects && !resolve(specular->specularTexture, textures.specular)) ||
-            (tinted && !resolve(specular->specularColorTexture, textures.specularColor)))
+            (tinted && !resolve(specular->specularColorTexture, textures.specularColor)) ||
+            (sheened && !resolve(sheen->sheenColorTexture, textures.sheenColor)) ||
+            (hasSheenRoughness(factors) &&
+             !resolve(sheen->sheenRoughnessTexture, textures.sheenRoughness)))
         {
             return false;
         }
@@ -1327,6 +1385,18 @@ MaterialAuthor::Bind(std::size_t index, std::size_t uvSetCount, const pxr::VtVec
         {
             TF_WARN("glTF material %zu: KHR_materials_specular is ignored, because the material "
                     "is unlit",
+                    index);
+        }
+        if (source.unlit && sheen)
+        {
+            TF_WARN("glTF material %zu: KHR_materials_sheen is ignored, because the material is "
+                    "unlit",
+                    index);
+        }
+        if (sheened)
+        {
+            TF_WARN("glTF material %zu: UsdPreviewSurface has no sheen; its network ignores "
+                    "KHR_materials_sheen",
                     index);
         }
         if (hasSpecularWeight(factors, textures) || hasSpecularColor(factors, textures))

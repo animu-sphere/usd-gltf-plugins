@@ -759,6 +759,79 @@ def check_specular(renderer, report):
     qt[2].doneCurrent()
 
 
+# The angle from the quad's normal at which the sheen check's light arrives. glTF's Charlie sheen has no
+# reflection where the half vector is the normal, so a light along the view would show none.
+SHEEN_LIGHT_ANGLE = math.radians(75)
+
+
+def check_sheen(renderer, report):
+    """Renders a black quad of ior 1, which reflects nothing itself, with a sheen, under a directional
+    light at a grazing angle. glTF's sheen is the color times a Charlie lobe, layered over the base, so on
+    that base the result is the sheen alone, proportional to its color. gltf_pbr weights its sheen by the
+    color's largest component and tints it by the color over that, the same product. UsdPreviewSurface
+    has no sheen, so through it every case is the base without one."""
+    qt = offscreen_context(report, "sheen")
+    if not qt:
+        return
+    black = {"baseColorFactor": [0, 0, 0, 1], "metallicFactor": 0, "roughnessFactor": 1}
+    gray = {"baseColorFactor": [0.125, 0.125, 0.125, 1], "metallicFactor": 0, "roughnessFactor": 1}
+    # A turn about X, so that the light, which shines along its node's -Z, arrives from +Y.
+    half = SHEEN_LIGHT_ANGLE / 2
+    rotation = [-math.sin(half), 0, 0, math.cos(half)]
+    for path in PATHS:
+
+        def render(name, material, images=()):
+            document = quad_document([material], images)
+            document["extensionsUsed"] = ["KHR_lights_punctual", "KHR_materials_ior", "KHR_materials_sheen"]
+            document["extensions"] = {"KHR_lights_punctual": {"lights": [
+                {"type": "directional", "intensity": ILLUMINANCE * 32}]}}
+            document["nodes"].append({"rotation": rotation, "extensions": {"KHR_lights_punctual": {"light": 0}}})
+            document["scenes"][0]["nodes"].append(1)
+            asset = renderer.output / f"sheen_{name}.gltf"
+            asset.write_text(json.dumps(document), encoding="utf-8")
+            _, stage = renderer.session(f"sheen_{name}", asset, path, None)
+            image = engine_image(stage, [], Gf.Vec4f(0, 0, 0, 1))
+            image.save(str(renderer.output / f"sheen_{name}_{path}.png"))
+            return Render(f"sheen_{name} {path}", image, stage).sample(0)
+
+        def sheen(base=black, **values):
+            return {**pbr(**base), "extensions": {"KHR_materials_ior": {"ior": 1}, "KHR_materials_sheen": values}}
+
+        bare = render("bare", sheen())
+        report.same(f"{path} a black quad of ior 1 reflects nothing", bare, (0, 0, 0, 255))
+        report.same(f"{path} a black sheen is none", render("black", sheen(sheenColorFactor=[0, 0, 0],
+                                                                          sheenRoughnessFactor=1)), bare)
+        white = render("white", sheen(sheenColorFactor=[1, 1, 1], sheenRoughnessFactor=0.5))
+        dim = render("dim", sheen(sheenColorFactor=[0.5, 0.5, 0.5], sheenRoughnessFactor=0.5))
+        red = render("red", sheen(sheenColorFactor=[1, 0, 0], sheenRoughnessFactor=0.5))
+        rough = render("rough", sheen(sheenColorFactor=[1, 1, 1], sheenRoughnessFactor=1))
+        color_image = render("color_image", sheen(sheenColorFactor=[1, 1, 1], sheenRoughnessFactor=0.5,
+                                                  sheenColorTexture={"index": 0}), [(188, 188, 188, 255)])
+        roughness_image = render("roughness_image", sheen(sheenColorFactor=[1, 1, 1], sheenRoughnessFactor=1,
+                                                          sheenRoughnessTexture={"index": 0}), [(255, 255, 255, 188)])
+        over_gray = render("over_gray", sheen(gray, sheenColorFactor=[1, 1, 1], sheenRoughnessFactor=0.5))
+        plain_gray = render("plain_gray", sheen(gray))
+        if path == "mtlx":
+            report.expect(f"{path} a white sheen reflects the grazing light", min(white[:3]) >= DIFFERENT,
+                          f"{white}")
+            report.same(f"{path} a sheen of 0.5 reflects half", dim, tuple(round(c / 2) for c in white[:3]) + (255,))
+            report.expect(f"{path} a red sheen reflects red only", abs(red[0] - white[0]) <= SAME
+                          and max(red[1], red[2]) <= SAME, f"{red} and {white}")
+            report.different(f"{path} the sheen's roughness applies", rough, white)
+            report.same(f"{path} a sheen color image reads as sRGB", color_image,
+                        render("color_srgb", sheen(sheenColorFactor=[SRGB, SRGB, SRGB], sheenRoughnessFactor=0.5)))
+            report.same(f"{path} a sheen roughness image alpha of 188 is a factor of 0.737", roughness_image,
+                        render("roughness_data", sheen(sheenColorFactor=[1, 1, 1], sheenRoughnessFactor=DATA)))
+            report.different(f"{path} a sheen changes a gray base", over_gray, plain_gray)
+        else:
+            for name, result in (("a white sheen", white), ("a dim sheen", dim), ("a red sheen", red),
+                                 ("a rough sheen", rough), ("a sheen color image", color_image),
+                                 ("a sheen roughness image", roughness_image)):
+                report.same(f"{path} UsdPreviewSurface ignores {name}", result, bare)
+            report.same(f"{path} UsdPreviewSurface ignores a sheen over a gray base", over_gray, plain_gray)
+    qt[2].doneCurrent()
+
+
 def check_clearcoat(renderer, report):
     """Renders a black quad with a clearcoat under a point light between it and the camera, as for the
     ior. glTF's clearcoat is a dielectric of ior 1.5 over the base, weighted by its factor, so the
@@ -934,7 +1007,7 @@ def main():
 
     report = Report(arguments.verbose)
     renderer = Renderer(output, plugin, report)
-    for check in (check_reflections, check_lights, check_unlit, check_ior, check_specular, check_clearcoat,
+    for check in (check_reflections, check_lights, check_unlit, check_ior, check_specular, check_sheen, check_clearcoat,
                   check_transmission,
                   check_volume, check_alpha_modes, check_base_color_textures, check_pbr_textures,
                   check_normal_textures, check_texture_transforms, check_ktx2_textures, check_measurements):

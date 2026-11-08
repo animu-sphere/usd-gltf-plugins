@@ -33,6 +33,8 @@ here.
   material; UsdPreviewSurface has none and ignores it with a warning.
 - `KHR_materials_specular`, optional or required: the specular weight, color and their textures in
   MaterialX; UsdPreviewSurface's metallic workflow has neither and ignores it with a warning.
+- `KHR_materials_sheen`, optional or required: the sheen color, roughness and their textures in
+  MaterialX; UsdPreviewSurface has no sheen and ignores it with a warning.
 
 ### Changed
 
