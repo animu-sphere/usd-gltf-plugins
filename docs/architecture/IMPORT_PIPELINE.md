@@ -62,6 +62,13 @@ published; see [ADR 0006](../adr/0006-image-failures.md) for what this cannot fi
 Resolution requires a local source and filesystem; it does not use USD's asset
 resolver to find the resource. This deliberately excludes remote assets,
 resolver-managed resources and shared files in parent directories.
+
+A source inside a package, such as `model.glb` in a `.usdz`, reads only its own
+bytes: buffers in its GLB binary chunk and data URIs. Import fails when the
+selected scene uses any image or external buffer, before any file is resolved,
+because OpenUSD does not route paths nested in the package to the package
+resolver, and the directory beside the package is not the source's. See
+[ADR 0025](../adr/0025-packaged-sources.md).
 Canonicalization and file opening are separate operations: the check is not a
 security sandbox against concurrent changes to the filesystem. Assets must not
 be imported from directories writable by an untrusted concurrent actor.

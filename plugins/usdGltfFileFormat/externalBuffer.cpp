@@ -3,6 +3,9 @@
 
 #include "localFile.h"
 
+#include "pxr/pxr.h"
+#include "pxr/usd/ar/packageUtils.h"
+
 #include <filesystem>
 #include <fstream>
 #include <limits>
@@ -32,6 +35,13 @@ ExternalBufferLoader::Load(const fastgltf::Buffer& buffer, std::span<const std::
     if (!source || source->fileByteOffset != 0)
     {
         error = "unsafe or unsupported external buffer URI";
+        return false;
+    }
+    // The source's directory on disk is the package's, not the source's. See
+    // docs/adr/0025-packaged-sources.md.
+    if (pxr::ArIsPackageRelativePath(sourcePath_))
+    {
+        error = "external buffers are not supported in a source inside a package";
         return false;
     }
     fs::path target;

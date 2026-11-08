@@ -6,13 +6,6 @@ implementation order, which investigation may change. Each feature follows the
 
 ## v0.2.0: wider static scene support
 
-### If measurements and time allow
-
-Each of these moves to the [backlog](backlog.md) if it does not fit this version.
-
-- Wider external resource resolution through `ArResolver`, after an ADR decides the scenarios and
-  the security model.
-
 ### Release criteria
 
 Each adopted feature has fixtures, tests of USD structure and meaning, tests of failure, and renderer
