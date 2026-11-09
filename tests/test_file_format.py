@@ -60,6 +60,33 @@ def scene_document():
     }
 
 
+def nested_document(extension):
+    """Two roots, and a mesh used at two depths, below transforms whose order matters."""
+    document, binary = mesh_document(extension)
+    half = math.sqrt(0.5)
+    document["scenes"] = [{"nodes": [4, 0]}]
+    document["nodes"] = [
+        # A quarter turn about +Y, which takes +X to -Z, then a translation.
+        {"name": "Root", "translation": [1, 0, 0], "rotation": [0, half, 0, half], "children": [1, 2]},
+        {"scale": [2, 1, 1], "children": [3]},
+        {"mesh": 0, "matrix": [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 3, 0, 1]},
+        {"mesh": 0, "translation": [0, 0, 1]},
+        {"rotation": [half, 0, 0, half], "translation": [0, 0, -5], "children": [5]},
+        {"name": "Leaf", "scale": [1, 1, 3]},
+    ]
+    return document, binary
+
+
+def gltf_local(node):
+    """A node's local transform, composed independently of the importer, for row vectors."""
+    if "matrix" in node:
+        return Gf.Matrix4d(*node["matrix"])
+    x, y, z, w = node.get("rotation", (0, 0, 0, 1))
+    return (Gf.Matrix4d().SetScale(Gf.Vec3d(*node.get("scale", (1, 1, 1))))
+            * Gf.Matrix4d().SetRotate(Gf.Quatd(w, Gf.Vec3d(x, y, z)))
+            * Gf.Matrix4d().SetTranslate(Gf.Vec3d(*node.get("translation", (0, 0, 0)))))
+
+
 def mesh_document(extension, index_type=5123):
     vertex_data = b"".join(struct.pack("<6f", *vertex) for vertex in (
         (0, 0, 0, 0, 0, 1),
@@ -714,6 +741,64 @@ class FileFormatTest(unittest.TestCase):
                     world = UsdGeom.XformCache().GetLocalToWorldTransform(child)
                     point = world.Transform(Gf.Vec3d(0, 0, 0))
                     self.assertTrue(Gf.IsClose(point, Gf.Vec3d(1, 0, 3), 1e-5), str(point))
+
+    def test_nested_nodes_keep_parentage_and_world_transforms(self):
+        # Each node's path below the scene, and its parent's index.
+        expected = {
+            0: ("Node_0", None), 1: ("Node_0/Node_1", 0), 2: ("Node_0/Node_2", 0),
+            3: ("Node_0/Node_1/Node_3", 1), 4: ("Node_4", None), 5: ("Node_4/Node_5", 4),
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            for extension in ("gltf", "glb"):
+                with self.subTest(extension=extension):
+                    path = pathlib.Path(directory) / ("nested." + extension)
+                    document, binary = nested_document(extension)
+                    write_asset(path, document, binary)
+                    stage = Usd.Stage.Open(str(path))
+                    scene = stage.GetPrimAtPath("/Asset/scenes/Scene_0")
+                    self.assertEqual([prim.GetName() for prim in scene.GetChildren()], ["Node_4", "Node_0"])
+                    nodes = {str(prim.GetPath()) for prim in Usd.PrimRange(scene)
+                             if prim.GetName().startswith("Node_")}
+                    self.assertEqual(nodes, {f"/Asset/scenes/Scene_0/{key}" for key, _ in expected.values()})
+
+                    cache = UsdGeom.XformCache()
+                    worlds = {}
+                    for index in sorted(expected, key=lambda i: expected[i][0].count("/")):
+                        key, parent = expected[index]
+                        prim = stage.GetPrimAtPath(f"/Asset/scenes/Scene_0/{key}")
+                        self.assertTrue(prim.IsA(UsdGeom.Xform), key)
+                        self.assertEqual(prim.GetDisplayName(), document["nodes"][index].get("name", ""))
+                        local = gltf_local(document["nodes"][index])
+                        worlds[index] = local if parent is None else local * worlds[parent]
+                        actual = cache.GetLocalToWorldTransform(prim)
+                        self.assertTrue(Gf.IsClose(actual, worlds[index], 1e-6), f"{key}: {actual}")
+
+                    # The same point of the same mesh, worked out by hand at each node that uses it.
+                    for key, point in (("Node_0/Node_1/Node_3", (2, 0, -2)), ("Node_0/Node_2", (1, 3, -1))):
+                        mesh = stage.GetPrimAtPath(f"/Asset/scenes/Scene_0/{key}/Mesh_0/Primitive_0")
+                        world = cache.GetLocalToWorldTransform(mesh).Transform(Gf.Vec3d(1, 0, 0))
+                        self.assertTrue(Gf.IsClose(world, Gf.Vec3d(*point), 1e-6), f"{key}: {world}")
+                    leaf = cache.GetLocalToWorldTransform(stage.GetPrimAtPath("/Asset/scenes/Scene_0/Node_4/Node_5"))
+                    self.assertTrue(Gf.IsClose(leaf.Transform(Gf.Vec3d(0, 0, 1)), Gf.Vec3d(0, -3, -5), 1e-6))
+
+                    # A mesh is converted once and placed below each node with the same prims.
+                    first = stage.GetPrimAtPath("/Asset/scenes/Scene_0/Node_0/Node_1/Node_3/Mesh_0")
+                    copy = stage.GetPrimAtPath("/Asset/scenes/Scene_0/Node_0/Node_2/Mesh_0")
+                    self.assertEqual(copy.GetDisplayName(), "Example mesh")
+                    self.assertEqual([prim.GetName() for prim in copy.GetChildren()],
+                                     [prim.GetName() for prim in first.GetChildren()])
+                    for name in ("Primitive_0", "Primitive_1"):
+                        a, b = first.GetChild(name), copy.GetChild(name)
+                        self.assertEqual(a.GetTypeName(), b.GetTypeName())
+                        self.assertEqual([p.GetName() for p in a.GetAuthoredProperties()],
+                                         [p.GetName() for p in b.GetAuthoredProperties()])
+                        for attribute in a.GetAuthoredAttributes():
+                            self.assertEqual(attribute.Get(), b.GetAttribute(attribute.GetName()).Get(),
+                                             attribute.GetName())
+                        bound_a, _ = UsdShade.MaterialBindingAPI(a).ComputeBoundMaterial()
+                        bound_b, _ = UsdShade.MaterialBindingAPI(b).ComputeBoundMaterial()
+                        self.assertEqual(bound_a.GetPath(), bound_b.GetPath())
+                        self.assertTrue(bound_b.GetPath().HasPrefix("/Asset/mtl"))
 
     def test_coordinate_system_and_reference_composition(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -6006,6 +6091,8 @@ class FileFormatTest(unittest.TestCase):
                        "nodes": [{"children": [0]}]}, "cyclic node"),
             "duplicate node": ({"asset": {"version": "2.0"}, "scene": 0, "scenes": [{"nodes": [0, 0]}],
                                 "nodes": [{}]}, "repeated"),
+            "invalid mesh": ({"asset": {"version": "2.0"}, "scene": 0, "scenes": [{"nodes": [0]}],
+                              "nodes": [{"mesh": 0}]}, "mesh index 0 is out of range"),
             "invalid mesh accessor": ({"asset": {"version": "2.0"}, "scene": 0, "scenes": [{"nodes": [0]}],
                                   "nodes": [{"mesh": 0}], "meshes": [{"primitives": [
                                       {"attributes": {"POSITION": 0}}]}]}, "accessor index"),

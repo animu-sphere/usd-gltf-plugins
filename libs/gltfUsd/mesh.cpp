@@ -687,8 +687,9 @@ authorPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& primiti
 } // namespace
 
 bool
-AuthorMesh(const fastgltf::Asset& asset, std::size_t meshIndex, const pxr::UsdPrim& parent,
-           const gltfCore::BufferLoader& loadBuffer, MaterialAuthor& materials)
+ConvertMesh(const fastgltf::Asset& asset, std::size_t meshIndex, const pxr::UsdStagePtr& stage,
+            const pxr::SdfPath& path, const gltfCore::BufferLoader& loadBuffer,
+            MaterialAuthor& materials)
 {
     using namespace pxr;
     if (meshIndex >= asset.meshes.size())
@@ -707,9 +708,7 @@ AuthorMesh(const fastgltf::Asset& asset, std::size_t meshIndex, const pxr::UsdPr
         TF_RUNTIME_ERROR("glTF mesh %zu: morph weights are not supported yet", meshIndex);
         return false;
     }
-    const auto group = UsdGeomXform::Define(
-        parent.GetStage(),
-        parent.GetPath().AppendChild(TfToken("Mesh_" + std::to_string(meshIndex))));
+    const auto group = UsdGeomXform::Define(stage, path);
     if (!group ||
         (!source.name.empty() && !group.GetPrim().SetDisplayName(std::string(source.name))))
     {

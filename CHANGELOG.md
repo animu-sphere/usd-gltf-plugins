@@ -15,6 +15,8 @@ here.
   `/Asset/scenes/Scene_0/Node_3/Mesh_0` when scene 0 is selected. References to the default prim
   still compose; overrides, collections and relationships that target the old paths must be updated.
   `/Asset/mtl` is unchanged. See [ADR 0026](docs/adr/0026-scene-hierarchy.md).
+- A mesh that several nodes use is converted once and copied below each of them, rather than read
+  again for each node. The authored prims are unchanged.
 
 ## [0.2.0] - 2026-11-09
 
