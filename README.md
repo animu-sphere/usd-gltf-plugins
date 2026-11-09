@@ -36,6 +36,11 @@ print(stage.GetDefaultPrim().GetPath())  # /Asset
 
 ## Development
 
+The repository is an OpenStrata plugin workspace: three libraries under `libs/` and the plugin
+bundle under `plugins/`, each a CMake project of its own
+([workspace architecture](docs/architecture/WORKSPACE.md)). It builds the same way with or without
+OpenStrata.
+
 Run the tests with the matching OpenUSD `pxr` modules and runtime libraries on
 the environment's search paths:
 
@@ -43,16 +48,29 @@ the environment's search paths:
 ctest --test-dir build -C Release --output-on-failure
 ```
 
-With OpenStrata and its cy2026 USD runtime (versions are pinned in the
-[CI matrix](openstrata.ci.yaml)), build and test the workspace or the standalone
-plugin bundle:
+Or use the plain-CMake preset, which uses Ninja and the compiler of the current shell (on Windows, a
+Developer PowerShell), with `OPENUSD_ROOT` set to the OpenUSD install:
 
 ```sh
+cmake --preset plain
+cmake --build --preset plain
+ctest --preset plain
+```
+
+With OpenStrata and its cy2026 USD runtime (versions are pinned in the
+[CI matrix](openstrata.ci.yaml)), build and test the workspace, the standalone
+plugin bundle, or one library:
+
+```sh
+ost plugin test --workspace --graph-only
 ost build
 ost test
 
 ost plugin build plugins/usdGltfFileFormat
 ost plugin test plugins/usdGltfFileFormat --up-to 2
+
+ost library build libs/gltfUsd
+ost library test libs/gltfUsd
 ```
 
 To check display with Storm after `ost build`, which needs a GPU and the lookdev runtime

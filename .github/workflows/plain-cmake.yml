@@ -1,0 +1,83 @@
+# Hand-written, and it has to be: the one thing this lane proves is that the workspace builds and
+# passes its tests with plain CMake and an OpenUSD install, with no `ost` anywhere.
+#
+#   OpenUSD 26.08 install -> cmake -> cmake --build -> ctest
+#
+# It copies no pin. The OpenUSD install is the Linux workspace cell's `runtime_artifact` in
+# openstrata.ci.yaml, fetched by digest over HTTPS and extracted by scripts/plain_cmake_openusd.py,
+# so this lane moves when CI is re-pinned. One platform on purpose: it proves the build contract,
+# and the ost lanes carry the three platforms.
+#
+# Fork-PR safety: this never publishes and uses no secrets. Everything it reads is public.
+name: plain cmake
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # The ost cell whose OpenUSD this lane builds against.
+  CELL: workspace-pr-linux
+
+jobs:
+  plain-cmake:
+    name: plain CMake, no ost (linux)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Refuse to run with ost on PATH
+        shell: bash
+        run: |
+          if command -v ost; then
+            echo "::error title=plain cmake::ost is on PATH; this lane must not be able to call it"
+            exit 1
+          fi
+
+      - name: Fetch the OpenUSD install the CI matrix pins
+        id: openusd
+        shell: bash
+        run: python3 scripts/plain_cmake_openusd.py --cell "$CELL" --out "$RUNNER_TEMP/openusd" | tee -a "$GITHUB_OUTPUT"
+
+      # An OpenUSD install is not relocatable across Pythons: its CMake package names the Python it
+      # was built against by absolute path, here the deadsnakes Python on Ubuntu 24.04. `ost`
+      # rewrites those paths when it materializes a runtime; this lane provides that Python where
+      # the install expects it instead, as someone who built OpenUSD on this host would have it.
+      # The cell's host packages are what MaterialX's CMake package needs on Linux.
+      - name: Install that Python, Ninja and the host packages
+        id: python
+        shell: bash
+        env:
+          PYTHON_VERSION: ${{ steps.openusd.outputs.python }}
+          HOST_PACKAGES_APT: ${{ steps.openusd.outputs.apt }}
+        run: |
+          set -euo pipefail
+          sudo add-apt-repository -y ppa:deadsnakes/ppa
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ninja-build \
+            "python${PYTHON_VERSION}" "python${PYTHON_VERSION}-dev" $HOST_PACKAGES_APT
+          echo "path=/usr/bin/python${PYTHON_VERSION}" | tee -a "$GITHUB_OUTPUT"
+
+      - name: Configure
+        shell: bash
+        run: |
+          cmake -S . -B build-plain -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/openusd" \
+            -DPython3_EXECUTABLE="${{ steps.python.outputs.path }}"
+
+      - name: Build
+        shell: bash
+        run: cmake --build build-plain --parallel
+
+      # The tests import pxr from the install, as a user's environment would.
+      - name: Test
+        shell: bash
+        env:
+          PYTHONPATH: ${{ runner.temp }}/openusd/lib/python
+          LD_LIBRARY_PATH: ${{ runner.temp }}/openusd/lib
+        run: ctest --test-dir build-plain --output-on-failure --parallel 4

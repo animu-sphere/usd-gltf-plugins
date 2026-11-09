@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: Apache-2.0
+# The CMake package of one usd-gltf-plugins library, written by usd_gltf_install_library().
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+@USD_GLTF_FIND_DEPENDENCIES@
+include("${CMAKE_CURRENT_LIST_DIR}/@USD_GLTF_PACKAGE@Targets.cmake")
+check_required_components(@USD_GLTF_PACKAGE@)

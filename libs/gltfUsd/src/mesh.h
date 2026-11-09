@@ -1,0 +1,23 @@
+// SPDX-License-Identifier: Apache-2.0
+#pragma once
+
+#include "gltfCore/accessor.h"
+
+#include <fastgltf/types.hpp>
+#include "pxr/usd/sdf/path.h"
+#include "pxr/usd/usd/common.h"
+
+#include <cstddef>
+
+namespace gltfUsd
+{
+
+class MaterialAuthor;
+
+// Authors the mesh as an Xform at `path`, with a Mesh child for each primitive, bound to its
+// material. A node that uses the mesh places it by this or a copy of its result.
+[[nodiscard]] bool ConvertMesh(const fastgltf::Asset& asset, std::size_t meshIndex,
+                               const pxr::UsdStagePtr& stage, const pxr::SdfPath& path,
+                               const gltfCore::BufferLoader& loadBuffer, MaterialAuthor& materials);
+
+} // namespace gltfUsd

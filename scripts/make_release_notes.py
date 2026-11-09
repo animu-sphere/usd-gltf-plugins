@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Checks a release tag against the repository, and renders the release notes.
 
-With --tag, the tag must be vX.Y.Z or vX.Y.Z-suffix, X.Y.Z must be the version of the project
-and of the bundle, and the changelog must have the section the tag needs: [X.Y.Z] with a date
+With --tag, the tag must be vX.Y.Z or vX.Y.Z-suffix, X.Y.Z must be the version in VERSION and
+of every member (--check-versions checks only that), and the changelog must have the section the tag needs: [X.Y.Z] with a date
 for a release, or a nonempty [Unreleased] for a pre-release. Without --tag this is a dry run
 of the project's version, which takes [X.Y.Z] once the changelog has one, and [Unreleased] before.
 
@@ -18,6 +18,8 @@ import tomllib
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 TAG = re.compile(r"v(\d+\.\d+\.\d+)(-[0-9A-Za-z][0-9A-Za-z.-]*)?")
 MANIFEST_VERSION = re.compile(r"^plugin:\s*$.*?^\s+version:\s*(\S+)", re.M | re.S)
+LIBRARY_VERSION = re.compile(r"^library:\s*$.*?^\s+version:\s*(\S+)", re.M | re.S)
+REQUIRED_VERSION = re.compile(r"^\s+version:\s*(\"[^\"]*\")", re.M)
 REPOSITORY = "https://github.com/animu-sphere/usd-gltf-plugins"
 
 NOTES = """# usd-gltf-plugins {tag}
@@ -54,14 +56,32 @@ def fail(message):
 
 
 def versions():
+    """Returns the version in VERSION, after checking that every member says the same."""
+    version = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
     project = tomllib.loads((ROOT / "openstrata.toml").read_text(encoding="utf-8"))["project"]["version"]
+    if project != version:
+        fail(f"VERSION has {version}, but openstrata.toml has {project}")
     manifest = (ROOT / "plugins" / "usdGltfFileFormat" / "openstrata.plugin.yaml").read_text(encoding="utf-8")
     match = MANIFEST_VERSION.search(manifest)
     if not match:
         fail("the bundle manifest has no plugin version")
-    if match[1] != project:
-        fail(f"openstrata.toml has version {project}, but the bundle manifest has {match[1]}")
-    return project
+    if match[1] != version:
+        fail(f"VERSION has {version}, but the bundle manifest has {match[1]}")
+    # The libraries release with the workspace, so each requires the others' current minor version.
+    major, minor = version.split(".")[:2]
+    allowed = f'">={major}.{minor},<{major}.{int(minor) + 1}"'
+    for descriptor in sorted((ROOT / "libs").glob("*/openstrata.library.yaml")):
+        text = descriptor.read_text(encoding="utf-8")
+        name = descriptor.parent.relative_to(ROOT).as_posix()
+        match = LIBRARY_VERSION.search(text)
+        if not match:
+            fail(f"{name} has no library version")
+        if match[1] != version:
+            fail(f"VERSION has {version}, but {name} has {match[1]}")
+        for required in REQUIRED_VERSION.findall(text):
+            if required != allowed:
+                fail(f"{name} requires a library at {required}, but the workspace version needs {allowed}")
+    return version
 
 
 def changelog_section(name):
@@ -93,9 +113,14 @@ def main():
     parser.add_argument("--github-output", action="store_true", help="print the results as GitHub step outputs")
     parser.add_argument("--checksums", type=pathlib.Path, help="a SHA256SUMS file to include")
     parser.add_argument("--out", type=pathlib.Path, help="where to write the notes")
+    parser.add_argument("--check-versions", action="store_true",
+                        help="only check that VERSION and every descriptor agree")
     arguments = parser.parse_args()
 
     version = versions()
+    if arguments.check_versions:
+        print(f"Every member has version {version}.")
+        return 0
     if arguments.tag:
         match = TAG.fullmatch(arguments.tag)
         if not match:

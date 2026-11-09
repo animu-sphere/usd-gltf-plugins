@@ -16,8 +16,8 @@ updates, tests, and questions are all welcome.
 ## Build and test
 
 Follow the commands in the [README](README.md#development). A change to the
-build must keep both
-[build entry points](docs/architecture/WORKSPACE.md#build-entry-points) working.
+build must keep [every build of the workspace](docs/architecture/WORKSPACE.md#members-and-builds)
+working.
 
 For a documentation-only change, the full build is usually unnecessary. Run the
 documentation checks, and mention in the pull request that the build was not run:

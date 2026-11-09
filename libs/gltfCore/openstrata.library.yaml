@@ -1,0 +1,14 @@
+# The OpenStrata descriptor of gltfCore: parsing with fastgltf, and checked access to glTF data,
+# URIs and buffers (docs/architecture/WORKSPACE.md). A static library with no OpenUSD dependency.
+# Its installed package carries the vendored fastgltf, simdjson and simdutf archives it links.
+schema: openstrata.library/v1alpha1
+library:
+  id: gltfCore
+  # Mirrors VERSION; scripts/make_release_notes.py checks that they agree.
+  version: 0.2.0
+cmake:
+  package: gltfCore
+  target: gltfCore::gltfCore
+runtime:
+  # Static: nothing to put on a loader path.
+  directories: []
