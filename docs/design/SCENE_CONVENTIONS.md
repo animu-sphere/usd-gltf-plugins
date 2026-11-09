@@ -36,8 +36,9 @@ from geometry. See the [decision record](../adr/0026-scene-hierarchy.md).
 Each node is an `Xform` with the node's local transform. Its mesh, camera and light are children of
 that `Xform`, not substitutes for it. Each mesh is an `Xform` containing one USD Mesh per glTF
 primitive, which retains the primitive boundaries needed for material bindings. Nodes and meshes are
-distinct concepts: a mesh that several nodes use is converted below each of them, and converting a
-mesh stays separate from placing it, so that a shared representation can replace the copies later.
+distinct concepts: a mesh that several nodes use is converted once, at the first of them in
+conversion order, and copied below the others, so that a shared representation can replace the
+copies later.
 No mesh definitions are authored where they would render, such as a visible `/Asset/meshes`.
 
 | Source | Prim name |

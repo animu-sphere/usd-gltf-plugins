@@ -6,6 +6,7 @@
 #include "material.h"
 #include "mesh.h"
 #include "parse.h"
+#include "sceneMap.h"
 #include "sceneSelection.h"
 
 #include "pxr/base/gf/matrix4d.h"
@@ -14,6 +15,7 @@
 #include "pxr/base/tf/errorTransport.h"
 #include "pxr/base/vt/array.h"
 #include "pxr/base/vt/value.h"
+#include "pxr/usd/sdf/copyUtils.h"
 #include "pxr/usd/usd/prim.h"
 #include "pxr/usd/usd/stage.h"
 #include "pxr/usd/usdGeom/metrics.h"
@@ -23,7 +25,6 @@
 
 #include <fastgltf/core.hpp>
 
-#include <cmath>
 #include <condition_variable>
 #include <deque>
 #include <exception>
@@ -32,7 +33,6 @@
 #include <string>
 #include <string_view>
 #include <thread>
-#include <tuple>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -44,58 +44,24 @@ namespace
 
 using namespace pxr;
 
-// Returns what a node uses that cannot be converted, or nullptr.
-const char*
-unsupportedNodeContent(const fastgltf::Node& node)
-{
-    if (node.skinIndex)
-    {
-        return "skins are";
-    }
-    return node.weights.empty() ? nullptr : "morph weights are";
-}
-
+// Converts a mesh at its first placement, and copies the result to the others, so that each mesh is
+// read once and every node that uses it has the same prims.
 bool
-nodeMatrix(const fastgltf::Node& node, GfMatrix4d& result)
+placeMesh(const fastgltf::Asset& asset, const SceneMap& map, std::size_t meshIndex,
+          const SdfPath& path, const UsdStageRefPtr& stage,
+          const gltfCore::BufferLoader& loadBuffer, MaterialAuthor& materials)
 {
-    fastgltf::math::nmat4x4 matrix;
-    if (const auto* trs = std::get_if<fastgltf::TRS>(&node.transform))
+    const auto& first = map.meshes[meshIndex].front();
+    if (path == first)
     {
-        const auto& q = trs->rotation;
-        const double lengthSquared = double(q.x()) * q.x() + double(q.y()) * q.y() +
-                                     double(q.z()) * q.z() + double(q.w()) * q.w();
-        if (!std::isfinite(lengthSquared) || std::abs(lengthSquared - 1.0) > 0.001)
-        {
-            return false;
-        }
-        // The tolerance accepts rotations that would otherwise scale and shear the node.
-        matrix = fastgltf::math::scale(
-            fastgltf::math::rotate(
-                fastgltf::math::translate(fastgltf::math::nmat4x4(), trs->translation),
-                fastgltf::math::normalize(q)),
-            trs->scale);
+        return ConvertMesh(asset, meshIndex, stage, path, loadBuffer, materials);
     }
-    else
+    // Material bindings target /Asset/mtl, outside the copy, so they are copied unchanged.
+    const auto layer = stage->GetRootLayer();
+    if (!SdfCopySpec(layer, first, layer, path))
     {
-        matrix = std::get<fastgltf::math::nmat4x4>(node.transform);
-    }
-
-    if (matrix[0][3] != 0 || matrix[1][3] != 0 || matrix[2][3] != 0 || matrix[3][3] != 1)
-    {
+        TF_RUNTIME_ERROR("Could not place glTF mesh %zu at %s", meshIndex, path.GetText());
         return false;
-    }
-
-    // glTF matrices use column vectors; Gf matrices use row vectors.
-    for (std::size_t column = 0; column < 4; ++column)
-    {
-        for (std::size_t row = 0; row < 4; ++row)
-        {
-            if (!std::isfinite(matrix[column][row]))
-            {
-                return false;
-            }
-            result[column][row] = matrix[column][row];
-        }
     }
     return true;
 }
@@ -123,18 +89,21 @@ authorScene(const fastgltf::Asset& asset, const std::string& sourcePath,
         TF_RUNTIME_ERROR("Could not author glTF layer root");
         return {};
     }
-    const auto scenes =
-        UsdGeomScope::Define(stage, root.GetPath().AppendChild(TfToken("scenes")));
+    const auto scenes = UsdGeomScope::Define(stage, root.GetPath().AppendChild(TfToken("scenes")));
     const auto mtl = UsdGeomScope::Define(stage, root.GetPath().AppendChild(TfToken("mtl")));
     if (!scenes || !mtl)
     {
         TF_RUNTIME_ERROR("Could not author glTF layer scopes");
         return {};
     }
+    const auto map = MapScene(asset, selectedIndex, scenes.GetPath());
+    if (!map)
+    {
+        return {};
+    }
     // The scene's prim has no transform, so nodes keep the transforms they have in glTF.
     const auto& selected = asset.scenes[selectedIndex];
-    const auto scene = UsdGeomXform::Define(
-        stage, scenes.GetPath().AppendChild(TfToken("Scene_" + std::to_string(selectedIndex))));
+    const auto scene = UsdGeomXform::Define(stage, map->scene);
     if (!scene ||
         (!selected.name.empty() && !scene.GetPrim().SetDisplayName(std::string(selected.name))))
     {
@@ -150,69 +119,36 @@ authorScene(const fastgltf::Asset& asset, const std::string& sourcePath,
     }
 
     MaterialAuthor materials(asset, sourcePath, loadBuffer, stage, mtl.GetPath());
-    std::vector<bool> visited(asset.nodes.size(), false);
-    // Each node, its parent's prim and its parent's transform relative to the asset.
-    std::vector<std::tuple<std::size_t, UsdPrim, GfMatrix4d>> pending;
-    const auto& roots = selected.nodeIndices;
-    for (auto it = roots.rbegin(); it != roots.rend(); ++it)
+    for (const auto& mapped : map->nodes)
     {
-        pending.emplace_back(*it, scene.GetPrim(), GfMatrix4d(1.0));
-    }
-    while (!pending.empty())
-    {
-        auto [index, parent, parentWorld] = std::move(pending.back());
-        pending.pop_back();
-        if (index >= asset.nodes.size() || visited[index])
-        {
-            TF_RUNTIME_ERROR("glTF scene contains an invalid, repeated, or cyclic node index %zu",
-                             index);
-            return {};
-        }
-        visited[index] = true;
+        const auto index = mapped.index;
         const auto& node = asset.nodes[index];
-        if (const char* unsupported = unsupportedNodeContent(node))
-        {
-            TF_RUNTIME_ERROR("glTF node %zu: %s not supported yet", index, unsupported);
-            return {};
-        }
-        GfMatrix4d matrix;
-        if (!nodeMatrix(node, matrix))
-        {
-            TF_RUNTIME_ERROR("glTF node %zu has an invalid transform", index);
-            return {};
-        }
-        const auto xform = UsdGeomXform::Define(
-            stage, parent.GetPath().AppendChild(TfToken("Node_" + std::to_string(index))));
+        const auto xform = UsdGeomXform::Define(stage, mapped.path);
         if (!xform ||
             (!node.name.empty() && !xform.GetPrim().SetDisplayName(std::string(node.name))))
         {
             TF_RUNTIME_ERROR("Could not author glTF node %zu", index);
             return {};
         }
-        if (!xform.AddTransformOp().Set(matrix))
+        if (!xform.AddTransformOp().Set(mapped.local))
         {
             TF_RUNTIME_ERROR("Could not author glTF node %zu transform", index);
             return {};
         }
         if (node.meshIndex &&
-            !AuthorMesh(asset, *node.meshIndex, xform.GetPrim(), loadBuffer, materials))
+            !placeMesh(asset, *map, *node.meshIndex, mapped.mesh, stage, loadBuffer, materials))
         {
             return {};
         }
-        // Gf matrices use row vectors, so the parent's transform applies last.
-        const GfMatrix4d world = matrix * parentWorld;
         if (node.cameraIndex &&
-            !AuthorCamera(asset, index, *node.cameraIndex, xform.GetPrim(), world))
+            !AuthorCamera(asset, index, *node.cameraIndex, xform.GetPrim(), mapped.world))
         {
             return {};
         }
-        if (node.lightIndex && !AuthorLight(asset, index, *node.lightIndex, xform.GetPrim(), world))
+        if (node.lightIndex &&
+            !AuthorLight(asset, index, *node.lightIndex, xform.GetPrim(), mapped.world))
         {
             return {};
-        }
-        for (auto it = node.children.rbegin(); it != node.children.rend(); ++it)
-        {
-            pending.emplace_back(*it, xform.GetPrim(), world);
         }
     }
     if (!mark.IsClean())

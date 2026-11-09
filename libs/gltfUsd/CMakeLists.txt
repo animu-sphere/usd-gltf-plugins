@@ -4,7 +4,8 @@ add_library(usd_gltf_usd STATIC
     light.cpp
     material.cpp
     mesh.cpp
-    scene.cpp)
+    scene.cpp
+    sceneMap.cpp)
 target_compile_features(usd_gltf_usd PUBLIC cxx_std_20)
 target_include_directories(usd_gltf_usd PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}" ${PXR_INCLUDE_DIRS})
 target_link_libraries(usd_gltf_usd PUBLIC usd_gltf_core usd_gltf_texture)
