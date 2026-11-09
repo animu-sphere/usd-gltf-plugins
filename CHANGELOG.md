@@ -17,6 +17,11 @@ here.
   `/Asset/mtl` is unchanged. See [ADR 0026](docs/adr/0026-scene-hierarchy.md).
 - A mesh that several nodes use is converted once and copied below each of them, rather than read
   again for each node. The authored prims are unchanged.
+- The repository is an OpenStrata plugin workspace whose libraries are members with their own
+  descriptors, CMake packages and tests, each with `include/`, `src/` and `tests/`. The plugin
+  bundle builds them from source and no longer writes to its source directory. A `VERSION` file
+  holds the version, a plain-CMake preset and CI lane build without `ost`, and the plugin package is
+  unchanged. See [ADR 0027](docs/adr/0027-plugin-workspace.md).
 
 ## [0.2.0] - 2026-11-09
 

@@ -1,0 +1,19 @@
+# The OpenStrata descriptor of gltfUsd: translation of a glTF scene onto an SdfLayer
+# (docs/architecture/WORKSPACE.md). A static library; it does not register a plugin.
+schema: openstrata.library/v1alpha1
+library:
+  id: gltfUsd
+  # Mirrors VERSION; scripts/make_release_notes.py checks that they agree.
+  version: 0.2.0
+cmake:
+  package: gltfUsd
+  target: gltfUsd::gltfUsd
+requires:
+  libraries:
+    - id: gltfCore
+      version: ">=0.2,<0.3"
+    - id: gltfTexture
+      version: ">=0.2,<0.3"
+runtime:
+  # Static: nothing to put on a loader path.
+  directories: []

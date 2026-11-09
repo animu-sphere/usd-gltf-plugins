@@ -1,0 +1,18 @@
+# The OpenStrata descriptor of gltfTexture: image resolution and KTX2 and WebP decoding
+# (docs/architecture/WORKSPACE.md). A static library with no OpenUSD dependency. Its installed
+# package carries the vendored Basis Universal and libwebp archives it links.
+schema: openstrata.library/v1alpha1
+library:
+  id: gltfTexture
+  # Mirrors VERSION; scripts/make_release_notes.py checks that they agree.
+  version: 0.2.0
+cmake:
+  package: gltfTexture
+  target: gltfTexture::gltfTexture
+requires:
+  libraries:
+    - id: gltfCore
+      version: ">=0.2,<0.3"
+runtime:
+  # Static: nothing to put on a loader path.
+  directories: []

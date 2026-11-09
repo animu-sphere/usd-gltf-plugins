@@ -1,10 +1,19 @@
 [project]
 name = "usd-gltf-plugins"
+# Mirrors VERSION; scripts/make_release_notes.py checks that they agree.
 version = "0.2.0"
 
 [requires]
 platform = "cy2026"
 profile = "usd"
 
+# Every member by name, so that adding one is a visible edit (docs/architecture/WORKSPACE.md).
+# The bundle builds the libraries into itself and declares no library requirement, so the graph has
+# the libraries' edges between each other and none to the bundle.
 [workspace]
-members = ["plugins/usdGltfFileFormat"]
+members = [
+  "libs/gltfCore",
+  "libs/gltfTexture",
+  "libs/gltfUsd",
+  "plugins/usdGltfFileFormat",
+]

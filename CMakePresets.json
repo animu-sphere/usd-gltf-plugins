@@ -1,0 +1,27 @@
+{
+    "version": 3,
+    "cmakeMinimumRequired": { "major": 3, "minor": 22, "patch": 0 },
+    "configurePresets": [
+        {
+            "name": "plain",
+            "displayName": "Plain CMake (no ost)",
+            "description": "Builds with the compiler of the current shell (on Windows, a Developer PowerShell). Set OPENUSD_ROOT to an OpenUSD 26.08 install. `ost configure` writes its own presets to CMakeUserPresets.json instead.",
+            "generator": "Ninja Multi-Config",
+            "binaryDir": "${sourceDir}/build/plain",
+            "cacheVariables": {
+                "CMAKE_PREFIX_PATH": "$env{OPENUSD_ROOT}"
+            }
+        }
+    ],
+    "buildPresets": [
+        { "name": "plain", "configurePreset": "plain", "configuration": "Release" }
+    ],
+    "testPresets": [
+        {
+            "name": "plain",
+            "configurePreset": "plain",
+            "configuration": "Release",
+            "output": { "outputOnFailure": true }
+        }
+    ]
+}

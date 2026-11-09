@@ -1,61 +1,80 @@
 # SPDX-License-Identifier: Apache-2.0
+# usdGltfFileFormat: the SdfFileFormat for .gltf and .glb, and the ArPackageResolver that serves
+# their embedded images.
+#
+# Its own CMake project, so that `ost plugin build plugins/usdGltfFileFormat` can build it alone,
+# and added with add_subdirectory() by the repository root. The library goes to lib/ and its
+# registration to plugin/resources/usdGltfFileFormat/ below the output root, and installs to the
+# same layout.
 cmake_minimum_required(VERSION 3.22)
 
-if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
-    # OpenStrata's bundle build uses this directory as the CMake entry point,
-    # so it adds the shared parts that the repository root otherwise provides.
-    project(UsdGltfFileFormatBundle LANGUAGES CXX)
-    include(CTest)
-    set(USD_GLTF_OUTPUT_ROOT "${CMAKE_CURRENT_SOURCE_DIR}")
+include("${CMAKE_CURRENT_LIST_DIR}/../../cmake/UsdGltfBuild.cmake")
+usd_gltf_read_version(_usd_gltf_version)
+project(UsdGltfFileFormatPlugin
+    VERSION ${_usd_gltf_version}
+    DESCRIPTION "OpenUSD file format for glTF 2.0"
+    LANGUAGES CXX)
+usd_gltf_default_build_type()
 
-    include(../../cmake/UsdGltfDependencies.cmake)
-    add_subdirectory("${USD_GLTF_REPOSITORY_ROOT}/libs/gltfCore" "${CMAKE_CURRENT_BINARY_DIR}/libs/gltfCore")
-    add_subdirectory("${USD_GLTF_REPOSITORY_ROOT}/libs/gltfTexture" "${CMAKE_CURRENT_BINARY_DIR}/libs/gltfTexture")
-    add_subdirectory("${USD_GLTF_REPOSITORY_ROOT}/libs/gltfUsd" "${CMAKE_CURRENT_BINARY_DIR}/libs/gltfUsd")
-    if(BUILD_TESTING)
-        add_subdirectory("${USD_GLTF_REPOSITORY_ROOT}/tests" "${CMAKE_CURRENT_BINARY_DIR}/tests")
-    endif()
+if(NOT pxr_FOUND)
+    find_package(pxr REQUIRED CONFIG)
 endif()
 
-add_library(UsdGltfFileFormat SHARED
-    UsdGltfFileFormat.cpp
-    UsdGltfPackageResolver.cpp
-    externalBuffer.cpp)
-target_compile_features(UsdGltfFileFormat PRIVATE cxx_std_20)
-set_target_properties(UsdGltfFileFormat PROPERTIES CXX_EXTENSIONS OFF)
-target_include_directories(UsdGltfFileFormat PRIVATE ${PXR_INCLUDE_DIRS})
-target_link_libraries(UsdGltfFileFormat PRIVATE usd_gltf_usd)
+# The libraries are linked statically, so a standalone build adds them from source rather than
+# finding installed packages, and does not build their tests, which run in the workspace build.
+# The bundle manifest declares no library requirement for the same reason: OpenStrata would stage
+# the libraries' archives and headers in the bundle's package.
+if(PROJECT_IS_TOP_LEVEL)
+    set(BUILD_TESTING OFF)
+    usd_gltf_add_libraries()
+endif()
+# The root sets the build directory. Standalone, the outputs go to the bundle's own directory, as in
+# OpenStrata's bundle templates: `ost plugin view` reads them there, while `ost plugin test` and
+# `ost plugin package` read the installed stage.
+if(NOT DEFINED USD_GLTF_OUTPUT_ROOT)
+    set(USD_GLTF_OUTPUT_ROOT "${CMAKE_CURRENT_SOURCE_DIR}")
+endif()
+set(_usd_gltf_resources "${USD_GLTF_OUTPUT_ROOT}/plugin/resources/usdGltfFileFormat")
 
+add_library(UsdGltfFileFormat SHARED
+    src/UsdGltfFileFormat.cpp
+    src/UsdGltfPackageResolver.cpp
+    src/externalBuffer.cpp)
+usd_gltf_configure_target(UsdGltfFileFormat)
+target_include_directories(UsdGltfFileFormat PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_link_libraries(UsdGltfFileFormat PRIVATE
+    gltfCore::gltfCore
+    gltfTexture::gltfTexture
+    gltfUsd::gltfUsd)
+usd_gltf_link_openusd(TARGET UsdGltfFileFormat COMPONENTS sdf ar tf)
+
+# plugInfo.json names the library as ../../../lib/, relative to itself.
 set_target_properties(UsdGltfFileFormat PROPERTIES
     PREFIX "lib"
     LIBRARY_OUTPUT_DIRECTORY "${USD_GLTF_OUTPUT_ROOT}/lib"
     RUNTIME_OUTPUT_DIRECTORY "${USD_GLTF_OUTPUT_ROOT}/lib")
-foreach(config DEBUG RELEASE RELWITHDEBINFO MINSIZEREL)
+foreach(_config DEBUG RELEASE RELWITHDEBINFO MINSIZEREL)
     set_target_properties(UsdGltfFileFormat PROPERTIES
-        LIBRARY_OUTPUT_DIRECTORY_${config} "${USD_GLTF_OUTPUT_ROOT}/lib"
-        RUNTIME_OUTPUT_DIRECTORY_${config} "${USD_GLTF_OUTPUT_ROOT}/lib")
+        LIBRARY_OUTPUT_DIRECTORY_${_config} "${USD_GLTF_OUTPUT_ROOT}/lib"
+        RUNTIME_OUTPUT_DIRECTORY_${_config} "${USD_GLTF_OUTPUT_ROOT}/lib")
 endforeach()
 
 configure_file(
-    plugInfo.json.in
-    "${USD_GLTF_OUTPUT_ROOT}/plugin/resources/usdGltfFileFormat/plugInfo.json"
+    plugin/resources/usdGltfFileFormat/plugInfo.json.in
+    "${_usd_gltf_resources}/plugInfo.json"
     @ONLY)
-configure_file(
-    "${USD_GLTF_REPOSITORY_ROOT}/third_party/NOTICES.txt"
-    "${USD_GLTF_OUTPUT_ROOT}/plugin/resources/usdGltfFileFormat/NOTICES.txt"
+# A bundle package holds only the plugin's own tree, so the notices and the license are in it too.
+configure_file("${USD_GLTF_REPOSITORY_ROOT}/third_party/NOTICES.txt" "${_usd_gltf_resources}/NOTICES.txt"
     COPYONLY)
-# A bundle package holds only the plugin's own tree, so the license must be in it too.
-configure_file(
-    "${USD_GLTF_REPOSITORY_ROOT}/LICENSE"
-    "${USD_GLTF_OUTPUT_ROOT}/plugin/resources/usdGltfFileFormat/LICENSE"
-    COPYONLY)
+configure_file("${USD_GLTF_REPOSITORY_ROOT}/LICENSE" "${_usd_gltf_resources}/LICENSE" COPYONLY)
+
 install(TARGETS UsdGltfFileFormat
     RUNTIME DESTINATION lib
     LIBRARY DESTINATION lib)
 install(FILES
-    "${USD_GLTF_OUTPUT_ROOT}/plugin/resources/usdGltfFileFormat/plugInfo.json"
-    "${USD_GLTF_OUTPUT_ROOT}/plugin/resources/usdGltfFileFormat/NOTICES.txt"
-    "${USD_GLTF_OUTPUT_ROOT}/plugin/resources/usdGltfFileFormat/LICENSE"
+    "${_usd_gltf_resources}/plugInfo.json"
+    "${_usd_gltf_resources}/NOTICES.txt"
+    "${_usd_gltf_resources}/LICENSE"
     DESTINATION plugin/resources/usdGltfFileFormat)
 install(FILES
     "${USD_GLTF_REPOSITORY_ROOT}/LICENSE"

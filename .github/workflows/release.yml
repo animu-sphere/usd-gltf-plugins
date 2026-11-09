@@ -153,8 +153,8 @@ jobs:
           ost plugin test --workspace --graph-only --json
           ost build --target ${{ matrix.platform }} --profile ${{ matrix.profile }}
           ost test --target ${{ matrix.platform }} --profile ${{ matrix.profile }}
-      # After the root build, which rewrites the bundle's outputs without the provenance that
-      # packaging requires.
+      # Packaging takes the bundle's own build, which ost installs to the bundle's stage and records
+      # with the provenance the package needs. The root build above is the workspace's.
       - name: Build and test the bundle
         shell: bash
         run: |

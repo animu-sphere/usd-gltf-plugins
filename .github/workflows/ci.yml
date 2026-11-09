@@ -15,3 +15,6 @@ permissions:
 jobs:
   source:
     uses: ./.github/workflows/ost-source-ci.yml
+
+  plain:
+    uses: ./.github/workflows/plain-cmake.yml

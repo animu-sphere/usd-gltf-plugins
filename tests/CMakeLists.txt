@@ -1,21 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
+# The tests that need the whole workspace: the plugin as OpenUSD loads it, its install, and the
+# repository's documents and versions. Each library's unit tests are in its own tests/.
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
-
-add_executable(fastgltf_smoke fastgltf_smoke.cpp)
-target_link_libraries(fastgltf_smoke PRIVATE fastgltf::fastgltf)
-add_test(NAME fastgltf_smoke COMMAND fastgltf_smoke)
-
-add_executable(scene_selection_test scene_selection.cpp)
-target_link_libraries(scene_selection_test PRIVATE usd_gltf_core)
-add_test(NAME scene_selection COMMAND scene_selection_test)
-
-add_executable(accessor_test accessor.cpp)
-target_link_libraries(accessor_test PRIVATE usd_gltf_core)
-add_test(NAME accessor COMMAND accessor_test)
-
-add_executable(image_test image.cpp)
-target_link_libraries(image_test PRIVATE usd_gltf_texture)
-add_test(NAME image COMMAND image_test)
 
 add_test(NAME file_format_registration
     COMMAND "${CMAKE_COMMAND}" -E env
@@ -36,3 +22,6 @@ add_test(NAME install_smoke
         "${CMAKE_CURRENT_SOURCE_DIR}/test_install_smoke.py")
 add_test(NAME docs_consistency
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/check_docs.py")
+add_test(NAME workspace_versions
+    COMMAND "${Python3_EXECUTABLE}" "${USD_GLTF_REPOSITORY_ROOT}/scripts/make_release_notes.py"
+        --check-versions)

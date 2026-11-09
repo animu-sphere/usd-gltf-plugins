@@ -1,10 +1,45 @@
 # SPDX-License-Identifier: Apache-2.0
-add_library(usd_gltf_core STATIC
-    accessor.cpp
-    localFile.cpp
-    parse.cpp
-    sceneSelection.cpp)
-target_compile_features(usd_gltf_core PUBLIC cxx_std_20)
-target_include_directories(usd_gltf_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
-target_link_libraries(usd_gltf_core PUBLIC fastgltf::fastgltf PRIVATE simdjson::simdjson)
-set_target_properties(usd_gltf_core PROPERTIES POSITION_INDEPENDENT_CODE ON CXX_EXTENSIONS OFF)
+# gltfCore: parsing with fastgltf, and checked access to glTF data, URIs and buffers. It does not
+# depend on OpenUSD.
+#
+# Its own CMake project, so that `ost library build libs/gltfCore` can build it alone, and added
+# with add_subdirectory() by the repository root and by the plugin.
+cmake_minimum_required(VERSION 3.22)
+
+include("${CMAKE_CURRENT_LIST_DIR}/../../cmake/UsdGltfBuild.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/../../cmake/UsdGltfThirdParty.cmake")
+usd_gltf_read_version(_usd_gltf_version)
+project(gltfCore
+    VERSION ${_usd_gltf_version}
+    DESCRIPTION "glTF parsing and checked data access for usd-gltf-plugins"
+    LANGUAGES CXX)
+usd_gltf_default_build_type()
+if(PROJECT_IS_TOP_LEVEL)
+    include(CTest)
+endif()
+
+usd_gltf_add_fastgltf()
+
+add_library(gltfCore STATIC
+    src/accessor.cpp
+    src/localFile.cpp
+    src/parse.cpp
+    src/sceneSelection.cpp)
+add_library(gltfCore::gltfCore ALIAS gltfCore)
+usd_gltf_configure_target(gltfCore)
+target_include_directories(gltfCore PUBLIC
+    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+    "$<INSTALL_INTERFACE:include>")
+target_link_libraries(gltfCore PUBLIC fastgltf::fastgltf PRIVATE simdjson::simdjson)
+
+usd_gltf_library_installs(_usd_gltf_install)
+if(_usd_gltf_install)
+    # The gltfCore headers include fastgltf's.
+    usd_gltf_install_library(PACKAGE gltfCore
+        TARGETS gltfCore fastgltf usd_gltf_simdjson usd_gltf_simdutf
+        HEADERS "${USD_GLTF_THIRD_PARTY_DIR}/fastgltf/include/fastgltf")
+endif()
+
+if(BUILD_TESTING)
+    add_subdirectory(tests)
+endif()

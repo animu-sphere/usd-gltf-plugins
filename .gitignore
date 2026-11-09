@@ -2,12 +2,17 @@
 /.strata/
 *.lock
 /dist/
-/plugins/usdGltfFileFormat/.strata/
-/plugins/usdGltfFileFormat/build/
-/plugins/usdGltfFileFormat/lib/
-/plugins/usdGltfFileFormat/plugin/resources/usdGltfFileFormat/plugInfo.json
-/plugins/usdGltfFileFormat/plugin/resources/usdGltfFileFormat/NOTICES.txt
-/plugins/usdGltfFileFormat/plugin/resources/usdGltfFileFormat/LICENSE
-/plugins/usdGltfFileFormat/dist/
+# What `ost plugin build` and `ost library build` keep beside a member.
+/libs/*/.strata/
+/libs/*/build/
+/libs/*/dist/
+/plugins/*/.strata/
+/plugins/*/build/
+/plugins/*/dist/
+# The standalone bundle build's outputs (plugins/usdGltfFileFormat/CMakeLists.txt).
+/plugins/*/lib/
+/plugins/*/plugin/resources/*/plugInfo.json
+/plugins/*/plugin/resources/*/NOTICES.txt
+/plugins/*/plugin/resources/*/LICENSE
 CMakeUserPresets.json
 __pycache__/
