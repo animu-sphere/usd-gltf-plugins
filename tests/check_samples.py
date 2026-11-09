@@ -1019,7 +1019,7 @@ def check_meaning(stage, asset):
             walk(child, path, world)
 
     for root in roots:
-        walk(root, "/Asset/geo", numpy.identity(4))
+        walk(root, f"/Asset/scenes/Scene_{document.get('scene', 0)}", numpy.identity(4))
     actual = {str(prim.GetPath()) for prim in stage.Traverse() if prim.IsA(UsdGeom.Mesh)}
     check.expect(actual == expected_paths, f"{len(actual)} meshes authored, expected {len(expected_paths)}")
     cameras = {str(prim.GetPath()) for prim in stage.Traverse() if prim.IsA(UsdGeom.Camera)}

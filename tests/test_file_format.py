@@ -45,7 +45,7 @@ def scene_document():
     return {
         "asset": {"version": "2.0"},
         "scene": 1,
-        "scenes": [{"nodes": [2]}, {"nodes": [0]}],
+        "scenes": [{"nodes": [2]}, {"name": "Selected / scene", "nodes": [0]}],
         "nodes": [
             {
                 "name": "Root / invalid name",
@@ -402,7 +402,7 @@ def read_png(data):
 
 def base_color_file(stage):
     """The base color image of a textured_document's material, which must be the same in both paths."""
-    mesh = stage.GetPrimAtPath("/Asset/geo/Node_0/Mesh_0/Primitive_0")
+    mesh = stage.GetPrimAtPath("/Asset/scenes/Scene_0/Node_0/Mesh_0/Primitive_0")
     material, _ = UsdShade.MaterialBindingAPI(mesh).ComputeBoundMaterial()
     preview = UsdShade.Shader.Get(
         stage, material.GetPath().AppendPath(Sdf.Path("preview/baseColorTexture")))
@@ -692,15 +692,25 @@ class FileFormatTest(unittest.TestCase):
                     self.assertEqual(stage.GetDefaultPrim().GetPath(), Sdf.Path("/Asset"))
                     self.assertEqual(UsdGeom.GetStageUpAxis(stage), UsdGeom.Tokens.y)
                     self.assertEqual(UsdGeom.GetStageMetersPerUnit(stage), 1.0)
-                    self.assertTrue(stage.GetPrimAtPath("/Asset/geo").IsA(UsdGeom.Scope))
+                    asset = stage.GetPrimAtPath("/Asset")
+                    self.assertEqual([prim.GetName() for prim in asset.GetChildren()], ["scenes", "mtl"])
+                    scenes = stage.GetPrimAtPath("/Asset/scenes")
+                    self.assertTrue(scenes.IsA(UsdGeom.Scope))
                     self.assertTrue(stage.GetPrimAtPath("/Asset/mtl").IsA(UsdGeom.Scope))
-                    root = stage.GetPrimAtPath("/Asset/geo/Node_0")
-                    child = stage.GetPrimAtPath("/Asset/geo/Node_0/Node_1")
+                    # Only the selected scene is authored, named after its index.
+                    self.assertEqual([prim.GetName() for prim in scenes.GetChildren()], ["Scene_1"])
+                    scene = stage.GetPrimAtPath("/Asset/scenes/Scene_1")
+                    self.assertTrue(scene.IsA(UsdGeom.Xform))
+                    self.assertEqual(scene.GetDisplayName(), "Selected / scene")
+                    self.assertEqual(UsdGeom.Xformable(scene).GetOrderedXformOps(), [])
+                    self.assertEqual([prim.GetName() for prim in scene.GetChildren()], ["Node_0"])
+                    root = stage.GetPrimAtPath("/Asset/scenes/Scene_1/Node_0")
+                    child = stage.GetPrimAtPath("/Asset/scenes/Scene_1/Node_0/Node_1")
                     self.assertTrue(root.IsA(UsdGeom.Xform))
                     self.assertTrue(child.IsA(UsdGeom.Xform))
                     self.assertEqual(root.GetDisplayName(), "Root / invalid name")
                     self.assertEqual(child.GetDisplayName(), "Child")
-                    self.assertFalse(stage.GetPrimAtPath("/Asset/geo/Node_2"))
+                    self.assertFalse(stage.GetPrimAtPath("/Asset/scenes/Scene_1/Node_2"))
                     world = UsdGeom.XformCache().GetLocalToWorldTransform(child)
                     point = world.Transform(Gf.Vec3d(0, 0, 0))
                     self.assertTrue(Gf.IsClose(point, Gf.Vec3d(1, 0, 3), 1e-5), str(point))
@@ -731,7 +741,7 @@ class FileFormatTest(unittest.TestCase):
                     self.assertEqual(UsdGeom.GetStageUpAxis(stage), UsdGeom.Tokens.y)
                     self.assertEqual(UsdGeom.GetStageMetersPerUnit(stage), 1.0)
 
-                    mesh_path = "/Asset/geo/Node_0/Node_1/Mesh_0/Primitive_0"
+                    mesh_path = "/Asset/scenes/Scene_0/Node_0/Node_1/Mesh_0/Primitive_0"
                     mesh = UsdGeom.Mesh.Get(stage, mesh_path)
                     points = list(mesh.GetPointsAttr().Get())
                     self.assertEqual(points, [
@@ -791,7 +801,7 @@ class FileFormatTest(unittest.TestCase):
                         write_asset(path, document, binary)
                         stage = Usd.Stage.Open(str(path))
                         for node in (0, 1):
-                            prefix = f"/Asset/geo/Node_{node}/Mesh_0"
+                            prefix = f"/Asset/scenes/Scene_0/Node_{node}/Mesh_0"
                             self.assertEqual(stage.GetPrimAtPath(prefix).GetDisplayName(), "Example mesh")
                             mesh = UsdGeom.Mesh.Get(stage, prefix + "/Primitive_0")
                             self.assertTrue(mesh)
@@ -813,7 +823,7 @@ class FileFormatTest(unittest.TestCase):
                         point = UsdGeom.XformCache().GetLocalToWorldTransform(mesh.GetPrim()).Transform(
                             Gf.Vec3d(0, 0, 0))
                         self.assertEqual(point, Gf.Vec3d(0, 0, 0))
-                        first = stage.GetPrimAtPath("/Asset/geo/Node_0/Mesh_0/Primitive_0")
+                        first = stage.GetPrimAtPath("/Asset/scenes/Scene_0/Node_0/Mesh_0/Primitive_0")
                         self.assertEqual(UsdGeom.XformCache().GetLocalToWorldTransform(first).Transform(
                             Gf.Vec3d(0, 0, 0)), Gf.Vec3d(2, 0, 0))
 
@@ -843,7 +853,7 @@ class FileFormatTest(unittest.TestCase):
                                     (root / "topology.bin").write_bytes(binary)
                                 write_asset(path, document, binary if extension == "glb" and not external else None)
                                 stage = Usd.Stage.Open(str(path))
-                                mesh = UsdGeom.Mesh.Get(stage, "/Asset/geo/Node_0/Mesh_0/Primitive_0")
+                                mesh = UsdGeom.Mesh.Get(stage, "/Asset/scenes/Scene_0/Node_0/Mesh_0/Primitive_0")
                                 self.assertEqual(list(mesh.GetFaceVertexIndicesAttr().Get()), expected)
                                 self.assertEqual(list(mesh.GetFaceVertexCountsAttr().Get()), [3] * (len(expected) // 3))
                                 self.assertEqual(mesh.GetOrientationAttr().Get(), UsdGeom.Tokens.rightHanded)
@@ -882,7 +892,7 @@ class FileFormatTest(unittest.TestCase):
                                         accessor["count"] = count
                                 write_asset(path, document, binary if extension == "glb" else None)
                                 stage = Usd.Stage.Open(str(path))
-                                mesh = UsdGeom.Mesh.Get(stage, "/Asset/geo/Node_0/Mesh_0/Primitive_0")
+                                mesh = UsdGeom.Mesh.Get(stage, "/Asset/scenes/Scene_0/Node_0/Mesh_0/Primitive_0")
                                 expected = [0, 1, 2]
                                 if count == 4:
                                     expected += [2, 1, 3] if mode == 5 else [0, 2, 3]
@@ -924,7 +934,7 @@ class FileFormatTest(unittest.TestCase):
                     buffer_path.write_bytes(binary)
                     write_asset(path, document)
                     self.assertTrue(layer.Reload(True))
-                    mesh = UsdGeom.Mesh.Get(stage, "/Asset/geo/Node_0/Mesh_0/Primitive_0")
+                    mesh = UsdGeom.Mesh.Get(stage, "/Asset/scenes/Scene_0/Node_0/Mesh_0/Primitive_0")
                     self.assertEqual(list(mesh.GetFaceVertexIndicesAttr().Get()), [4, 3, 2])
 
     def test_texture_coordinates(self):
@@ -945,7 +955,7 @@ class FileFormatTest(unittest.TestCase):
                         write_asset(path, document, binary if extension == "glb" and not external else None)
                         stage = Usd.Stage.Open(str(path))
                         for node in (0, 1):
-                            mesh = UsdGeom.Mesh.Get(stage, f"/Asset/geo/Node_{node}/Mesh_0/Primitive_0")
+                            mesh = UsdGeom.Mesh.Get(stage, f"/Asset/scenes/Scene_0/Node_{node}/Mesh_0/Primitive_0")
                             api = UsdGeom.PrimvarsAPI(mesh)
                             self.assertEqual(list(mesh.GetFaceVertexIndicesAttr().Get()), [2, 0, 1])
                             for name, coordinates in zip(("st", "st1", "st2"), expected):
@@ -958,7 +968,7 @@ class FileFormatTest(unittest.TestCase):
                                 self.assertEqual(len(values), len(coordinates))
                                 for actual, wanted in zip(values, coordinates):
                                     self.assertTrue(Gf.IsClose(actual, Gf.Vec2f(*wanted), 1e-6), str(actual))
-                            other = UsdGeom.Mesh.Get(stage, f"/Asset/geo/Node_{node}/Mesh_0/Primitive_1")
+                            other = UsdGeom.Mesh.Get(stage, f"/Asset/scenes/Scene_0/Node_{node}/Mesh_0/Primitive_1")
                             self.assertEqual(list(other.GetFaceVertexIndicesAttr().Get()), [0, 1, 2])
                             self.assertEqual(list(UsdGeom.PrimvarsAPI(other).GetPrimvar("st").Get()),
                                              [Gf.Vec2f(*uv) for uv in expected[0]])
@@ -1033,7 +1043,7 @@ class FileFormatTest(unittest.TestCase):
                 updated[uv_offset:uv_offset + 4] = struct.pack("<f", 0.75)
                 (path.parent / "mesh.bin").write_bytes(updated)
                 self.assertTrue(layer.Reload(True))
-                mesh = stage.GetPrimAtPath("/Asset/geo/Node_0/Mesh_0/Primitive_0")
+                mesh = stage.GetPrimAtPath("/Asset/scenes/Scene_0/Node_0/Mesh_0/Primitive_0")
                 self.assertEqual(UsdGeom.PrimvarsAPI(mesh).GetPrimvar("st").Get()[0],
                                  Gf.Vec2f(0.75, 1.5))
 
@@ -1057,7 +1067,7 @@ class FileFormatTest(unittest.TestCase):
                                 for node in (0, 1):
                                     for primitive in (0, 1):
                                         mesh = UsdGeom.Mesh.Get(
-                                            stage, f"/Asset/geo/Node_{node}/Mesh_0/Primitive_{primitive}")
+                                            stage, f"/Asset/scenes/Scene_0/Node_{node}/Mesh_0/Primitive_{primitive}")
                                         api = UsdGeom.PrimvarsAPI(mesh)
                                         self.assertEqual(list(mesh.GetFaceVertexIndicesAttr().Get()),
                                                          [2, 0, 1] if primitive == 0 else [0, 1, 2])
@@ -1144,7 +1154,7 @@ class FileFormatTest(unittest.TestCase):
                 (root / "mesh.bin").write_bytes(updated)
                 write_asset(path, document)
                 self.assertTrue(layer.Reload(True))
-                mesh = stage.GetPrimAtPath("/Asset/geo/Node_0/Mesh_0/Primitive_0")
+                mesh = stage.GetPrimAtPath("/Asset/scenes/Scene_0/Node_0/Mesh_0/Primitive_0")
                 self.assertAlmostEqual(
                     UsdGeom.PrimvarsAPI(mesh).GetPrimvar("displayColor").Get()[0][0], 128 / 255, places=6)
                 self.assertAlmostEqual(
@@ -1224,7 +1234,7 @@ class FileFormatTest(unittest.TestCase):
                         with self.assertRaisesRegex(Tf.ErrorException, message):
                             layer.Reload(True)
                         self.assertEqual(layer_text(layer), before)
-                        self.assertTrue(stage.GetPrimAtPath("/Asset/geo/Node_0/Mesh_0/Primitive_0"))
+                        self.assertTrue(stage.GetPrimAtPath("/Asset/scenes/Scene_0/Node_0/Mesh_0/Primitive_0"))
                 invalid, invalid_binary = mesh_document(extension)
                 if extension == "glb":
                     invalid_binary = invalid_binary[:72] + struct.pack("<3H", 3, 0, 1)
@@ -1312,13 +1322,13 @@ class FileFormatTest(unittest.TestCase):
                     for node in (0, 1):
                         for primitive in (0, 1):
                             mesh = UsdGeom.Mesh.Get(
-                                stage, f"/Asset/geo/Node_{node}/Mesh_0/Primitive_{primitive}")
+                                stage, f"/Asset/scenes/Scene_0/Node_{node}/Mesh_0/Primitive_{primitive}")
                             bound, _ = UsdShade.MaterialBindingAPI(mesh).ComputeBoundMaterial()
                             self.assertEqual(bound.GetPath(), Sdf.Path(f"/Asset/mtl/Material_{primitive}"))
                             self.assertEqual(mesh.GetDoubleSidedAttr().Get(), primitive == 0)
                     host = Usd.Stage.CreateInMemory()
                     host.DefinePrim("/Model").GetReferences().AddReference(str(path))
-                    referenced = host.GetPrimAtPath("/Model/geo/Node_0/Mesh_0/Primitive_0")
+                    referenced = host.GetPrimAtPath("/Model/scenes/Scene_0/Node_0/Mesh_0/Primitive_0")
                     bound, _ = UsdShade.MaterialBindingAPI(referenced).ComputeBoundMaterial()
                     self.assertEqual(bound.GetPath(), Sdf.Path("/Model/mtl/Material_0"))
                     host_preview = UsdShade.Shader.Get(host, "/Model/mtl/Material_0/preview/surface")
@@ -1334,7 +1344,7 @@ class FileFormatTest(unittest.TestCase):
                     self.assert_material_nodegraphs(material, preview, mtlx)
                     self.assertAlmostEqual(preview.GetInput("roughness").Get(), 0.9, places=6)
                     bound, _ = UsdShade.MaterialBindingAPI(
-                        stage.GetPrimAtPath("/Asset/geo/Node_0/Mesh_0/Primitive_0")
+                        stage.GetPrimAtPath("/Asset/scenes/Scene_0/Node_0/Mesh_0/Primitive_0")
                     ).ComputeBoundMaterial()
                     self.assertEqual(bound.GetPath(), material.GetPath())
 
@@ -1358,7 +1368,7 @@ class FileFormatTest(unittest.TestCase):
                     stage = Usd.Stage.Open(str(path))
                     self.assertTrue(UsdShade.Material.Get(stage, "/Asset/mtl/Material_0"))
                     self.assertFalse(stage.GetPrimAtPath("/Asset/mtl/Material_1"))
-                    self.assertFalse(stage.GetPrimAtPath("/Asset/geo/Node_1"))
+                    self.assertFalse(stage.GetPrimAtPath("/Asset/scenes/Scene_0/Node_1"))
 
     def test_material_reload_inside_change_block_preserves_diagnostics(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1400,7 +1410,7 @@ class FileFormatTest(unittest.TestCase):
                         for node in (0, 1):
                             for primitive, name in ((0, "DefaultVertexColor"), (1, "Default")):
                                 mesh = UsdGeom.Mesh.Get(
-                                    stage, f"/Asset/geo/Node_{node}/Mesh_0/Primitive_{primitive}")
+                                    stage, f"/Asset/scenes/Scene_0/Node_{node}/Mesh_0/Primitive_{primitive}")
                                 material, _ = UsdShade.MaterialBindingAPI(mesh).ComputeBoundMaterial()
                                 self.assertEqual(material.GetPath(), Sdf.Path("/Asset/mtl/" + name))
                                 self.assertFalse(mesh.GetDoubleSidedAttr().Get())
@@ -1441,7 +1451,7 @@ class FileFormatTest(unittest.TestCase):
                                 self.assertIn(output, node.GetShaderOutputNames())
                         layer = stage.GetRootLayer()
                         self.assertTrue(layer.Reload(True))
-                        mesh = stage.GetPrimAtPath("/Asset/geo/Node_0/Mesh_0/Primitive_0")
+                        mesh = stage.GetPrimAtPath("/Asset/scenes/Scene_0/Node_0/Mesh_0/Primitive_0")
                         bound, _ = UsdShade.MaterialBindingAPI(mesh).ComputeBoundMaterial()
                         self.assertEqual(bound.GetPath(), Sdf.Path("/Asset/mtl/DefaultVertexColor"))
 
@@ -1453,7 +1463,7 @@ class FileFormatTest(unittest.TestCase):
                     document, binary = mesh_document(extension)
                     write_asset(path, document, binary)
                     stage = Usd.Stage.Open(str(path))
-                    mesh = UsdGeom.Mesh.Get(stage, "/Asset/geo/Node_0/Mesh_0/Primitive_0")
+                    mesh = UsdGeom.Mesh.Get(stage, "/Asset/scenes/Scene_0/Node_0/Mesh_0/Primitive_0")
                     self.assertTrue(layer_text(stage.GetRootLayer()))
                     points = mesh.GetPointsAttr().Get()
                     self.assertEqual(mesh.GetExtentAttr().Get(),
@@ -1562,7 +1572,7 @@ class FileFormatTest(unittest.TestCase):
                         for node in (0, 1):
                             for primitive, name in ((0, "Material_0_VertexColor"), (1, "Material_0")):
                                 mesh = UsdGeom.Mesh.Get(
-                                    stage, f"/Asset/geo/Node_{node}/Mesh_0/Primitive_{primitive}")
+                                    stage, f"/Asset/scenes/Scene_0/Node_{node}/Mesh_0/Primitive_{primitive}")
                                 bound, _ = UsdShade.MaterialBindingAPI(mesh).ComputeBoundMaterial()
                                 self.assertEqual(bound.GetPath(), Sdf.Path("/Asset/mtl/" + name))
                                 self.assertTrue(mesh.GetDoubleSidedAttr().Get())
@@ -1572,7 +1582,7 @@ class FileFormatTest(unittest.TestCase):
                         tinted = rgb != (1, 1, 1)
                         translucent = mode != "OPAQUE"
                         primvars = UsdGeom.PrimvarsAPI(
-                            stage.GetPrimAtPath("/Asset/geo/Node_0/Mesh_0/Primitive_0"))
+                            stage.GetPrimAtPath("/Asset/scenes/Scene_0/Node_0/Mesh_0/Primitive_0"))
 
                         # Preview has no multiply node and reads a per-mesh product.
                         reader = reader_of(preview, "diffuseColor")
@@ -1636,7 +1646,7 @@ class FileFormatTest(unittest.TestCase):
                         self.assertTrue(stage.GetPrimAtPath("/Asset/mtl/Material_0_VertexColor"))
                         host = Usd.Stage.CreateInMemory()
                         host.DefinePrim("/Model").GetReferences().AddReference(str(path))
-                        mesh = host.GetPrimAtPath("/Model/geo/Node_0/Mesh_0/Primitive_0")
+                        mesh = host.GetPrimAtPath("/Model/scenes/Scene_0/Node_0/Mesh_0/Primitive_0")
                         bound, _ = UsdShade.MaterialBindingAPI(mesh).ComputeBoundMaterial()
                         self.assertEqual(bound.GetPath(), Sdf.Path("/Model/mtl/Material_0_VertexColor"))
 
@@ -1645,7 +1655,7 @@ class FileFormatTest(unittest.TestCase):
         stage = Usd.Stage.Open(str(path))
         modes = []
         for primitive in range(7):
-            mesh = stage.GetPrimAtPath(f"/Asset/geo/Node_0/Mesh_0/Primitive_{primitive}")
+            mesh = stage.GetPrimAtPath(f"/Asset/scenes/Scene_0/Node_0/Mesh_0/Primitive_{primitive}")
             material, _ = UsdShade.MaterialBindingAPI(mesh).ComputeBoundMaterial()
             self.assertEqual(material.GetPath(), Sdf.Path(f"/Asset/mtl/Material_{primitive}_VertexColor"))
             mtlx, _, _ = material.ComputeSurfaceSource("mtlx")
@@ -1785,7 +1795,7 @@ class FileFormatTest(unittest.TestCase):
                     preview, _, _ = material.ComputeSurfaceSource()
                     source = preview.GetInput("diffuseColor").GetConnectedSource()[0]
                     self.assertEqual(source.GetPath().name, "baseColorTexture")
-                    mesh = stage.GetPrimAtPath("/Asset/geo/Node_0/Mesh_0/Primitive_0")
+                    mesh = stage.GetPrimAtPath("/Asset/scenes/Scene_0/Node_0/Mesh_0/Primitive_0")
                     self.assertFalse(UsdGeom.PrimvarsAPI(mesh).HasPrimvar("gltf_previewBaseColor"))
 
                     mtlx, _, _ = material.ComputeSurfaceSource("mtlx")
@@ -1995,7 +2005,7 @@ class FileFormatTest(unittest.TestCase):
         stage = Usd.Stage.Open(str(path))
         expected = ("metallicRoughness",) * 2 + ("occlusion",) * 2 + ("emissive",) * 2
         for primitive, slot in enumerate(expected):
-            mesh = stage.GetPrimAtPath(f"/Asset/geo/Node_0/Mesh_0/Primitive_{primitive}")
+            mesh = stage.GetPrimAtPath(f"/Asset/scenes/Scene_0/Node_0/Mesh_0/Primitive_{primitive}")
             material, _ = UsdShade.MaterialBindingAPI(mesh).ComputeBoundMaterial()
             texture = UsdShade.Shader.Get(
                 stage, material.GetPath().AppendPath(Sdf.Path(f"preview/{slot}Texture")))
@@ -2364,7 +2374,7 @@ class FileFormatTest(unittest.TestCase):
                             attributes[name] = (component_type, normalized, raw)
                             write_asset(path, *quantized_document(extension, attributes))
                             stage = Usd.Stage.Open(str(path))
-                            prim = stage.GetPrimAtPath("/Asset/geo/Node_0/Mesh_0/Primitive_0")
+                            prim = stage.GetPrimAtPath("/Asset/scenes/Scene_0/Node_0/Mesh_0/Primitive_0")
                             mesh = UsdGeom.Mesh(prim)
                             api = UsdGeom.PrimvarsAPI(prim)
                             values = {
@@ -2395,7 +2405,7 @@ class FileFormatTest(unittest.TestCase):
                         "TANGENT": (5120, True, ((127, 0, 0, 127), (0, 127, 0, -127), (0, 0, 127, -128))),
                     }))
                     stage = Usd.Stage.Open(str(path))
-                    prim = stage.GetPrimAtPath("/Asset/geo/Node_0/Mesh_0/Primitive_0")
+                    prim = stage.GetPrimAtPath("/Asset/scenes/Scene_0/Node_0/Mesh_0/Primitive_0")
                     mesh = UsdGeom.Mesh(prim)
                     self.assertEqual([tuple(point) for point in mesh.GetPointsAttr().Get()], list(positions))
                     self.assertEqual(mesh.GetNormalsInterpolation(), UsdGeom.Tokens.uniform)
@@ -2433,7 +2443,7 @@ class FileFormatTest(unittest.TestCase):
                     document["nodes"][0].update({"scale": [2 / 65535] * 3, "translation": [-1, -1, 0]})
                     write_asset(path, document, binary if extension == "glb" else None)
                     stage = Usd.Stage.Open(str(path))
-                    prim = stage.GetPrimAtPath("/Asset/geo/Node_0/Mesh_0/Primitive_0")
+                    prim = stage.GetPrimAtPath("/Asset/scenes/Scene_0/Node_0/Mesh_0/Primitive_0")
                     mesh = UsdGeom.Mesh(prim)
                     self.assertEqual(list(mesh.GetNormalsAttr().Get()),
                                      [Gf.Vec3f(0, 0, 1), Gf.Vec3f(0, 0, 1), Gf.Vec3f(0, 0, -1)])
@@ -2546,12 +2556,12 @@ class FileFormatTest(unittest.TestCase):
                     primitives[0]["attributes"]["TANGENT"] = len(document["accessors"]) - 1
                     write_asset(path, document, binary)
                     stage = Usd.Stage.Open(str(path))
-                    mesh = stage.GetPrimAtPath("/Asset/geo/Node_0/Mesh_0/Primitive_0")
+                    mesh = stage.GetPrimAtPath("/Asset/scenes/Scene_0/Node_0/Mesh_0/Primitive_0")
                     primvar = UsdGeom.PrimvarsAPI(mesh).GetPrimvar("gltf_tangent")
                     self.assertEqual(primvar.GetTypeName(), Sdf.ValueTypeNames.Float4Array)
                     self.assertEqual(primvar.GetInterpolation(), UsdGeom.Tokens.vertex)
                     self.assertEqual([tuple(v) for v in primvar.Get()], list(values))
-                    other = stage.GetPrimAtPath("/Asset/geo/Node_0/Mesh_0/Primitive_1")
+                    other = stage.GetPrimAtPath("/Asset/scenes/Scene_0/Node_0/Mesh_0/Primitive_1")
                     self.assertFalse(UsdGeom.PrimvarsAPI(other).GetPrimvar("gltf_tangent"))
                     self.assertTrue(stage.GetRootLayer().Reload(True))
                     self.assertEqual([tuple(v) for v in primvar.Get()], list(values))
@@ -2610,7 +2620,7 @@ class FileFormatTest(unittest.TestCase):
         path = pathlib.Path(__file__).parent / "fixtures" / "base_color_textures.gltf"
         stage = Usd.Stage.Open(str(path))
         for primitive in range(9):
-            mesh = stage.GetPrimAtPath(f"/Asset/geo/Node_0/Mesh_0/Primitive_{primitive}")
+            mesh = stage.GetPrimAtPath(f"/Asset/scenes/Scene_0/Node_0/Mesh_0/Primitive_{primitive}")
             material, _ = UsdShade.MaterialBindingAPI(mesh).ComputeBoundMaterial()
             texture = UsdShade.Shader.Get(
                 stage, material.GetPath().AppendPath(Sdf.Path("preview/baseColorTexture")))
@@ -2625,7 +2635,7 @@ class FileFormatTest(unittest.TestCase):
         path = pathlib.Path(__file__).parent / "fixtures" / "ktx2_textures.gltf"
         stage = Usd.Stage.Open(str(path))
         for primitive in range(6):
-            mesh = stage.GetPrimAtPath(f"/Asset/geo/Node_0/Mesh_0/Primitive_{primitive}")
+            mesh = stage.GetPrimAtPath(f"/Asset/scenes/Scene_0/Node_0/Mesh_0/Primitive_{primitive}")
             material, _ = UsdShade.MaterialBindingAPI(mesh).ComputeBoundMaterial()
             texture = UsdShade.Shader.Get(
                 stage, material.GetPath().AppendPath(Sdf.Path("preview/baseColorTexture")))
@@ -3248,7 +3258,7 @@ class FileFormatTest(unittest.TestCase):
                         if mode == "MASK":
                             self.assertAlmostEqual(preview.GetInput("opacityThreshold").Get(), 0.375, places=6)
                             self.assertAlmostEqual(mtlx.GetInput("alpha_cutoff").Get(), 0.375, places=6)
-                        mesh = UsdGeom.Mesh.Get(stage, "/Asset/geo/Node_0/Mesh_0/Primitive_0")
+                        mesh = UsdGeom.Mesh.Get(stage, "/Asset/scenes/Scene_0/Node_0/Mesh_0/Primitive_0")
                         bound, _ = UsdShade.MaterialBindingAPI(mesh).ComputeBoundMaterial()
                         self.assertEqual(bound.GetPath(), material.GetPath())
                         self.assertTrue(mesh.GetDoubleSidedAttr().Get())
@@ -3342,7 +3352,7 @@ class FileFormatTest(unittest.TestCase):
                     self.assertEqual(reader.GetInput("varname").Get(), "gltf_previewBaseColor")
                     self.assertEqual(source_of(preview, "opacity").GetInput("varname").Get(), "gltf_previewAlpha")
                     self.assertEqual(preview.GetInput("diffuseColor").Get(), Gf.Vec3f(0))
-                    mesh = stage.GetPrimAtPath("/Asset/geo/Node_0/Mesh_0/Primitive_0")
+                    mesh = stage.GetPrimAtPath("/Asset/scenes/Scene_0/Node_0/Mesh_0/Primitive_0")
                     products = UsdGeom.PrimvarsAPI(mesh).GetPrimvar("gltf_previewBaseColor").Get()
                     self.assertTrue(Gf.IsClose(products[1], Gf.Vec3f(0.5, 0, 1), 1e-6))
 
@@ -5291,7 +5301,7 @@ class FileFormatTest(unittest.TestCase):
                         with self.assertRaisesRegex(Tf.ErrorException, message):
                             layer.Reload(True)
                         self.assertEqual(layer_text(layer), before)
-                        self.assertTrue(stage.GetPrimAtPath("/Asset/geo/Node_0/Mesh_0/Primitive_0"))
+                        self.assertTrue(stage.GetPrimAtPath("/Asset/scenes/Scene_0/Node_0/Mesh_0/Primitive_0"))
                 write_asset(path, document, binary)
                 self.assertTrue(layer.Reload(True))
 
@@ -5312,10 +5322,10 @@ class FileFormatTest(unittest.TestCase):
                     stage = Usd.Stage.Open(str(path))
                     cache = UsdGeom.XformCache()
                     authored = {str(prim.GetPath()) for prim in stage.Traverse() if prim.IsA(UsdGeom.Camera)}
-                    self.assertEqual(authored, {"/Asset/geo/" + key for key in expected})
-                    self.assertTrue(stage.GetPrimAtPath("/Asset/geo/Node_0/Mesh_0/Primitive_0"))
+                    self.assertEqual(authored, {"/Asset/scenes/Scene_0/" + key for key in expected})
+                    self.assertTrue(stage.GetPrimAtPath("/Asset/scenes/Scene_0/Node_0/Mesh_0/Primitive_0"))
                     for key, (index, view) in expected.items():
-                        prim = stage.GetPrimAtPath("/Asset/geo/" + key)
+                        prim = stage.GetPrimAtPath("/Asset/scenes/Scene_0/" + key)
                         camera = UsdGeom.Camera(prim)
                         source = document["cameras"][index]
                         self.assertEqual(prim.GetDisplayName(), source.get("name", ""))
@@ -5333,11 +5343,11 @@ class FileFormatTest(unittest.TestCase):
                         actual = world.GetInverse() * camera.GetCamera().frustum.ComputeProjectionMatrix()
                         wanted = view.GetInverse() * gltf_projection(source)
                         self.assertTrue(Gf.IsClose(actual, wanted, 1e-5), f"{key}: {actual} != {wanted}")
-                    perspective = UsdGeom.Camera(stage.GetPrimAtPath("/Asset/geo/Node_0/Camera_0")).GetCamera()
+                    perspective = UsdGeom.Camera(stage.GetPrimAtPath("/Asset/scenes/Scene_0/Node_0/Camera_0")).GetCamera()
                     self.assertAlmostEqual(perspective.aspectRatio, 1.5, places=5)
                     self.assertAlmostEqual(math.radians(perspective.GetFieldOfView(Gf.Camera.FOVVertical)),
                                            0.660593, places=5)
-                    infinite = UsdGeom.Camera(stage.GetPrimAtPath("/Asset/geo/Node_1/Camera_1")).GetCamera()
+                    infinite = UsdGeom.Camera(stage.GetPrimAtPath("/Asset/scenes/Scene_0/Node_1/Camera_1")).GetCamera()
                     self.assertEqual(infinite.aspectRatio, 1.0)
                     self.assertEqual(infinite.clippingRange, Gf.Range1f(0.5, 1000000))
 
@@ -5350,7 +5360,7 @@ class FileFormatTest(unittest.TestCase):
             host = UsdGeom.Xform.Define(stage, "/Host")
             host.AddScaleOp().Set(Gf.Vec3f(100))
             host.GetPrim().GetReferences().AddReference(str(path))
-            prim = stage.GetPrimAtPath("/Host/geo/Node_1/Camera_1")
+            prim = stage.GetPrimAtPath("/Host/scenes/Scene_0/Node_1/Camera_1")
             camera = UsdGeom.Camera(prim)
             # The host's scale acts as a change of units, so distances in the view grow with it.
             world = UsdGeom.XformCache().GetLocalToWorldTransform(prim)
@@ -5448,7 +5458,7 @@ class FileFormatTest(unittest.TestCase):
                     write_asset(path, document, binary)
                     stage = Usd.Stage.Open(str(path))
                     authored = [str(prim.GetPath()) for prim in stage.Traverse() if prim.IsA(UsdGeom.Camera)]
-                    self.assertEqual(authored, ["/Asset/geo/Node_3/Camera_0"])
+                    self.assertEqual(authored, ["/Asset/scenes/Scene_0/Node_3/Camera_0"])
 
     def test_lights(self):
         # Each light prim, its glTF light, its position, and the direction glTF gives it: the node's
@@ -5470,11 +5480,11 @@ class FileFormatTest(unittest.TestCase):
                     stage = Usd.Stage.Open(str(path))
                     cache = UsdGeom.XformCache()
                     authored = {str(prim.GetPath()) for prim in stage.Traverse() if prim.HasAPI(UsdLux.LightAPI)}
-                    self.assertEqual(authored, {"/Asset/geo/" + key for key in expected})
-                    self.assertTrue(stage.GetPrimAtPath("/Asset/geo/Node_0/Mesh_0/Primitive_0"))
+                    self.assertEqual(authored, {"/Asset/scenes/Scene_0/" + key for key in expected})
+                    self.assertTrue(stage.GetPrimAtPath("/Asset/scenes/Scene_0/Node_0/Mesh_0/Primitive_0"))
                     sources = document["extensions"]["KHR_lights_punctual"]["lights"]
                     for key, (index, position, direction) in expected.items():
-                        prim = stage.GetPrimAtPath("/Asset/geo/" + key)
+                        prim = stage.GetPrimAtPath("/Asset/scenes/Scene_0/" + key)
                         source = sources[index]
                         light = UsdLux.LightAPI(prim)
                         self.assertEqual(prim.GetDisplayName(), source.get("name", ""))
@@ -5528,7 +5538,7 @@ class FileFormatTest(unittest.TestCase):
             host = UsdGeom.Xform.Define(stage, "/Host")
             host.AddScaleOp().Set(Gf.Vec3f(100))
             host.GetPrim().GetReferences().AddReference(str(path))
-            prim = stage.GetPrimAtPath("/Host/geo/Node_1/Light_1")
+            prim = stage.GetPrimAtPath("/Host/scenes/Scene_0/Node_1/Light_1")
             # The host's scale acts as a change of units, so the sphere grows with the scene.
             world = UsdGeom.XformCache().GetLocalToWorldTransform(prim)
             wanted = Gf.Matrix4d().SetTranslate(Gf.Vec3d(0, 1, 5)) * Gf.Matrix4d().SetScale(100)
@@ -5548,7 +5558,7 @@ class FileFormatTest(unittest.TestCase):
                         [sys.executable, "-c",
                          "from pxr import Usd, UsdLux; import sys; "
                          "s = Usd.Stage.Open(sys.argv[1]); "
-                         "assert s.GetPrimAtPath('/Asset/geo/Node_1/Light_1').HasAPI(UsdLux.LightAPI)",
+                         "assert s.GetPrimAtPath('/Asset/scenes/Scene_0/Node_1/Light_1').HasAPI(UsdLux.LightAPI)",
                          str(path)],
                         capture_output=True, text=True, check=False,
                     )
@@ -5643,7 +5653,7 @@ class FileFormatTest(unittest.TestCase):
                     write_asset(path, document, binary)
                     stage = Usd.Stage.Open(str(path))
                     authored = [str(prim.GetPath()) for prim in stage.Traverse() if prim.HasAPI(UsdLux.LightAPI)]
-                    self.assertEqual(authored, ["/Asset/geo/Node_0/Light_0"])
+                    self.assertEqual(authored, ["/Asset/scenes/Scene_0/Node_0/Light_0"])
 
     def test_external_buffers_and_reload(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -5659,7 +5669,7 @@ class FileFormatTest(unittest.TestCase):
                     write_asset(path, document)
                     stage = Usd.Stage.Open(str(path))
                     layer = stage.GetRootLayer()
-                    mesh = UsdGeom.Mesh.Get(stage, "/Asset/geo/Node_0/Mesh_0/Primitive_0")
+                    mesh = UsdGeom.Mesh.Get(stage, "/Asset/scenes/Scene_0/Node_0/Mesh_0/Primitive_0")
                     self.assertEqual(list(mesh.GetPointsAttr().Get()),
                                      [Gf.Vec3f(0, 0, 0), Gf.Vec3f(1, 0, 0), Gf.Vec3f(0, 1, 0)])
                     self.assertEqual(list(mesh.GetFaceVertexIndicesAttr().Get()), [2, 0, 1])
@@ -5726,7 +5736,7 @@ class FileFormatTest(unittest.TestCase):
                     (root / "indices_日本.bin").write_bytes(binary[72:])
                     write_asset(path, document, binary[:72] if extension == "glb" else None)
                     stage = Usd.Stage.Open(str(path))
-                    mesh = UsdGeom.Mesh.Get(stage, "/Asset/geo/Node_0/Mesh_0/Primitive_0")
+                    mesh = UsdGeom.Mesh.Get(stage, "/Asset/scenes/Scene_0/Node_0/Mesh_0/Primitive_0")
                     self.assertEqual(list(mesh.GetFaceVertexIndicesAttr().Get()), [2, 0, 1])
 
     def test_unselected_external_buffer_is_not_loaded(self):
@@ -5742,8 +5752,8 @@ class FileFormatTest(unittest.TestCase):
                     document["buffers"][0]["uri"] = "missing.bin"
                     write_asset(path, document)
                     stage = Usd.Stage.Open(str(path))
-                    self.assertTrue(stage.GetPrimAtPath("/Asset/geo/Node_0"))
-                    self.assertFalse(stage.GetPrimAtPath("/Asset/geo/Node_2"))
+                    self.assertTrue(stage.GetPrimAtPath("/Asset/scenes/Scene_1/Node_0"))
+                    self.assertFalse(stage.GetPrimAtPath("/Asset/scenes/Scene_1/Node_2"))
 
     def test_external_buffer_symlink_escape_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -5792,7 +5802,7 @@ class FileFormatTest(unittest.TestCase):
                         binary = data
                     write_asset(path, document, binary)
                     stage = Usd.Stage.Open(str(path))
-                    mesh = UsdGeom.Mesh.Get(stage, "/Asset/geo/Node_0/Mesh_0/Primitive_0")
+                    mesh = UsdGeom.Mesh.Get(stage, "/Asset/scenes/Scene_0/Node_0/Mesh_0/Primitive_0")
                     self.assertEqual(list(mesh.GetFaceVertexIndicesAttr().Get()), [0, 2, 1])
                     self.assertEqual(list(mesh.GetNormalsAttr().Get()), [Gf.Vec3f(0, 0, -1)])
                     self.assertEqual(mesh.GetNormalsInterpolation(), UsdGeom.Tokens.uniform)
@@ -5826,7 +5836,7 @@ class FileFormatTest(unittest.TestCase):
                         ]
                         write_asset(path, document, binary)
                         stage = Usd.Stage.Open(str(path))
-                        mesh_prefix = "/Asset/geo/Node_0/Node_1/Mesh_0"
+                        mesh_prefix = "/Asset/scenes/Scene_0/Node_0/Node_1/Mesh_0"
 
                         host = Usd.Stage.CreateInMemory()
                         reference = host.DefinePrim("/Model", "Xform")
@@ -5885,7 +5895,7 @@ class FileFormatTest(unittest.TestCase):
         )
         for path, parity, interpolation, indices in cases:
             with self.subTest(path=path):
-                mesh = UsdGeom.Mesh.Get(stage, f"/Asset/geo/{path}/Primitive_0")
+                mesh = UsdGeom.Mesh.Get(stage, f"/Asset/scenes/Scene_0/{path}/Primitive_0")
                 self.assertTrue(mesh)
                 self.assertFalse(mesh.GetDoubleSidedAttr().Get())
                 self.assertEqual(mesh.GetOrientationAttr().Get(), UsdGeom.Tokens.rightHanded)
@@ -5926,8 +5936,8 @@ class FileFormatTest(unittest.TestCase):
                         [sys.executable, "-c",
                          "from pxr import Usd; import sys; "
                          "s = Usd.Stage.Open(sys.argv[1]); "
-                         "assert s.GetPrimAtPath('/Asset/geo/Node_2'); "
-                         "assert not s.GetPrimAtPath('/Asset/geo/Node_0')",
+                         "assert s.GetPrimAtPath('/Asset/scenes/Scene_0/Node_2'); "
+                         "assert not s.GetPrimAtPath('/Asset/scenes/Scene_0/Node_0')",
                          str(path)],
                         capture_output=True, text=True, check=False,
                     )
@@ -5951,8 +5961,8 @@ class FileFormatTest(unittest.TestCase):
                         [sys.executable, "-c",
                          "from pxr import Usd; import sys; "
                          "s = Usd.Stage.Open(sys.argv[1]); "
-                         "assert [p.GetName() for p in s.GetPrimAtPath('/Asset/geo').GetChildren()] == ['Node_2', 'Node_0']; "
-                         "assert [p.GetName() for p in s.GetPrimAtPath('/Asset/geo/Node_0').GetChildren()] == ['Node_3', 'Node_1']",
+                         "assert [p.GetName() for p in s.GetPrimAtPath('/Asset/scenes/Scene_0').GetChildren()] == ['Node_2', 'Node_0']; "
+                         "assert [p.GetName() for p in s.GetPrimAtPath('/Asset/scenes/Scene_0/Node_0').GetChildren()] == ['Node_3', 'Node_1']",
                          str(path)],
                         capture_output=True, text=True, check=False,
                     )
@@ -5970,7 +5980,7 @@ class FileFormatTest(unittest.TestCase):
                             "nodes": [{"rotation": [0, 0, component, component], "scale": [2, 3, 4]}],
                         })
                         stage = Usd.Stage.Open(str(path))
-                        matrix = UsdGeom.Xformable(stage.GetPrimAtPath("/Asset/geo/Node_0")) \
+                        matrix = UsdGeom.Xformable(stage.GetPrimAtPath("/Asset/scenes/Scene_0/Node_0")) \
                             .GetLocalTransformation(Usd.TimeCode.Default())
                         # A quarter turn about Z, with each scale exact.
                         expected = Gf.Matrix4d(0, 2, 0, 0, -3, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 1)
@@ -6074,13 +6084,13 @@ class FileFormatTest(unittest.TestCase):
                     with self.assertRaisesRegex(Tf.ErrorException, "cyclic node"):
                         layer.Reload(True)
                     self.assertEqual(layer_text(layer), before)
-                    self.assertTrue(stage.GetPrimAtPath("/Asset/geo/Node_0/Node_1"))
+                    self.assertTrue(stage.GetPrimAtPath("/Asset/scenes/Scene_1/Node_0/Node_1"))
                     changed = scene_document()
                     changed["nodes"][0]["children"] = []
                     write_asset(path, changed)
                     self.assertTrue(layer.Reload(True))
-                    self.assertFalse(stage.GetPrimAtPath("/Asset/geo/Node_0/Node_1"))
-                    self.assertTrue(stage.GetPrimAtPath("/Asset/geo/Node_0"))
+                    self.assertFalse(stage.GetPrimAtPath("/Asset/scenes/Scene_1/Node_0/Node_1"))
+                    self.assertTrue(stage.GetPrimAtPath("/Asset/scenes/Scene_1/Node_0"))
 
 
 if __name__ == "__main__":
