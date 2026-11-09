@@ -8,6 +8,14 @@ here.
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** the selected scene is authored as `/Asset/scenes/Scene_{index}` instead of
+  `/Asset/geo`, so every path below it moves, for example `/Asset/geo/Node_3/Mesh_0` to
+  `/Asset/scenes/Scene_0/Node_3/Mesh_0` when scene 0 is selected. References to the default prim
+  still compose; overrides, collections and relationships that target the old paths must be updated.
+  `/Asset/mtl` is unchanged. See [ADR 0026](docs/adr/0026-scene-hierarchy.md).
+
 ## [0.2.0] - 2026-11-09
 
 ### Added

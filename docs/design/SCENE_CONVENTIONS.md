@@ -8,28 +8,75 @@ implemented.
 
 ```text
 /Asset                         Xform, defaultPrim
-  /geo                         Scope
-    /Node_0                    Xform
-      /Mesh_0                  Xform
-        /Primitive_0           Mesh
-      /Camera_0                Camera
-      /Light_0                 SphereLight or DistantLight
+  /scenes                      Scope
+    /Scene_0                   Xform, the selected scene
+      /Node_0                  Xform
+        /Mesh_0                Xform
+          /Primitive_0         Mesh
+        /Camera_0              Camera
+        /Light_0               SphereLight or DistantLight
+        /Node_1                Xform
+      /SkelRoot_0              SkelRoot, only where skins need one
+        /Skeleton_0            Skeleton
+        /Node_2                Xform
+          /Mesh_1              Xform
+            /Primitive_0       Mesh, skinned
   /mtl                         Scope
     /Material_0                Material
+  /animations                  Scope, only where needed
+    /Animation_0               SkelAnimation, where one applies
 ```
 
-Preserve the glTF node hierarchy below `/Asset/geo`; collect materials under
-`/Asset/mtl` and bind them from geometry. Nodes and meshes are distinct
-concepts. Duplicating a multiply referenced mesh under each node is permitted,
-but must not preclude a future shared USD representation.
+The tree illustrates the kinds of prims; an asset has a skel root or `animations` only when it needs
+one. The selected scene is `Scene_{index}` below `/Asset/scenes`, with no transform of its own, and
+preserves the glTF node hierarchy below it. Only the
+[selected scene](#scene-selection) is authored. Materials are collected under `/Asset/mtl` and bound
+from geometry. See the [decision record](../adr/0026-scene-hierarchy.md).
 
-Each mesh is an Xform below its node, containing one USD Mesh per glTF
-primitive. This retains the primitive boundaries needed for material bindings.
-Use stable index-based prim names such as `Node_12`, `Mesh_3`, `Primitive_0`,
-`Camera_1`, `Light_4` and `Material_2`. glTF names can be empty, repeated, or invalid in a USD path;
-retain original names as display names or equivalent metadata. Test name
-stability. Do not prescribe `/Asset/rig` or `/Asset/anim` as mandatory:
-their placement must be decided when UsdSkel and animation are designed.
+Each node is an `Xform` with the node's local transform. Its mesh, camera and light are children of
+that `Xform`, not substitutes for it. Each mesh is an `Xform` containing one USD Mesh per glTF
+primitive, which retains the primitive boundaries needed for material bindings. Nodes and meshes are
+distinct concepts: a mesh that several nodes use is converted below each of them, and converting a
+mesh stays separate from placing it, so that a shared representation can replace the copies later.
+No mesh definitions are authored where they would render, such as a visible `/Asset/meshes`.
+
+| Source | Prim name |
+| --- | --- |
+| Scene | `Scene_{sceneIndex}` |
+| Node | `Node_{nodeIndex}` |
+| Mesh | `Mesh_{meshIndex}` |
+| Mesh primitive | `Primitive_{primitiveIndex}`, the index within its mesh |
+| Camera | `Camera_{cameraIndex}` |
+| Light | `Light_{lightIndex}` |
+| Material | `Material_{materialIndex}` |
+| Skin | `Skeleton_{skinIndex}` |
+| Animation | `Animation_{animationIndex}` |
+| Generated skel root | `SkelRoot_{index}`, numbered in the order conversion meets it |
+
+glTF names can be empty, repeated, or invalid in a USD path, so they are display names. Each prefix
+names one kind, and each index occurs once below a parent, so names do not collide. A node's path
+follows from its glTF parents only until skins are converted: a joint can become a skeleton joint
+rather than a prim, and an inserted skel root moves the nodes below it. Conversion keeps a map from
+source indices to USD paths and joints, and tests check names, parents and world transforms.
+
+## Skeletons and animation
+
+A glTF skin is a `UsdSkelSkeleton` with its joints, rest and bind transforms and bindings authored
+through the UsdSkel schemas. Joint nodes are normally the skeleton's joints, not also `Xform` prims. A
+joint that has other children, is animated on its own or is referenced by something else keeps its
+observable transform and relationships.
+
+A `UsdSkelRoot` is inside the scene's hierarchy. An existing node becomes the skel root when that
+keeps its transform, identity and the ancestry and bindings UsdSkel needs; otherwise a
+`SkelRoot_{index}` is inserted at a common ancestor of the skeleton and its skinned meshes. Neither may
+change an evaluated transform. One skel root may serve several skins and meshes. Names never assume a
+category such as `Character`.
+
+An animated node, which glTF requires to use translation, rotation and scale rather than a matrix, has
+`translate`, quaternion `orient` and `scale` operations with time samples. Joints are animated by a `UsdSkelAnimation` bound
+through `skel:animationSource`, and morph targets through blend shapes, not as node transforms. A
+`UsdSkelAnimation` holds joint and blend shape values; it is not a whole glTF animation, which can
+also move nodes, so choosing one glTF animation must switch all of them together.
 
 Mesh primitives use float POSITION and optional float NORMAL, TANGENT, TEXCOORD_n
 and COLOR_0 accessors, or the [quantized formats](#quantized-attributes). Accessors

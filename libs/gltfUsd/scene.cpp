@@ -123,11 +123,22 @@ authorScene(const fastgltf::Asset& asset, const std::string& sourcePath,
         TF_RUNTIME_ERROR("Could not author glTF layer root");
         return {};
     }
-    const auto geo = UsdGeomScope::Define(stage, root.GetPath().AppendChild(TfToken("geo")));
+    const auto scenes =
+        UsdGeomScope::Define(stage, root.GetPath().AppendChild(TfToken("scenes")));
     const auto mtl = UsdGeomScope::Define(stage, root.GetPath().AppendChild(TfToken("mtl")));
-    if (!geo || !mtl)
+    if (!scenes || !mtl)
     {
         TF_RUNTIME_ERROR("Could not author glTF layer scopes");
+        return {};
+    }
+    // The scene's prim has no transform, so nodes keep the transforms they have in glTF.
+    const auto& selected = asset.scenes[selectedIndex];
+    const auto scene = UsdGeomXform::Define(
+        stage, scenes.GetPath().AppendChild(TfToken("Scene_" + std::to_string(selectedIndex))));
+    if (!scene ||
+        (!selected.name.empty() && !scene.GetPrim().SetDisplayName(std::string(selected.name))))
+    {
+        TF_RUNTIME_ERROR("Could not author glTF scene %zu", selectedIndex);
         return {};
     }
     stage->SetDefaultPrim(root.GetPrim());
@@ -142,10 +153,10 @@ authorScene(const fastgltf::Asset& asset, const std::string& sourcePath,
     std::vector<bool> visited(asset.nodes.size(), false);
     // Each node, its parent's prim and its parent's transform relative to the asset.
     std::vector<std::tuple<std::size_t, UsdPrim, GfMatrix4d>> pending;
-    const auto& roots = asset.scenes[selectedIndex].nodeIndices;
+    const auto& roots = selected.nodeIndices;
     for (auto it = roots.rbegin(); it != roots.rend(); ++it)
     {
-        pending.emplace_back(*it, geo.GetPrim(), GfMatrix4d(1.0));
+        pending.emplace_back(*it, scene.GetPrim(), GfMatrix4d(1.0));
     }
     while (!pending.empty())
     {

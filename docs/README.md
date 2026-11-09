@@ -54,6 +54,7 @@ available when the decision was made; they are not progress reports:
 - [0023: Anisotropy](adr/0023-anisotropy.md)
 - [0024: Import measurements and mesh sharing](adr/0024-import-measurements.md)
 - [0025: Sources inside packages](adr/0025-packaged-sources.md)
+- [0026: Scene hierarchy](adr/0026-scene-hierarchy.md)
 
 New decisions go in `docs/adr/NNNN-title.md`.
 

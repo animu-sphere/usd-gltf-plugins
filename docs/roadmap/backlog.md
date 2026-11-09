@@ -11,8 +11,9 @@ Later versions, in planned order. Nothing here has started; see the
   on resolving images at runtime; reusable cache operation.
 - Measurements on one set of samples: import latency, peak RSS, mesh duplicate rate, and KTX2 decode
   count and time.
-- Shared meshes and image caches, with a baseline and an improvement target from those measurements,
-  verifying thread safety, lifetime, and stage and resolver identity.
+- Shared mesh definitions referenced from scene nodes, then native instancing only where it is valid,
+  after the design review below; image caches. Each with a baseline and an improvement target from
+  those measurements, verifying thread safety, lifetime, and stage and resolver identity.
 - Fuzz and property tests, with malicious URIs, damaged accessors and images, and very large input.
   A serious security problem is fixed without waiting for this version.
 - More OpenUSD versions and compilers, added only for combinations whose ABI was verified.
@@ -44,6 +45,11 @@ regression tests and a reproducible release process.
 
 Record the investigation and outcome in an ADR before relying on these:
 
-- Mesh sharing and animated-node placement.
+- Mesh sharing: where shared definitions live and how nodes compose them, without drawing them twice
+  or inheriting `visibility`, `active` or `purpose` through references; then per-instance material
+  bindings, skins, blend shapes, editing restrictions and renderer support for native instancing.
+  See [ADR 0026](../adr/0026-scene-hierarchy.md).
+- Importing several scenes of one file, and how a user chooses between them. Only the selected scene
+  is authored until then.
 - Resource resolution through custom asset resolvers and shared parent directories, with its
   security model. [ADR 0025](../adr/0025-packaged-sources.md) decides only sources inside packages.
