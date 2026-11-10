@@ -93,23 +93,39 @@ An animated node, which glTF requires to use translation, rotation and scale rat
 the node's own value as its default, and an animated one also has time samples. See the
 [decision record](../adr/0029-node-animation.md).
 
+`/Asset` has a variant set `animation` with a variant `Animation_{index}` for every glTF animation, and
+selects `Animation_0`; an asset without animations has none. See the
+[decision record](../adr/0030-animation-choice.md).
+
+- A node that any animation moves has its operations and their order outside the variants, without
+  values. Each variant authors the node's own values as defaults and its animation's channels as time
+  samples. A node that no animation moves keeps a matrix.
+- Each variant defines its animation's `UsdSkelAnimation` `Animation_{index}` below
+  `/Asset/animations`, with the joints it moves, and binds it through `skel:animationSource` on each
+  skeleton that has one of them.
+- A camera's or light's correction for scale below a node that any animation moves is inside each
+  variant.
+- `customData` on `/Asset` inside a variant has a dictionary `gltf` with the animation's
+  `endTimeCode` and, when it has one, its `name`.
+
 - A time code is a glTF second times 24. A layer with an authored channel has `timeCodesPerSecond`
-  and `framesPerSecond` of 24, `startTimeCode` 0 and `endTimeCode` at its last keyframe.
+  and `framesPerSecond` of 24, `startTimeCode` 0 and `endTimeCode` at the last keyframe of any
+  animation. Each animation starts at 0 and holds its values after its own end.
 - `LINEAR` keyframes are time samples, which USD interpolates as glTF does. `STEP` adds the previous
   value 1e-7 time codes before each keyframe, which UsdStage holds rather than interpolates.
   `CUBICSPLINE` adds points of each segment, evaluated by glTF's equation, so that the lines between
   them stay within 1e-4 of the curve, in a quaternion's components or times the sampler's largest
   value, in at most 256 pieces. Rotations are normalized.
-- Only the first animation is authored. Channels without a node, or whose node is outside the
-  selected scene, are ignored.
-- A camera or light below an animated node keeps the correction for scale computed at time 0. Its
-  path must not have a scale that changes, nor a rotation that changes below a transform that is not
-  a rotation and uniform scale.
+- Every animation is authored, each in its own variant and never merged. Channels without a node, or
+  whose node is outside the selected scene, are ignored.
+- A camera or light below an animated node keeps, for each animation, the correction for scale
+  computed at its time 0. Its path must not have a scale that changes, nor a rotation that changes
+  below a transform that is not a rotation and uniform scale.
 
 Joints are animated by a `UsdSkelAnimation` bound
 through `skel:animationSource`, and morph targets through blend shapes, not as node transforms. A
 `UsdSkelAnimation` holds joint and blend shape values; it is not a whole glTF animation, which can
-also move nodes, so choosing one glTF animation must switch all of them together.
+also move nodes, so the variant that chooses one glTF animation switches all of them together.
 
 Mesh primitives use float POSITION and optional float NORMAL, TANGENT, TEXCOORD_n
 and COLOR_0 accessors, or the [quantized formats](#quantized-attributes). Accessors
