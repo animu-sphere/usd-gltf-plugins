@@ -74,7 +74,7 @@ placeMesh(const fastgltf::Asset& asset, const SceneMap& map, std::size_t meshInd
     {
         return ConvertMesh(asset, meshIndex, stage, path, loadBuffer, materials);
     }
-    // Material bindings target /Asset/mtl, outside the copy, so they are copied unchanged.
+    // Material bindings target a scope outside the copied subtree, so they are copied unchanged.
     const auto layer = stage->GetRootLayer();
     if (!SdfCopySpec(layer, first, layer, path))
     {
@@ -281,15 +281,16 @@ authorScene(const fastgltf::Asset& asset, const std::string& sourcePath,
         TF_RUNTIME_ERROR("Could not open temporary glTF authoring stage");
         return {};
     }
-    const auto root = UsdGeomXform::Define(stage, SdfPath("/Asset"));
+    const auto root = UsdGeomXform::Define(stage, SdfPath("/Root"));
     if (!root)
     {
         TF_RUNTIME_ERROR("Could not author glTF layer root");
         return {};
     }
-    const auto scenes = UsdGeomScope::Define(stage, root.GetPath().AppendChild(TfToken("scenes")));
-    const auto mtl = UsdGeomScope::Define(stage, root.GetPath().AppendChild(TfToken("mtl")));
-    if (!scenes || !mtl)
+    const auto scenes = UsdGeomScope::Define(stage, root.GetPath().AppendChild(TfToken("Scenes")));
+    const auto materialScope =
+        UsdGeomScope::Define(stage, root.GetPath().AppendChild(TfToken("Materials")));
+    if (!scenes || !materialScope)
     {
         TF_RUNTIME_ERROR("Could not author glTF layer scopes");
         return {};
@@ -326,7 +327,7 @@ authorScene(const fastgltf::Asset& asset, const std::string& sourcePath,
         stage->SetEndTimeCode(animation.endTimeCode);
     }
 
-    MaterialAuthor materials(asset, sourcePath, loadBuffer, stage, mtl.GetPath());
+    MaterialAuthor materials(asset, sourcePath, loadBuffer, stage, materialScope.GetPath());
     std::vector<AnimatedCorrection> corrections;
     for (std::size_t position = 0; position < map->nodes.size(); ++position)
     {

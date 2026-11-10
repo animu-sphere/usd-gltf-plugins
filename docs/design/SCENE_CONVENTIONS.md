@@ -7,8 +7,8 @@ implemented.
 ## Structure and names
 
 ```text
-/Asset                         Xform, defaultPrim
-  /scenes                      Scope
+/Root                          Xform, defaultPrim
+  /Scenes                      Scope
     /Scene_0                   Xform, or SkelRoot; the selected scene
       /Node_0                  Xform
         /Mesh_0                Xform
@@ -21,17 +21,17 @@ implemented.
         /Node_3                Xform
           /Mesh_1              Xform
             /Primitive_0       Mesh, skinned
-  /mtl                         Scope
+  /Materials                   Scope
     /Material_0                Material
-  /animations                  Scope, only where needed
+  /Animations                 Scope, only where needed
     /Animation_0               SkelAnimation, where one applies
 ```
 
-The tree illustrates the kinds of prims; an asset has a skel root or `animations` only when it needs
-one. The selected scene is `Scene_{index}` below `/Asset/scenes`, with no transform of its own, and
-preserves the glTF node hierarchy below it. Only the
-[selected scene](#scene-selection) is authored. Materials are collected under `/Asset/mtl` and bound
-from geometry. See the [decision record](../adr/0026-scene-hierarchy.md).
+The tree illustrates the kinds of prims. A skel root or `Animations` scope appears only when needed.
+The selected scene is `Scene_{index}` below `/Root/Scenes`, with no transform of its own. It preserves
+the glTF node hierarchy below it. The importer authors only the [selected scene](#scene-selection).
+Materials are collected under `/Root/Materials` and bound from geometry. See the
+[decision record](../adr/0026-scene-hierarchy.md).
 
 Each node is an `Xform` with the node's local transform. Its mesh, camera and light are children of
 that `Xform`, not substitutes for it. Each mesh is an `Xform` containing one USD Mesh per glTF
@@ -39,7 +39,7 @@ primitive, which retains the primitive boundaries needed for material bindings. 
 distinct concepts: a mesh that several nodes use is converted once, at the first of them in
 conversion order, and copied below the others, so that a shared representation can replace the
 copies later.
-No mesh definitions are authored where they would render, such as a visible `/Asset/meshes`.
+No mesh definitions are authored where they would render, such as a visible `/Root/meshes`.
 
 | Source | Prim name |
 | --- | --- |
@@ -97,7 +97,7 @@ A node targeted by animation must use TRS in glTF. A node with a transform chann
 the node's own value as its default, and an animated one also has time samples. See the
 [decision record](../adr/0029-node-animation.md).
 
-`/Asset` has a variant set `animation` with a variant `Animation_{index}` for every glTF animation, and
+`/Root` has a variant set `animation` with a variant `Animation_{index}` for every glTF animation, and
 selects `Animation_0`; an asset without animations has none. See the
 [decision record](../adr/0030-animation-choice.md).
 
@@ -105,13 +105,13 @@ selects `Animation_0`; an asset without animations has none. See the
   values. Each variant authors the node's own values as defaults and its animation's channels as time
   samples. A node that no animation moves keeps a matrix.
 - A variant with joint or morph values defines a `UsdSkelAnimation` `Animation_{index}` below
-  `/Asset/animations`. It binds through `skel:animationSource` on skeletons with joints that it
+  `/Root/Animations`. It binds through `skel:animationSource` on skeletons with joints that it
   moves or with meshes that morph. Its translation, rotation and scale arrays are sampled at the
   union of the joint channels' sample times. An unanimated component uses its node's own value.
   At default time, skeletons use their rest transforms.
 - A camera's or light's correction for scale below a node that any animation moves is inside each
   variant.
-- `customData` on `/Asset` inside a variant has a dictionary `gltf` with the animation's
+- `customData` on `/Root` inside a variant has a dictionary `gltf` with the animation's
   `endTimeCode` and, when it has one, its `name`.
 
 - A time code is a glTF second times 24. A layer with an authored channel has `timeCodesPerSecond`
@@ -145,7 +145,7 @@ the authored weight ranges across variants, for use by UsdSkel's joint-based bou
 
 The default weights come from the node, then the mesh, then zeros. They are authored as the
 default of `blendShapeWeights` in the same `UsdSkelAnimation` as joint values, or in
-`/Asset/animations/Rest` when the asset has no animations. Each variant authors the defaults
+`/Root/Animations/Rest` when the asset has no animations. Each variant authors the defaults
 and samples the union of its weight channels' sample times. A node with no weight channel in the
 chosen variant keeps its stated weights at every time. A variant selection that resolves to no
 variant leaves the blend shapes without an animation source.

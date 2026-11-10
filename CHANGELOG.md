@@ -16,7 +16,7 @@ here.
 - Node animation: the translation, rotation and scale channels of every animation become time
   samples of `translate`, `orient` and `scale` operations at 24 time codes per second, with `STEP`,
   `LINEAR` and `CUBICSPLINE` interpolation. Assets with animations were rejected before. Each
-  animation is a variant `Animation_{index}` of a variant set `animation` on `/Asset`, which selects
+  animation is a variant `Animation_{index}` of a variant set `animation` on `/Root`, which selects
   `Animation_0`; a referencing layer chooses another by its own selection. Every animation is
   validated, so an invalid one rejects the file even when it is not the first. See
   [ADR 0029](docs/adr/0029-node-animation.md) and [ADR 0030](docs/adr/0030-animation-choice.md).
@@ -24,11 +24,12 @@ here.
 
 ### Changed
 
-- **Breaking:** the selected scene is authored as `/Asset/scenes/Scene_{index}` instead of
-  `/Asset/geo`, so every path below it moves, for example `/Asset/geo/Node_3/Mesh_0` to
-  `/Asset/scenes/Scene_0/Node_3/Mesh_0` when scene 0 is selected. References to the default prim
-  still compose; overrides, collections and relationships that target the old paths must be updated.
-  `/Asset/mtl` is unchanged. See [ADR 0026](docs/adr/0026-scene-hierarchy.md).
+- **Breaking** — `/Root` is the default prim. Materials go under `/Root/Materials`, the selected
+  scene under `/Root/Scenes/Scene_{index}`, and skeletal or morph animation prims under
+  `/Root/Animations` where needed. When scene 0 is selected, `/Asset/geo/Node_3/Mesh_0` moves to
+  `/Root/Scenes/Scene_0/Node_3/Mesh_0`. Implicit default-prim references still compose. Update
+  explicit references, overrides, collections and relationships that target old paths.
+  See the [scene conventions](docs/design/SCENE_CONVENTIONS.md#structure-and-names).
 - A mesh that several nodes use is converted once and copied below each of them, rather than read
   again for each node. The authored prims are unchanged.
 - The repository is an OpenStrata plugin workspace whose libraries are members with their own

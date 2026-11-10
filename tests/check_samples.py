@@ -361,7 +361,7 @@ def check_primitive(check, asset, prim, primitive, label):
     suffix = "VertexColor" if "COLOR_0" in attributes else ""
     name = f"Material_{index}{'_' + suffix if suffix else ''}" if index is not None else f"Default{suffix}"
     bound = UsdShade.MaterialBindingAPI(prim).GetDirectBinding().GetMaterialPath()
-    expected = f"/Asset/mtl/{name}"
+    expected = f"/Root/Materials/{name}"
     check.expect(str(bound) == expected, f"{label} is bound to {bound}, expected {expected}")
     check.expect(bool(mesh.GetDoubleSidedAttr().Get()) == bool(material.get("doubleSided")),
                  f"{label} doubleSided differs")
@@ -1059,7 +1059,7 @@ def check_animation(check, stage, asset, node_paths):
     animations = asset.json.get("animations", [])
     if not animations:
         return
-    root = stage.GetPrimAtPath("/Asset")
+    root = stage.GetPrimAtPath("/Root")
     variants = root.GetVariantSets().GetVariantSet("animation")
     names = [f"Animation_{index}" for index in range(len(animations))]
     if not check.expect(sorted(variants.GetVariantNames()) == sorted(names),
@@ -1096,7 +1096,7 @@ def check_animation(check, stage, asset, node_paths):
             if path == "weights":
                 mesh = asset.json["meshes"][asset.json["nodes"][node]["mesh"]]
                 count = len(mesh["primitives"][0]["targets"])
-                anim = UsdSkel.Animation.Get(stage, f"/Asset/animations/{names[index]}")
+                anim = UsdSkel.Animation.Get(stage, f"/Root/Animations/{names[index]}")
                 if not check.expect(anim, f"{label} has no morph animation"):
                     continue
                 attribute = anim.GetBlendShapeWeightsAttr()
@@ -1163,7 +1163,7 @@ def check_skinning(check, stage, asset, plan, node_paths, placements):
     from pxr import Usd, UsdGeom, UsdSkel, Vt
     from probe_skins import Pose, reference_points
 
-    scene = f"/Asset/scenes/Scene_{plan.scene}"
+    scene = f"/Root/Scenes/Scene_{plan.scene}"
     skeletons = {}
     for index, skin in plan.skeletons.items():
         space = node_paths[skin["space"]] if skin["space"] is not None else scene
@@ -1316,7 +1316,7 @@ def check_meaning(stage, asset):
             walk(child, path, world)
 
     for root in roots:
-        walk(root, f"/Asset/scenes/Scene_{document.get('scene', 0)}", numpy.identity(4))
+        walk(root, f"/Root/Scenes/Scene_{document.get('scene', 0)}", numpy.identity(4))
     check_animation(check, stage, asset, node_paths)
     if placements:
         check_skinning(check, stage, asset, plan, node_paths, placements)
