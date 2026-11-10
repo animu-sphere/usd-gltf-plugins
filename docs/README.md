@@ -58,6 +58,7 @@ available when the decision was made; they are not progress reports:
 - [0027: Plugin workspace members](adr/0027-plugin-workspace.md)
 - [0028: Skin placement](adr/0028-skin-placement.md)
 - [0029: Node animation](adr/0029-node-animation.md)
+- [0030: Choosing an animation](adr/0030-animation-choice.md)
 
 New decisions go in `docs/adr/NNNN-title.md`.
 
