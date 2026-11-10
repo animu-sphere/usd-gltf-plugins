@@ -9,16 +9,16 @@ implemented.
 ```text
 /Asset                         Xform, defaultPrim
   /scenes                      Scope
-    /Scene_0                   Xform, the selected scene
+    /Scene_0                   Xform, or SkelRoot; the selected scene
       /Node_0                  Xform
         /Mesh_0                Xform
           /Primitive_0         Mesh
         /Camera_0              Camera
         /Light_0               SphereLight or DistantLight
         /Node_1                Xform
-      /SkelRoot_0              SkelRoot, only where skins need one
+      /Node_2                  SkelRoot, a node where skins need one
         /Skeleton_0            Skeleton
-        /Node_2                Xform
+        /Node_3                Xform
           /Mesh_1              Xform
             /Primitive_0       Mesh, skinned
   /mtl                         Scope
@@ -52,26 +52,41 @@ No mesh definitions are authored where they would render, such as a visible `/As
 | Material | `Material_{materialIndex}` |
 | Skin | `Skeleton_{skinIndex}` |
 | Animation | `Animation_{animationIndex}` |
-| Generated skel root | `SkelRoot_{index}`, numbered in the order conversion meets it |
+| Skeleton joint | A token of the node's `Node_{index}` path from the scene, such as `Node_0/Node_2` |
 
 glTF names can be empty, repeated, or invalid in a USD path, so they are display names. Each prefix
-names one kind, and each index occurs once below a parent, so names do not collide. A node's path
-follows from its glTF parents only until skins are converted: a joint can become a skeleton joint
-rather than a prim, and an inserted skel root moves the nodes below it. Conversion keeps a map from
-source indices to USD paths and joints, and tests check names, parents and world transforms.
+names one kind, and each index occurs once below a parent, so names do not collide. A node that has a
+prim has the path of its glTF parents, but a joint can be a skeleton joint rather than a prim.
+Conversion keeps a map from source indices to USD paths and joints, and tests check names, parents
+and world transforms.
 
 ## Skeletons and animation
 
-A glTF skin is a `UsdSkelSkeleton` with its joints, rest and bind transforms and bindings authored
-through the UsdSkel schemas. Joint nodes are normally the skeleton's joints, not also `Xform` prims. A
-joint that has other children, is animated on its own or is referenced by something else keeps its
-observable transform and relationships.
+Each glTF skin that the selected scene uses is a `UsdSkelSkeleton` named `Skeleton_{skinIndex}`. See
+the [decision record](../adr/0028-skin-placement.md).
 
-A `UsdSkelRoot` is inside the scene's hierarchy. An existing node becomes the skel root when that
-keeps its transform, identity and the ancestry and bindings UsdSkel needs; otherwise a
-`SkelRoot_{index}` is inserted at a common ancestor of the skeleton and its skinned meshes. Neither may
-change an evaluated transform. One skel root may serve several skins and meshes. Names never assume a
-category such as `Character`.
+- The skeleton's space is the parent of its joints' common root when that root is a joint, otherwise
+  the common root, or the scene. The skeleton prim is a child of that node's prim.
+- Its joints are the skin's joints and the nodes between them and the space, parents first and
+  siblings in glTF order. Each is the token of its node's path from the scene, so a node has the same
+  token in every skeleton. Joint indices are remapped to this order.
+- Rest transforms are the nodes' local transforms. Bind transforms are the inverses of the inverse
+  bind matrices, in the skeleton's space; a node between joints has its rest transform there.
+  `geomBindTransform` is the identity.
+- Skins that share joints are separate skeletons. A skin that several nodes use binds each of their
+  meshes to one skeleton.
+
+A joint node is only a skeleton joint, without an `Xform`, unless something must be below it: a mesh,
+camera or light, a skeleton whose space it is, or a child that keeps a prim. A joint that keeps a prim
+has the same transform and animation on its `Xform` as in the skeleton.
+
+For each skin, the deepest common ancestor of its skeleton prim and its skinned meshes is a skel
+root, unless it lies below another skin's. That prim, a node's `Xform` or the scene's, becomes a
+`UsdSkelRoot` in place, keeping its path, display name and transform operations. No prim is inserted
+for a skel root, and skel roots do not nest.
+
+A skinned node keeps its transform and animation for its other children; neither applies to its
+skinned mesh, as glTF requires.
 
 An animated node, which glTF requires to use translation, rotation and scale rather than a matrix, has
 `translate`, quaternion `orient` and `scale` operations with time samples. Joints are animated by a `UsdSkelAnimation` bound

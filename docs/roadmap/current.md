@@ -6,34 +6,32 @@ implementation order, which investigation may change. Each feature follows the
 
 ## v0.3.0: scene graph, animation and deformation
 
-Scene graph correctness comes first. The [scene hierarchy decision](../adr/0026-scene-hierarchy.md)
-sets the structure; each task below builds on the last.
+Scene graph correctness comes first. The [scene hierarchy](../adr/0026-scene-hierarchy.md) and
+[skin placement](../adr/0028-skin-placement.md) decisions set the structure; each task below builds on
+the last.
 
-1. Decide in an ADR, after experiments with UsdSkel validation and a renderer: where a skel root goes
-   when joints and skinned meshes have different ancestors; joints with children other than joints,
-   joints animated or referenced elsewhere; shared skins and several skinned meshes; bind-space
-   consistency, joint order and animated parents.
-2. Map glTF time, interpolation and samplers to USD time samples, with STEP, LINEAR and CUBICSPLINE
+1. Map glTF time, interpolation and samplers to USD time samples, with STEP, LINEAR and CUBICSPLINE
    each verified, a documented sampling fallback where USD cannot interpolate the same way, and
    diagnostics for invalid samplers. Animate node translation, rotation and scale, and decide a policy
    for animations of nodes outside the selected scene, which are rejected today.
-3. Skins through `UsdSkel`: joints, inverse bind matrices, bindings and skeletal animation through
-   `skel:animationSource`, with skins, joints and inserted skel roots added to the conversion's map
-   of source indices to USD paths.
-4. Morph targets and weights, static and animated, including skinned meshes and meshes that several
+2. Skins through `UsdSkel`, placed as the skin placement decision specifies: skeletons, joints,
+   bindings, skel roots and skeletal animation through `skel:animationSource`, with skins and joints
+   added to the conversion's map of source indices to USD paths. Record the half-precision scales of
+   animated joints as a limit.
+3. Morph targets and weights, static and animated, including skinned meshes and meshes that several
    nodes use.
-5. Choose between glTF animations, with a variant set or a layer per animation decided in an ADR
+4. Choose between glTF animations, with a variant set or a layer per animation decided in an ADR
    after a proof of concept. Node, joint and morph animation switch together, one default is
    deterministic, the mapping of time codes and playback is documented, and animations never mix.
-6. Representative fixtures and samples for transform equivalence over time, and consumer checks
+5. Representative fixtures and samples for transform equivalence over time, and consumer checks
    where feasible, with the release record calling out the path change and its migration.
 
 ### Release criteria
 
 - Imported assets have stable paths below `/Asset/scenes/Scene_{index}` and `/Asset/mtl`, and nested
   nodes, with their meshes, cameras and lights, match the source's world transforms.
-- Skins work with several skinned meshes and shared skeletons, and generated skel roots have neutral,
-  deterministic names.
+- Skins work with several skinned meshes and shared joints, and skel roots are existing prims, so a
+  node's path does not depend on whether the asset has skins.
 - Joint and node animation reproduce the expected poses at multiple times, across reload. Morph
   targets work at rest and with animated weights, including skinned examples.
 - Several animations have a documented, reproducible way to choose one, and are never mixed.
