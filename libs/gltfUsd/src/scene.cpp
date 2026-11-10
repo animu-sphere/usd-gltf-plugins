@@ -8,6 +8,7 @@
 #include "mesh.h"
 #include "gltfCore/parse.h"
 #include "sceneMap.h"
+#include "skin.h"
 #include "gltfCore/sceneSelection.h"
 
 #include "pxr/base/gf/matrix4d.h"
@@ -26,6 +27,7 @@
 #include "pxr/usd/usdGeom/tokens.h"
 #include "pxr/usd/usdGeom/xform.h"
 #include "pxr/usd/usdGeom/xformOp.h"
+#include "pxr/usd/usdSkel/root.h"
 
 #include <fastgltf/core.hpp>
 
@@ -49,6 +51,16 @@ namespace
 {
 
 using namespace pxr;
+
+UsdGeomXformable
+defineNode(const UsdStageRefPtr& stage, const SceneMap& map, const SdfPath& path)
+{
+    if (std::binary_search(map.skelRoots.begin(), map.skelRoots.end(), path))
+    {
+        return UsdSkelRoot::Define(stage, path);
+    }
+    return UsdGeomXform::Define(stage, path);
+}
 
 // Converts a mesh at its first placement, and copies the result to the others, so that each mesh is
 // read once and every node that uses it has the same prims.
@@ -201,7 +213,7 @@ authorAnimations(const UsdStageRefPtr& stage, const SdfPath& root, const SceneMa
         const UsdEditContext context(variantSet.GetVariantEditContext());
         for (std::size_t position = 0; position < map.nodes.size(); ++position)
         {
-            if (!plan.moved[position])
+            if (!plan.moved[position] || map.nodes[position].path.IsEmpty())
             {
                 continue;
             }
@@ -222,6 +234,10 @@ authorAnimations(const UsdStageRefPtr& stage, const SdfPath& root, const SceneMa
             {
                 return fail();
             }
+        }
+        if (!AuthorJointAnimation(map, values, stage, root, TfToken(variantName(a))))
+        {
+            return fail();
         }
         // A failure here is an error, which authorScene's mark catches.
         const auto asset = stage->GetPrimAtPath(root);
@@ -273,15 +289,16 @@ authorScene(const fastgltf::Asset& asset, const std::string& sourcePath,
         TF_RUNTIME_ERROR("Could not author glTF layer scopes");
         return {};
     }
-    const auto map = MapScene(asset, selectedIndex, scenes.GetPath());
+    auto map = MapScene(asset, selectedIndex, scenes.GetPath());
     AnimationPlan animation;
-    if (!map || !PlanAnimation(asset, loadBuffer, *map, animation))
+    if (!map || !MapSkins(asset, loadBuffer, *map) ||
+        !PlanAnimation(asset, loadBuffer, *map, animation))
     {
         return {};
     }
     // The scene's prim has no transform, so nodes keep the transforms they have in glTF.
     const auto& selected = asset.scenes[selectedIndex];
-    const auto scene = UsdGeomXform::Define(stage, map->scene);
+    const auto scene = defineNode(stage, *map, map->scene);
     if (!scene ||
         (!selected.name.empty() && !scene.GetPrim().SetDisplayName(std::string(selected.name))))
     {
@@ -309,9 +326,13 @@ authorScene(const fastgltf::Asset& asset, const std::string& sourcePath,
     for (std::size_t position = 0; position < map->nodes.size(); ++position)
     {
         const auto& mapped = map->nodes[position];
+        if (mapped.path.IsEmpty())
+        {
+            continue;
+        }
         const auto index = mapped.index;
         const auto& node = asset.nodes[index];
-        const auto xform = UsdGeomXform::Define(stage, mapped.path);
+        const auto xform = defineNode(stage, *map, mapped.path);
         if (!xform ||
             (!node.name.empty() && !xform.GetPrim().SetDisplayName(std::string(node.name))))
         {
@@ -343,6 +364,23 @@ authorScene(const fastgltf::Asset& asset, const std::string& sourcePath,
                               corrections))
         {
             return {};
+        }
+    }
+    if (!AuthorSkeletons(asset, *map, stage))
+    {
+        return {};
+    }
+    if (!map->skins.empty())
+    {
+        // All mesh copies exist now. Bind each copy independently, since they may use different skins.
+        for (const auto& mapped : map->nodes)
+        {
+            const auto& node = asset.nodes[mapped.index];
+            if (node.skinIndex && !BindSkinnedMesh(asset, *node.meshIndex, stage, mapped.mesh,
+                                                   map->skins.at(*node.skinIndex), loadBuffer))
+            {
+                return {};
+            }
         }
     }
     if (!authorAnimations(stage, root.GetPath(), *map, animation, corrections))

@@ -53,7 +53,10 @@ default time; each animation's translation, rotation and scale values, chosen th
 at each keyframe, 1e-6 seconds before it and a quarter, half and three quarters into each segment,
 against glTF's interpolation, within 1e-5 of their size or 2e-4 for `CUBICSPLINE`, the absence of
 time samples on the properties it does not animate, its end in `customData`, and the timeline they
-give ([ADR 0029](0029-node-animation.md), [ADR 0030](0030-animation-choice.md)); each camera's
+give ([ADR 0029](0029-node-animation.md), [ADR 0030](0030-animation-choice.md)); skeleton paths,
+joint order, mesh bindings and UsdSkel's skinned world points at rest and at the start and end of
+each animation, compared with glTF's skinning equation within 1e-4 of the mesh's size after rounding
+animated joint scales to half precision ([ADR 0028](0028-skin-placement.md)); each camera's
 view and projection, as a renderer combines them; each light's position, direction, color,
 intensity and cone, through the UsdLux definitions in [ADR 0013](0013-lights.md); points,
 triangles (in any rotation that keeps winding), normals including generated ones, UV sets with V

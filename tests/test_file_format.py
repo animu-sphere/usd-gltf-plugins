@@ -15,7 +15,7 @@ import unittest
 import urllib.parse
 import zlib
 
-from pxr import Ar, Gf, Sdf, Sdr, Tf, Usd, UsdGeom, UsdLux, UsdShade
+from pxr import Ar, Gf, Sdf, Sdr, Tf, Usd, UsdGeom, UsdLux, UsdShade, UsdSkel, Vt
 
 # A crash in native code would otherwise not say which test caused it.
 faulthandler.enable()
@@ -492,14 +492,7 @@ def unsupported_document(extension, feature):
         })
         return index
 
-    if feature == "skin":
-        joints = add_accessor(bytes(12), 5121, 3, "VEC4")
-        weights = add_accessor(struct.pack("<12f", *([1, 0, 0, 0] * 3)), 5126, 3, "VEC4")
-        for item in document["meshes"][0]["primitives"]:
-            item["attributes"].update({"JOINTS_0": joints, "WEIGHTS_0": weights})
-        node["skin"] = 0
-        document["skins"] = [{"joints": [0]}]
-    elif feature in ("morph target", "mesh weights", "node weights"):
+    if feature in ("morph target", "mesh weights", "node weights"):
         delta = add_accessor(struct.pack("<9f", *([0.0] * 9)), 5126, 3, "VEC3",
                              min=[0, 0, 0], max=[0, 0, 0])
         for item in document["meshes"][0]["primitives"]:
@@ -604,6 +597,62 @@ def animation_document(extension, samplers, channels, more_animations=(), nodes=
         document["buffers"][0]["uri"] = "data:application/octet-stream;base64," + (
             base64.b64encode(binary).decode())
         return document, None
+    return document, binary
+
+
+def skin_document(split_roots):
+    """Two skins share joints and mesh data. The first lists the child before its parent."""
+    nodes = [
+        {"name": "Rig space", "translation": [10, 0, 0], "children": [1, 5, 6, 7]},
+        {"translation": [0, 2, 0], "children": [2, 4]},
+        {"translation": [0, 1, 0], "children": [3]},
+        {"name": "Leaf joint", "translation": [1, 0, 0]},
+        {"translation": [0, 0, 1]},
+        {"mesh": 0, "skin": 0, "translation": [99, 0, 0]},
+        {"mesh": 0, "skin": 0},
+        {"mesh": 0},
+        {"mesh": 0, "skin": 1},
+        {},
+    ]
+    rotation = {"input": [0.25, 1.25], "type": "VEC4",
+                "output": quaternion((0, 0, 1), 0) + quaternion((0, 0, 1), 90)}
+    step = {"input": [0, 1], "output": [0, 1, 0, 0, 3, 0], "interpolation": "STEP"}
+    cubic = {"input": [0, 1], "interpolation": "CUBICSPLINE",
+             "output": [0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 2, 1, 1, 0, 0, 0]}
+    translation = {"input": [0, 2], "output": [0, 0, 0, 4, 0, 0]}
+    document, binary = animation_document(
+        "glb", [rotation, step, cubic], [(0, 1, "rotation"), (1, 2, "translation"), (2, 3, "scale")],
+        more_animations=[([translation], [(0, 5, "translation")]),
+                         ([translation], [(0, 3, "translation")])], nodes=nodes)
+    document["scenes"][0]["nodes"] = [0, 8] if split_roots else [0]
+    if not split_roots:
+        nodes[0]["children"].append(8)
+
+    def add_accessor(data, component, count, kind, **kwargs):
+        nonlocal binary
+        binary += b"\0" * (-len(binary) % 4)
+        view = len(document["bufferViews"])
+        document["bufferViews"].append({"buffer": 0, "byteOffset": len(binary), "byteLength": len(data)})
+        binary += data
+        document["accessors"].append({"bufferView": view, "componentType": component,
+                                     "count": count, "type": kind, **kwargs})
+        return len(document["accessors"]) - 1
+
+    identity = list(Gf.Matrix4d(1))
+    shifted = list(Gf.Matrix4d().SetTranslate(Gf.Vec3d(0, 0, 3)))
+    bind = add_accessor(struct.pack("<48f", *itertools.chain(*shifted, *identity, *identity)),
+                        5126, 3, "MAT4")
+    document["skins"] = [{"name": "First skin", "joints": [3, 1], "inverseBindMatrices": bind},
+                         {"joints": [1, 3]}, {"joints": [9]}]
+    for primitive in document["meshes"][0]["primitives"]:
+        primitive["attributes"].update({
+            "JOINTS_0": add_accessor(bytes(12), 5121, 3, "VEC4"),
+            "WEIGHTS_0": add_accessor(bytes([128, 0, 0, 0] * 3), 5121, 3, "VEC4", normalized=True),
+            "JOINTS_1": add_accessor(struct.pack("<12H", *([1, 0, 0, 0] * 3)), 5123, 3, "VEC4"),
+            "WEIGHTS_1": add_accessor(struct.pack("<12H", *([127 * 257, 0, 0, 0] * 3)),
+                                      5123, 3, "VEC4", normalized=True),
+        })
+    document["buffers"][0]["byteLength"] = len(binary)
     return document, binary
 
 
@@ -5788,9 +5837,170 @@ class FileFormatTest(unittest.TestCase):
                 write_asset(path, document, binary)
                 self.assertTrue(layer.Reload(True))
 
+    def test_skin_bindings_and_animation_variants(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for split in (False, True):
+                with self.subTest(split_roots=split):
+                    document, binary = skin_document(split)
+                    path = pathlib.Path(directory) / ("split.gltf" if split else "rig.glb")
+                    if split:
+                        document["buffers"][0]["uri"] = (
+                            "data:application/octet-stream;base64," + base64.b64encode(binary).decode())
+                    write_asset(path, document, binary)
+                    stage = Usd.Stage.Open(str(path))
+                    scene = "/Asset/scenes/Scene_0"
+                    rig = scene + "/Node_0"
+                    skel_root = scene if split else rig
+                    roots = [str(prim.GetPath()) for prim in stage.Traverse() if prim.IsA(UsdSkel.Root)]
+                    self.assertEqual(roots, [skel_root])
+                    self.assertEqual(stage.GetPrimAtPath(rig).GetDisplayName(), "Rig space")
+                    joint = rig + "/Node_1"
+                    self.assertTrue(stage.GetPrimAtPath(joint + "/Node_4"))
+                    self.assertFalse(stage.GetPrimAtPath(joint + "/Node_2"))
+                    tokens = ["Node_0/Node_1", "Node_0/Node_1/Node_2", "Node_0/Node_1/Node_2/Node_3"]
+                    skeletons = [UsdSkel.Skeleton.Get(stage, rig + f"/Skeleton_{i}") for i in (0, 1)]
+                    for skeleton in skeletons:
+                        self.assertEqual(list(skeleton.GetJointsAttr().Get()), tokens)
+                        self.assertTrue(UsdSkel.Topology(skeleton.GetJointsAttr().Get()).Validate()[0])
+                        self.assertEqual(list(skeleton.GetJointNamesAttr().Get()),
+                                         ["Node_1", "Node_2", "Leaf joint"])
+                    self.assertEqual(skeletons[0].GetPrim().GetDisplayName(), "First skin")
+                    self.assertEqual(skeletons[0].GetBindTransformsAttr().Get()[1].ExtractTranslation(),
+                                     Gf.Vec3d(0, 3, 0))
+                    self.assertEqual(skeletons[0].GetBindTransformsAttr().Get()[2].ExtractTranslation(),
+                                     Gf.Vec3d(0, 0, -3))
+                    self.assertEqual(skeletons[1].GetBindTransformsAttr().Get()[2], Gf.Matrix4d(1))
+                    self.assertFalse(stage.GetPrimAtPath(rig + "/Skeleton_2"))
+                    users = [rig + "/Node_5", rig + "/Node_6", (scene if split else rig) + "/Node_8"]
+                    placements = [(UsdGeom.Mesh.Get(stage, user + f"/Mesh_0/Primitive_{p}"),
+                                   int(i == 2)) for i, user in enumerate(users) for p in range(2)]
+                    for mesh, index in placements:
+                        binding = UsdSkel.BindingAPI(mesh.GetPrim())
+                        self.assertEqual(binding.GetSkeletonRel().GetTargets(), [skeletons[index].GetPath()])
+                        self.assertFalse(binding.GetJointsAttr().HasAuthoredValue())
+                        indices = binding.GetJointIndicesPrimvar()
+                        self.assertEqual(indices.GetInterpolation(), "vertex")
+                        self.assertEqual(indices.GetElementSize(), 8)
+                        a, b = (0, 2) if index else (2, 0)
+                        self.assertEqual(list(indices.Get()), [a, a, a, a, b, a, a, a] * 3)
+                    self.assertFalse(stage.GetPrimAtPath(rig + "/Node_7/Mesh_0/Primitive_0")
+                                     .HasAPI(UsdSkel.BindingAPI))
+
+                    def check_poses():
+                        variants = stage.GetDefaultPrim().GetVariantSet("animation")
+                        self.assertEqual(variants.GetVariantSelection(), "Animation_0")
+                        for animation in (0, 1, 2, 0):
+                            with Usd.EditContext(stage, stage.GetSessionLayer()):
+                                self.assertTrue(variants.SetVariantSelection(f"Animation_{animation}"))
+                            cache = UsdSkel.Cache()
+                            root = UsdSkel.Root.Get(stage, skel_root)
+                            cache.Populate(root, Usd.PrimDefaultPredicate)
+                            bindings = cache.ComputeSkelBindings(root, Usd.PrimDefaultPredicate)
+                            self.assertEqual(sum(len(b.GetSkinningTargets()) for b in bindings), 6)
+                            for skeleton in skeletons:
+                                query = cache.GetSkelQuery(skeleton)
+                                anim = query.GetAnimQuery()
+                                if animation == 1:
+                                    self.assertFalse(anim)
+                                    self.assertFalse(stage.GetPrimAtPath("/Asset/animations"))
+                                else:
+                                    self.assertEqual(str(anim.GetPrim().GetPath()),
+                                                     f"/Asset/animations/Animation_{animation}")
+                                    self.assertEqual(list(anim.GetJointOrder()),
+                                                     tokens if animation == 0 else tokens[-1:])
+                            for seconds in (None, 0, 0.5, 1 - 1e-9, 1, 1.25, 2):
+                                time = Usd.TimeCode.Default() if seconds is None else Usd.TimeCode(24 * seconds)
+                                parent, middle, leaf = (dict(document["nodes"][i]) for i in (1, 2, 3))
+                                if seconds is not None and animation == 0:
+                                    angle = 90 * min(max(seconds - 0.25, 0), 1)
+                                    parent["rotation"] = quaternion((0, 0, 1), angle)
+                                    middle["translation"] = [0, 3 if seconds >= 1 else 1, 0]
+                                    u = min(seconds, 1)
+                                    leaf["scale"] = [1 + u * u * (3 - 2 * u), 1, 1]
+                                if seconds is not None and animation == 2:
+                                    leaf["translation"] = [2 * seconds, 0, 0]
+                                parent_xf = gltf_local(parent)
+                                self.assertTrue(Gf.IsClose(
+                                    UsdGeom.Xformable.Get(stage, joint).GetLocalTransformation(time),
+                                    parent_xf, 1e-6))
+                                leaf_xf = gltf_local(leaf) * gltf_local(middle) * parent_xf
+                                world = UsdGeom.XformCache(time)
+                                for mesh, index in placements:
+                                    skeleton = skeletons[index]
+                                    skeleton_query = cache.GetSkelQuery(skeleton)
+                                    skin_query = cache.GetSkinningQuery(mesh.GetPrim())
+                                    source = mesh.GetPointsAttr().Get()
+                                    points = Vt.Vec3fArray(source)
+                                    self.assertTrue(skin_query.ComputeSkinnedPoints(
+                                        skeleton_query.ComputeSkinningTransforms(time), points, time))
+                                    matrices = (parent_xf, leaf_xf) if index else (
+                                        Gf.Matrix4d().SetTranslate(Gf.Vec3d(0, 0, 3)) * leaf_xf, parent_xf)
+                                    space = world.GetLocalToWorldTransform(skeleton.GetPrim())
+                                    for actual, point in zip(points, source):
+                                        expected = (128 * matrices[0].Transform(Gf.Vec3d(point)) +
+                                                    127 * matrices[1].Transform(Gf.Vec3d(point))) / 255
+                                        # Half scales and adaptive cubic sampling both round the pose.
+                                        self.assertTrue(Gf.IsClose(space.Transform(Gf.Vec3d(actual)),
+                                                                   expected + Gf.Vec3d(10, 0, 0), 6e-4),
+                                                        (animation, seconds, index, actual, expected))
+                    check_poses()
+                    stage.GetSessionLayer().Clear()
+                    self.assertTrue(stage.GetRootLayer().Reload(True))
+                    check_poses()
+
+    def test_skin_failures_preserve_layer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "reload.glb"
+            document, binary = skin_document(False)
+            write_asset(path, document, binary)
+            stage = Usd.Stage.Open(str(path))
+            layer = stage.GetRootLayer()
+            before = layer_text(layer)
+            for cause, diagnostic in (
+                ("joint outside scene", "joint node 9 is outside the selected scene"),
+                ("repeated joint", "joint node 1 is repeated"),
+                ("missing weights", "paired JOINTS_n and WEIGHTS_n"),
+                ("out of range", "out-of-range joint"),
+                ("zero weights", "skin weights sum to zero"),
+                ("singular bind", "inverse bind matrix is singular"),
+                ("nonfinite bind", "inverse bind matrix is not finite"),
+                ("nonaffine bind", "inverse bind matrix is not affine"),
+            ):
+                with self.subTest(cause=cause):
+                    invalid, blob = skin_document(False)
+                    blob = bytearray(blob)
+                    skin = invalid["skins"][0]
+                    attributes = invalid["meshes"][0]["primitives"][0]["attributes"]
+                    if cause == "joint outside scene":
+                        skin["joints"][0] = 9
+                    elif cause == "repeated joint":
+                        skin["joints"][0] = 1
+                    elif cause == "missing weights":
+                        del attributes["WEIGHTS_1"]
+                    elif cause == "out of range":
+                        view = invalid["accessors"][attributes["JOINTS_0"]]["bufferView"]
+                        blob[invalid["bufferViews"][view]["byteOffset"]] = 2
+                    elif cause == "zero weights":
+                        for semantic in ("WEIGHTS_0", "WEIGHTS_1"):
+                            view = invalid["accessors"][attributes[semantic]]["bufferView"]
+                            offset = invalid["bufferViews"][view]["byteOffset"]
+                            blob[offset:offset + 2] = b"\0\0"
+                    else:
+                        view = invalid["accessors"][skin["inverseBindMatrices"]]["bufferView"]
+                        offset = invalid["bufferViews"][view]["byteOffset"]
+                        if cause == "nonaffine bind":
+                            struct.pack_into("<f", blob, offset + 12, 1)
+                        else:
+                            struct.pack_into("<f", blob, offset, 0 if cause == "singular bind" else math.inf)
+                    write_asset(path, invalid, blob)
+                    with self.assertRaisesRegex(Tf.ErrorException, diagnostic):
+                        layer.Reload(True)
+                    self.assertEqual(layer_text(layer), before)
+            write_asset(path, document, binary)
+            self.assertTrue(layer.Reload(True))
+
     def test_unsupported_features_fail_without_publishing(self):
         cases = {
-            "skin": "node 1: skins are not supported",
             "morph target": "morph targets are not supported",
             "mesh weights": "mesh 0: morph weights are not supported",
             "node weights": "node 1: morph weights are not supported",

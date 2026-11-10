@@ -30,7 +30,8 @@ add_library(gltfUsd STATIC
     src/material.cpp
     src/mesh.cpp
     src/scene.cpp
-    src/sceneMap.cpp)
+    src/sceneMap.cpp
+    src/skin.cpp)
 add_library(gltfUsd::gltfUsd ALIAS gltfUsd)
 usd_gltf_configure_target(gltfUsd)
 target_include_directories(gltfUsd
@@ -41,7 +42,7 @@ target_include_directories(gltfUsd
         "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(gltfUsd PUBLIC gltfCore::gltfCore PRIVATE gltfTexture::gltfTexture)
 usd_gltf_link_openusd(TARGET gltfUsd VISIBILITY PUBLIC
-    COMPONENTS usdShade usdLux usdGeom usd sdf ar tf)
+    COMPONENTS usdSkel usdShade usdLux usdGeom usd sdf ar tf)
 
 usd_gltf_library_installs(_usd_gltf_install)
 if(_usd_gltf_install)
