@@ -2,7 +2,7 @@
 
 Decision record, 2026-11-02. The
 [capability matrix](../reference/CAPABILITY_MATRIX.md#display-checks) records current
-results, and the [README](../../README.md#development) has the command.
+results, and the [development guide](../DEVELOPMENT.md) has the command.
 
 ## Context
 

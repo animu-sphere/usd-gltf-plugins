@@ -15,7 +15,7 @@ updates, tests, and questions are all welcome.
 
 ## Build and test
 
-Follow the commands in the [README](README.md#development). A change to the
+Follow the commands in the [development guide](docs/DEVELOPMENT.md). A change to the
 build must keep [every build of the workspace](docs/architecture/WORKSPACE.md#members-and-builds)
 working.
 

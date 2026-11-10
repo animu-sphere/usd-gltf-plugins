@@ -74,7 +74,7 @@ CI success is not evidence of display compatibility.
 ## Import measurements
 
 [`tests/measure_import.py`](../../tests/measure_import.py) measures `Usd.Stage.Open` before
-inspecting mesh arrays. The [README](../../README.md#development) has the command and
+inspecting mesh arrays. The [development guide](../DEVELOPMENT.md) has the command and
 [ADR 0024](../adr/0024-import-measurements.md) defines the measurements and sharing decision.
 
 On Windows 11 x86-64, MSVC and OpenUSD 26.08 in the OpenStrata cy2026 USD runtime,
@@ -117,7 +117,7 @@ The CI configuration is pinned in [openstrata.ci.yaml](../../openstrata.ci.yaml)
 
 [`tests/check_display.py`](../../tests/check_display.py) renders the fixtures below with
 Storm through MaterialX and UsdPreviewSurface, and compares pixels. The
-[README](../../README.md#development) has the command, and
+[development guide](../DEVELOPMENT.md) has the command, and
 [ADR 0007](../adr/0007-display-check.md) explains the comparisons and their limits.
 
 The current scene hierarchy passed all 681 comparisons on Windows with OpenUSD 26.08, the OpenStrata
@@ -128,7 +128,7 @@ transmission, volume and specular comparisons. An earlier result, on `7de8b8f` w
 gave byte-identical images in two runs.
 
 The Khronos Fox GLB also opened interactively in usdview through `ost plugin view` on the same
-runtime. The manual command is in the [README](../../README.md#development).
+runtime. The manual command is in the [development guide](../DEVELOPMENT.md).
 
 The [reflection fixture](../../tests/fixtures/reflections.gltf) has four front-facing
 triangles: no reflection, a reflected parent, a reflected child, and two reflections. The
