@@ -56,6 +56,7 @@ available when the decision was made; they are not progress reports:
 - [0025: Sources inside packages](adr/0025-packaged-sources.md)
 - [0026: Scene hierarchy](adr/0026-scene-hierarchy.md)
 - [0027: Plugin workspace members](adr/0027-plugin-workspace.md)
+- [0028: Skin placement](adr/0028-skin-placement.md)
 
 New decisions go in `docs/adr/NNNN-title.md`.
 
