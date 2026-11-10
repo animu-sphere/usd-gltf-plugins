@@ -8,6 +8,15 @@ here.
 
 ## [Unreleased]
 
+### Added
+
+- Node animation: the translation, rotation and scale channels of a file's first animation become
+  time samples of `translate`, `orient` and `scale` operations at 24 time codes per second, with
+  `STEP`, `LINEAR` and `CUBICSPLINE` interpolation. Assets with animations were rejected before.
+  Other animations are not authored yet, with a warning. See
+  [ADR 0029](docs/adr/0029-node-animation.md).
+- `tests/probe_animation.py`, the experiment behind that decision.
+
 ### Changed
 
 - **Breaking:** the selected scene is authored as `/Asset/scenes/Scene_{index}` instead of

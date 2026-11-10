@@ -508,13 +508,6 @@ def unsupported_document(extension, feature):
             document["meshes"][0]["weights"] = [0.5]
         elif feature == "node weights":
             node["weights"] = [0.5]
-    elif feature == "animation":
-        times = add_accessor(struct.pack("<2f", 0, 1), 5126, 2, "SCALAR", min=[0], max=[1])
-        values = add_accessor(struct.pack("<6f", 0, 0, 0, 1, 0, 0), 5126, 2, "VEC3")
-        document["animations"] = [{
-            "samplers": [{"input": times, "output": values}],
-            "channels": [{"sampler": 0, "target": {"node": 0, "path": "translation"}}],
-        }]
     else:
         raise ValueError(feature)
 
@@ -524,6 +517,112 @@ def unsupported_document(extension, feature):
             base64.b64encode(binary).decode())
         return document, None
     return document, binary
+
+
+def quaternion(axis, degrees):
+    """A unit quaternion, x, y, z, w as glTF orders it."""
+    length = math.sqrt(sum(c * c for c in axis))
+    half = math.radians(degrees) / 2
+    return [c / length * math.sin(half) for c in axis] + [math.cos(half)]
+
+
+def slerp(a, b, u):
+    """glTF's interpolation of rotations, along the shorter path."""
+    dot = sum(x * y for x, y in zip(a, b))
+    if dot < 0:
+        b, dot = [-c for c in b], -dot
+    theta = math.acos(min(1.0, dot))
+    if theta < 1e-9:
+        return list(a)
+    return [(math.sin((1 - u) * theta) * x + math.sin(u * theta) * y) / math.sin(theta)
+            for x, y in zip(a, b)]
+
+
+def hermite(v0, out0, in1, v1, delta, u):
+    """glTF's CUBICSPLINE interpolation of one segment."""
+    u2, u3 = u * u, u * u * u
+    return [(2 * u3 - 3 * u2 + 1) * a + (u3 - 2 * u2 + u) * delta * b + (-2 * u3 + 3 * u2) * d +
+            (u3 - u2) * delta * c for a, b, c, d in zip(v0, out0, in1, v1)]
+
+
+ANIMATION_FORMATS = {5126: "f", 5120: "b", 5121: "B", 5122: "h", 5123: "H"}
+
+
+def animation_document(extension, samplers, channels, extra_animations=0, nodes=None):
+    """Nodes 0 to 2 in the scene, node 2 below node 1 and node 4 below node 2, and node 3 outside it,
+    with one animation of these samplers and channels and as many empty ones after it. A sampler is a
+    dict of input times, flat output values, and optionally interpolation, type and componentType of
+    the output; a channel is (sampler, node, path), with None for no node."""
+    document, binary = mesh_document("glb")
+    document["nodes"] = nodes or [
+        {"mesh": 0, "translation": [2, 0, 0]},
+        {"rotation": [0, 0, 0, 1], "children": [2]},
+        {"mesh": 0, "translation": [0, 1, 0], "scale": [2, 2, 2], "children": [4]},
+        {"translation": [5, 0, 0]},
+        {"translation": [0, 0, 1]},
+    ]
+
+    def add_accessor(values, component_type, accessor_type, **kwargs):
+        nonlocal binary
+        binary += b"\0" * (-len(binary) % 4)
+        data = struct.pack("<%d%s" % (len(values), ANIMATION_FORMATS[component_type]), *values)
+        document["bufferViews"].append({"buffer": 0, "byteOffset": len(binary), "byteLength": len(data)})
+        binary += data
+        width = {"SCALAR": 1, "VEC3": 3, "VEC4": 4}[accessor_type]
+        document["accessors"].append({
+            "bufferView": len(document["bufferViews"]) - 1, "componentType": component_type,
+            "count": len(values) // width, "type": accessor_type, **kwargs,
+        })
+        return len(document["accessors"]) - 1
+
+    animation = {"samplers": [], "channels": []}
+    for sampler in samplers:
+        times = sampler["input"]
+        entry = {
+            "input": add_accessor(times, 5126, "SCALAR", min=[min(times)], max=[max(times)]),
+            "output": add_accessor(sampler["output"], sampler.get("componentType", 5126),
+                                   sampler.get("type", "VEC3"),
+                                   **({"normalized": True} if sampler.get("normalized") else {})),
+        }
+        if "interpolation" in sampler:
+            entry["interpolation"] = sampler["interpolation"]
+        animation["samplers"].append(entry)
+    for sampler, node, path in channels:
+        target = {"path": path}
+        if node is not None:
+            target["node"] = node
+        animation["channels"].append({"sampler": sampler, "target": target})
+    document["animations"] = [animation] + [
+        {"samplers": animation["samplers"][:1], "channels": []} for _ in range(extra_animations)]
+
+    document["buffers"][0]["byteLength"] = len(binary)
+    if extension == "gltf":
+        document["buffers"][0]["uri"] = "data:application/octet-stream;base64," + (
+            base64.b64encode(binary).decode())
+        return document, None
+    return document, binary
+
+
+# Opposite hemispheres, so that the shorter path is through 85 degrees.
+TURN_START = quaternion((0, 1, 0), 0)
+TURN_END = [-c for c in quaternion((0, 1, 0), 170)]
+CUBIC_SCALE = [0, 0, 0, 1, 1, 1, 3, 0, 0, 0, 0, -3, 2, 2, 2, 0, 0, 0]
+
+
+def interpolation_samplers(rotation_component=5126):
+    """A STEP translation, a LINEAR rotation starting at 0.5 seconds and a CUBICSPLINE scale."""
+    rotation = TURN_START + TURN_END
+    if rotation_component != 5126:
+        rotation = [round(c * 32767) for c in rotation]
+    return [
+        {"input": [0, 1, 2], "output": [0, 0, 0, 1, 0, 0, 3, 0, 0], "interpolation": "STEP"},
+        {"input": [0.5, 1.5], "output": rotation, "type": "VEC4", "componentType": rotation_component,
+         "normalized": rotation_component != 5126},
+        {"input": [0, 1], "output": CUBIC_SCALE, "interpolation": "CUBICSPLINE"},
+    ]
+
+
+INTERPOLATION_CHANNELS = [(0, 0, "translation"), (1, 1, "rotation"), (2, 2, "scale")]
 
 
 HALF_TURN_SINE = math.sqrt(0.5)
@@ -5347,16 +5446,235 @@ class FileFormatTest(unittest.TestCase):
                             layer.Reload(True)
                         self.assertEqual(layer_text(layer), before)
 
-    def test_animation_outside_selected_scene_is_rejected(self):
+    def assert_rotation_close(self, actual, expected, tolerance):
+        """Compares a Gf quaternion with a glTF one, either way round, component by component."""
+        components = [*actual.GetImaginary(), actual.GetReal()]
+        sign = 1 if sum(a * b for a, b in zip(components, expected)) >= 0 else -1
+        difference = max(abs(a - sign * b) for a, b in zip(components, expected))
+        self.assertLessEqual(difference, tolerance, (actual, expected))
+
+    def test_node_animation_interpolation(self):
+        scene = "/Asset/scenes/Scene_0/"
+        with tempfile.TemporaryDirectory() as directory:
+            for extension in ("gltf", "glb"):
+                for component in (5126, 5122):
+                    with self.subTest(extension=extension, rotation=component):
+                        path = pathlib.Path(directory) / f"animated_{component}.{extension}"
+                        document, binary = animation_document(
+                            extension, interpolation_samplers(component), INTERPOLATION_CHANNELS)
+                        write_asset(path, document, binary)
+                        stage = Usd.Stage.Open(str(path))
+                        # glTF's timeline starts at 0 and ends at the last keyframe, 2 seconds.
+                        self.assertEqual((stage.GetTimeCodesPerSecond(), stage.GetFramesPerSecond(),
+                                          stage.GetStartTimeCode(), stage.GetEndTimeCode()), (24, 24, 0, 48))
+                        for node in ("Node_0", "Node_1", "Node_1/Node_2"):
+                            xform = UsdGeom.Xform(stage.GetPrimAtPath(scene + node))
+                            self.assertEqual([op.GetOpName() for op in xform.GetOrderedXformOps()],
+                                             ["xformOp:translate", "xformOp:orient", "xformOp:scale"])
+                        static = UsdGeom.Xform(stage.GetPrimAtPath(scene + "Node_1/Node_2/Node_4"))
+                        self.assertEqual([op.GetOpName() for op in static.GetOrderedXformOps()],
+                                         ["xformOp:transform"])
+
+                        translate = stage.GetAttributeAtPath(scene + "Node_0.xformOp:translate")
+                        orient = stage.GetAttributeAtPath(scene + "Node_1.xformOp:orient")
+                        scale = stage.GetAttributeAtPath(scene + "Node_1/Node_2.xformOp:scale")
+                        self.assertEqual(translate.GetTypeName(), Sdf.ValueTypeNames.Double3)
+                        self.assertEqual(orient.GetTypeName(), Sdf.ValueTypeNames.Quatf)
+                        self.assertEqual(scale.GetTypeName(), Sdf.ValueTypeNames.Float3)
+                        # The node's own values hold when no animation plays.
+                        self.assertEqual(translate.Get(), Gf.Vec3d(2, 0, 0))
+                        self.assertEqual(orient.Get(), Gf.Quatf(1, 0, 0, 0))
+                        self.assertEqual(scale.Get(), Gf.Vec3f(2, 2, 2))
+                        unanimated = stage.GetAttributeAtPath(scene + "Node_1/Node_2.xformOp:translate")
+                        self.assertEqual((unanimated.Get(), unanimated.GetNumTimeSamples()),
+                                         (Gf.Vec3d(0, 1, 0), 0))
+
+                        # STEP holds each value until the next keyframe, and clamps outside the range.
+                        for code, x in ((-5, 0), (0, 0), (12, 0), (24 - 1e-4, 0), (24 - 5e-8, 0), (24, 1),
+                                        (47.9999, 1), (48, 3), (100, 3)):
+                            self.assertEqual(translate.Get(code), Gf.Vec3d(x, 0, 0), code)
+                        # LINEAR rotations take the shorter path, here through 85 degrees.
+                        tolerance = 1e-6 if component == 5126 else 1e-4
+                        for seconds in (0, 0.5, 0.8, 1.0, 1.25, 1.5, 3):
+                            u = min(1.0, max(0.0, seconds - 0.5))
+                            self.assert_rotation_close(orient.Get(seconds * 24),
+                                                       slerp(TURN_START, TURN_END, u), tolerance)
+                        self.assert_rotation_close(orient.Get(24), quaternion((0, 1, 0), 85), tolerance)
+                        # CUBICSPLINE is sampled within 1e-4 of the largest value, which is 2.
+                        for seconds in (-1, 0, 0.1, 0.25, 0.5, 0.77, 0.9, 1, 30):
+                            u = min(1.0, max(0.0, seconds))
+                            expected = hermite([1, 1, 1], [3, 0, 0], [0, 0, -3], [2, 2, 2], 1, u)
+                            actual = scale.Get(seconds * 24)
+                            self.assertLessEqual(max(abs(a - e) for a, e in zip(actual, expected)), 2e-4,
+                                                 seconds)
+
+                        # A stage with other time codes per second sees the same times in seconds.
+                        host = Usd.Stage.CreateInMemory()
+                        host.SetTimeCodesPerSecond(30)
+                        prim = host.DefinePrim("/Host")
+                        prim.GetReferences().AddReference(str(path), scene + "Node_0")
+                        hosted = prim.GetAttribute("xformOp:translate")
+                        self.assertEqual(hosted.Get(30 - 1e-4), Gf.Vec3d(0, 0, 0))
+                        self.assertEqual(hosted.Get(30), Gf.Vec3d(1, 0, 0))
+
+                        # The animated layer reloads.
+                        document["nodes"][0]["translation"] = [4, 0, 0]
+                        write_asset(path, document, binary)
+                        self.assertTrue(stage.GetRootLayer().Reload(True))
+                        self.assertEqual(translate.Get(), Gf.Vec3d(4, 0, 0))
+                        self.assertEqual(translate.Get(24), Gf.Vec3d(1, 0, 0))
+
+    def test_animation_channels_that_are_not_authored(self):
+        scene = "/Asset/scenes/Scene_0/"
+        samplers = [{"input": [0, 1], "output": [0, 0, 0, 1, 0, 0]}]
+        # Each case's channels, and whether node 0 is animated.
+        cases = {
+            "outside the scene": ([(0, 3, "translation")], False),
+            "without a node": ([(0, None, "translation")], False),
+            "weights outside the scene": ([(0, 3, "weights")], False),
+            "beside one outside": ([(0, 0, "translation"), (0, 3, "translation")], True),
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            for extension in ("gltf", "glb"):
+                for name, (channels, animated) in cases.items():
+                    with self.subTest(extension=extension, case=name):
+                        path = pathlib.Path(directory) / f"{name.replace(' ', '_')}.{extension}"
+                        document, binary = animation_document(extension, samplers, channels)
+                        write_asset(path, document, binary)
+                        stage = Usd.Stage.Open(str(path))
+                        translate = stage.GetAttributeAtPath(scene + "Node_0.xformOp:translate")
+                        self.assertEqual(bool(translate), animated)
+                        self.assertEqual(stage.GetRootLayer().HasTimeCodesPerSecond(), animated)
+                        self.assertFalse(stage.GetPrimAtPath(scene + "Node_3"))
+                with self.subTest(extension=extension, case="several animations"):
+                    path = pathlib.Path(directory) / f"several.{extension}"
+                    document, binary = animation_document(extension, samplers, [(0, 0, "translation")],
+                                                          extra_animations=2)
+                    write_asset(path, document, binary)
+                    result = subprocess.run(
+                        [sys.executable, "-c",
+                         "from pxr import Usd; import sys; "
+                         "s = Usd.Stage.Open(sys.argv[1]); "
+                         "a = s.GetAttributeAtPath('/Asset/scenes/Scene_0/Node_0.xformOp:translate'); "
+                         "assert a.GetNumTimeSamples() == 2",
+                         str(path)],
+                        capture_output=True, text=True, check=False,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIn("glTF has 3 animations; only animation 0 is authored", result.stderr)
+
+    def test_animated_cameras_keep_their_correction(self):
+        scene = "/Asset/scenes/Scene_0/"
+        nodes = [
+            {"scale": [2, 2, 2], "children": [1]},
+            {"camera": 0, "translation": [0, 0, 5]},
+        ]
+        samplers = [
+            {"input": [0, 1], "output": quaternion((0, 1, 0), 0) + quaternion((1, 1, 0), 120),
+             "type": "VEC4"},
+            {"input": [0, 1], "output": [0, 0, 5, 3, 0, 5]},
+            # A scale that an exporter writes although it does not change.
+            {"input": [0, 1], "output": [2, 2, 2, 2, 2, 2]},
+        ]
+        channels = [(0, 1, "rotation"), (1, 1, "translation"), (2, 0, "scale")]
         with tempfile.TemporaryDirectory() as directory:
             for extension in ("gltf", "glb"):
                 with self.subTest(extension=extension):
-                    document, binary = unsupported_document(extension, "animation")
-                    document["scenes"][0]["nodes"] = [1]
-                    path = pathlib.Path(directory) / ("animation." + extension)
+                    path = pathlib.Path(directory) / f"camera.{extension}"
+                    document, binary = animation_document(extension, samplers, channels, nodes=nodes)
+                    document["scenes"][0]["nodes"] = [0]
+                    document["cameras"] = [{"type": "perspective", "perspective": {"yfov": 1, "znear": 0.1}}]
                     write_asset(path, document, binary)
-                    with self.assertRaisesRegex(Tf.ErrorException, "animations are not supported"):
-                        Usd.Stage.Open(str(path))
+                    stage = Usd.Stage.Open(str(path))
+                    camera = stage.GetPrimAtPath(scene + "Node_0/Node_1/Camera_0")
+                    self.assertTrue(camera)
+                    for code in (Usd.TimeCode.Default(), 0, 6, 12, 24):
+                        world = UsdGeom.XformCache(code).GetLocalToWorldTransform(camera)
+                        for row in range(3):
+                            self.assertAlmostEqual(Gf.Vec3d(*world[row][:3]).GetLength(), 1.0, places=5)
+
+    def test_animation_failures_preserve_layer(self):
+        camera = [{"type": "perspective", "perspective": {"yfov": 1, "znear": 0.1}}]
+
+        def channel(document, index):
+            return document["animations"][0]["channels"][index]
+
+        def sampler_accessor(document, sampler, key):
+            return document["accessors"][document["animations"][0]["samplers"][sampler][key]]
+
+        # Each case changes the samplers, the channels or the document, and names the error.
+        cases = {
+            "sampler index": (None, lambda d: channel(d, 0).update(sampler=9),
+                              "channel 0: sampler index is out of range"),
+            "node index": (None, lambda d: channel(d, 0)["target"].update(node=9),
+                           "channel 0: node index is out of range"),
+            "unknown path": (None, lambda d: channel(d, 1)["target"].update(path="pointer"),
+                             "channel 1: target path is not translation"),
+            "repeated target": (None, lambda d: d["animations"][0]["channels"].append(dict(channel(d, 1))),
+                                "channel 3: targets the same node and path"),
+            "weights": (None, lambda d: channel(d, 0)["target"].update(path="weights"),
+                        "channel 0: morph weight animation is not supported yet"),
+            "matrix": (None, lambda d: d["nodes"][1].update(rotation=None) or d["nodes"][1].pop("rotation")
+                       or d["nodes"][1].update(matrix=[1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]),
+                       "channel 1: animates node 1, which has a matrix"),
+            "input type": (None, lambda d: sampler_accessor(d, 0, "input").update(componentType=5125),
+                           "channel 0: input accessor has an invalid type"),
+            "decreasing input": ({0: {"input": [0, 2, 1]}}, None,
+                                 "channel 0: input times are not finite, nonnegative and strictly increasing"),
+            "negative input": ({0: {"input": [-1, 1, 2]}}, None,
+                               "channel 0: input times are not finite, nonnegative and strictly increasing"),
+            "output count": ({0: {"output": [0, 0, 0, 1, 0, 0]}}, None,
+                             "channel 0: output count does not match the input's"),
+            "output type": (None, lambda d: sampler_accessor(d, 0, "output").update(type="VEC4", count=2),
+                            "channel 0: output accessor has an invalid type"),
+            "output component": (None, lambda d: sampler_accessor(d, 0, "output").update(componentType=5125),
+                                 "channel 0: output has an invalid component type"),
+            "unnormalized integers": (None, lambda d: sampler_accessor(d, 1, "output").update(
+                                          componentType=5122, count=2),
+                                      "channel 1: output accessor has an invalid type, component type, "
+                                      "normalization"),
+            "rotation length": ({1: {"output": [0, 0, 0, 0.5, 0, 0, 0, 0.5]}}, None,
+                                "channel 1: output rotations are not unit quaternions"),
+            "cubic with one keyframe": ({2: {"input": [0], "output": [0, 0, 0, 1, 1, 1, 0, 0, 0]}}, None,
+                                        "channel 2: a CUBICSPLINE sampler has fewer than two keyframes"),
+            "camera below a changing scale": (
+                None, lambda d: d.update(cameras=camera) or d["nodes"][4].update(camera=0),
+                "node 4: a camera or light below an animated scale that changes is not supported"),
+            "camera below a turn under a nonuniform scale": (
+                None, lambda d: d.update(cameras=camera) or d["nodes"][1].update(scale=[1, 2, 1])
+                or d["nodes"][2].update(camera=0) or d["animations"][0]["channels"].__setitem__(
+                    slice(0, 3), [{"sampler": 1, "target": {"node": 2, "path": "rotation"}}]),
+                "node 2: a camera or light below a rotation animated under a nonuniform scale"),
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            for extension in ("gltf", "glb"):
+                path = root / ("reload." + extension)
+                document, binary = animation_document(extension, interpolation_samplers(),
+                                                      INTERPOLATION_CHANNELS)
+                write_asset(path, document, binary)
+                stage = Usd.Stage.Open(str(path))
+                layer = stage.GetRootLayer()
+                before = layer_text(layer)
+                for name, (changes, mutate, message) in cases.items():
+                    with self.subTest(extension=extension, case=name):
+                        samplers = interpolation_samplers()
+                        for index, change in (changes or {}).items():
+                            samplers[index].update(change)
+                        invalid, invalid_binary = animation_document(extension, samplers,
+                                                                     INTERPOLATION_CHANNELS)
+                        if mutate:
+                            mutate(invalid)
+                        initial_path = root / ("invalid." + extension)
+                        write_asset(initial_path, invalid, invalid_binary)
+                        with self.assertRaisesRegex(Tf.ErrorException, re.escape(message)):
+                            Usd.Stage.Open(str(initial_path))
+                        write_asset(path, invalid, invalid_binary)
+                        with self.assertRaisesRegex(Tf.ErrorException, re.escape(message)):
+                            layer.Reload(True)
+                        self.assertEqual(layer_text(layer), before)
+                write_asset(path, document, binary)
+                self.assertTrue(layer.Reload(True))
 
     def test_unsupported_features_fail_without_publishing(self):
         cases = {
@@ -5364,7 +5682,6 @@ class FileFormatTest(unittest.TestCase):
             "morph target": "morph targets are not supported",
             "mesh weights": "mesh 0: morph weights are not supported",
             "node weights": "node 1: morph weights are not supported",
-            "animation": "animations are not supported",
         }
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)

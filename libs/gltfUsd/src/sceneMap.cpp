@@ -111,6 +111,7 @@ MapScene(const fastgltf::Asset& asset, std::size_t sceneIndex, const pxr::SdfPat
         }
         MappedNode mapped;
         mapped.index = index;
+        mapped.parent = parent;
         if (!nodeMatrix(node, mapped.local))
         {
             TF_RUNTIME_ERROR("glTF node %zu has an invalid transform", index);

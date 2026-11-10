@@ -6,24 +6,22 @@ implementation order, which investigation may change. Each feature follows the
 
 ## v0.3.0: scene graph, animation and deformation
 
-Scene graph correctness comes first. The [scene hierarchy](../adr/0026-scene-hierarchy.md) and
-[skin placement](../adr/0028-skin-placement.md) decisions set the structure; each task below builds on
-the last.
+Scene graph correctness comes first. The [scene hierarchy](../adr/0026-scene-hierarchy.md),
+[skin placement](../adr/0028-skin-placement.md) and [node animation](../adr/0029-node-animation.md)
+decisions set the structure; each task below builds on the last.
 
-1. Map glTF time, interpolation and samplers to USD time samples, with STEP, LINEAR and CUBICSPLINE
-   each verified, a documented sampling fallback where USD cannot interpolate the same way, and
-   diagnostics for invalid samplers. Animate node translation, rotation and scale, and decide a policy
-   for animations of nodes outside the selected scene, which are rejected today.
+1. Choose between glTF animations, rather than authoring the first with a warning, with a variant set
+   or a layer per animation decided in an ADR after a proof of concept. Node, joint and morph
+   animation switch together, one default is deterministic, each animation's timeline and playback is
+   documented, and animations never mix. This comes before skins, because where a
+   `UsdSkelAnimation` and its `skel:animationSource` binding live depends on it.
 2. Skins through `UsdSkel`, placed as the skin placement decision specifies: skeletons, joints,
    bindings, skel roots and skeletal animation through `skel:animationSource`, with skins and joints
    added to the conversion's map of source indices to USD paths. Record the half-precision scales of
    animated joints as a limit.
 3. Morph targets and weights, static and animated, including skinned meshes and meshes that several
    nodes use.
-4. Choose between glTF animations, with a variant set or a layer per animation decided in an ADR
-   after a proof of concept. Node, joint and morph animation switch together, one default is
-   deterministic, the mapping of time codes and playback is documented, and animations never mix.
-5. Representative fixtures and samples for transform equivalence over time, and consumer checks
+4. Representative fixtures and samples for transform equivalence over time, and consumer checks
    where feasible, with the release record calling out the path change and its migration.
 
 ### Release criteria

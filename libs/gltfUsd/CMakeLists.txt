@@ -24,6 +24,7 @@ usd_gltf_require_library(gltfCore)
 usd_gltf_require_library(gltfTexture)
 
 add_library(gltfUsd STATIC
+    src/animation.cpp
     src/camera.cpp
     src/light.cpp
     src/material.cpp
