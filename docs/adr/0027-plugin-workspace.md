@@ -1,7 +1,7 @@
 # 0027: Plugin workspace members
 
 Decision record, 2026-11-09. The [workspace architecture](../architecture/WORKSPACE.md) describes
-the resulting layout, and the [README](../../README.md#development) has the build commands.
+the resulting layout, and the [development guide](../DEVELOPMENT.md) has the build commands.
 
 ## Context
 
