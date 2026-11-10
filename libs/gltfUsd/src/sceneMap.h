@@ -4,6 +4,7 @@
 #include "pxr/pxr.h"
 #include "pxr/base/gf/matrix4d.h"
 #include "pxr/base/tf/token.h"
+#include "pxr/base/vt/array.h"
 #include "pxr/usd/sdf/path.h"
 
 #include <fastgltf/types.hpp>
@@ -26,6 +27,10 @@ struct MappedNode
     pxr::SdfPath path;
     // The path of the node's mesh, or empty for a node without one.
     pxr::SdfPath mesh;
+    // Per-placement morph bindings, in source target order.
+    pxr::VtTokenArray blendShapes;
+    pxr::VtFloatArray morphWeights;
+    pxr::SdfPath morphSkeleton;
     // As the node states it, without animation.
     pxr::GfMatrix4d local{1.0};
     // Relative to the asset, and so to the scene, which has no transform, without animation.

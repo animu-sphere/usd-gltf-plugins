@@ -84,15 +84,15 @@ A joint node is only a skeleton joint, without an `Xform`, unless something must
 camera or light, a skeleton whose space it is, or a child that keeps a prim. A joint that keeps a prim
 uses the same source transform and animation values for its `Xform` and skeleton joint.
 
-For each skin, the deepest common ancestor of its skeleton prim and its skinned meshes is a skel
-root, unless it lies below another skin's. That prim, a node's `Xform` or the scene's, becomes a
-`UsdSkelRoot` in place, keeping its path, display name and transform operations. No prim is inserted
-for a skel root, and skel roots do not nest.
+For each skin, the deepest common ancestor of its skeleton prim and its skinned meshes is a
+candidate skel root. Each node with an unskinned morphing mesh is also a candidate. Candidates below
+another candidate are omitted. The remaining prims become `UsdSkelRoot` in place and keep their
+paths, display names and transform operations.
 
 A skinned node keeps its transform and animation for its other children; neither applies to its
 skinned mesh, as glTF requires.
 
-An animated node, which glTF requires to use translation, rotation and scale rather than a matrix, has
+A node targeted by animation must use TRS in glTF. A node with a transform channel has
 `translate` (`double3`), `orient` (`quatf`) and `scale` (`float3`) operations, in that order. Each has
 the node's own value as its default, and an animated one also has time samples. See the
 [decision record](../adr/0029-node-animation.md).
@@ -104,9 +104,9 @@ selects `Animation_0`; an asset without animations has none. See the
 - A node that any animation moves has its operations and their order outside the variants, without
   values. Each variant authors the node's own values as defaults and its animation's channels as time
   samples. A node that no animation moves keeps a matrix.
-- Each variant defines its animation's `UsdSkelAnimation` `Animation_{index}` below
-  `/Asset/animations`, with the joints it moves, and binds it through `skel:animationSource` on each
-  skeleton that has one of them. Its translation, rotation and scale arrays are sampled at the
+- A variant with joint or morph values defines a `UsdSkelAnimation` `Animation_{index}` below
+  `/Asset/animations`. It binds through `skel:animationSource` on skeletons with joints that it
+  moves or with meshes that morph. Its translation, rotation and scale arrays are sampled at the
   union of the joint channels' sample times. An unanimated component uses its node's own value.
   At default time, skeletons use their rest transforms.
 - A camera's or light's correction for scale below a node that any animation moves is inside each
@@ -128,17 +128,45 @@ selects `Animation_0`; an asset without animations has none. See the
   computed at its time 0. Its path must not have a scale that changes, nor a rotation that changes
   below a transform that is not a rotation and uniform scale.
 
-Joints are animated by a `UsdSkelAnimation` bound
-through `skel:animationSource`, and morph targets through blend shapes, not as node transforms. A
-`UsdSkelAnimation` holds joint and blend shape values; it is not a whole glTF animation, which can
-also move nodes, so the variant that chooses one glTF animation switches all of them together.
+### Morph targets
+
+A morphing primitive has a child `BlendShape_{targetIndex}` for each target in glTF order.
+`offsets` and `normalOffsets` carry POSITION and NORMAL deltas. A missing POSITION delta contributes
+zero. The primitive's `skel:blendShapeTargets` points to these children, paired with
+`skel:blendShapes` tokens `Node_{nodeIndex}_Target_{targetIndex}`. Primitives on the same node use
+the same tokens. A second node that uses the mesh gets its own tokens and local targets.
+
+Morphing precedes skinning. A skinned mesh uses its existing skeleton. A morphing mesh without a
+skin binds to its node's `MorphSkeleton`, which supplies the animation source for UsdSkel consumers.
+An identity joint gives the skel root a point from which to compute bounds. With no joint influences,
+the mesh keeps the node's transform, including a matrix on a node that no animation targets.
+Each morphing primitive's extent in mesh space encloses the neutral geometry and is padded using
+the authored weight ranges across variants, for use by UsdSkel's joint-based bounds.
+
+The default weights come from the node, then the mesh, then zeros. They are authored as the
+default of `blendShapeWeights` in the same `UsdSkelAnimation` as joint values, or in
+`/Asset/animations/Rest` when the asset has no animations. Each variant authors the defaults
+and samples the union of its weight channels' sample times. A node with no weight channel in the
+chosen variant keeps its stated weights at every time. A variant selection that resolves to no
+variant leaves the blend shapes without an animation source.
+
+Target accessors may be dense, sparse, or have an implicit zero base. With
+`KHR_mesh_quantization`, POSITION deltas may use signed byte or short, normalized or not, and
+NORMAL deltas normalized signed byte or short. Animation outputs are scalar floats or normalized
+byte or short values, signed or unsigned, with one value per target per keyframe and an
+incoming and outgoing group for CUBICSPLINE. Weights are used as supplied, including negative
+weights and weights above one.
+
+UsdSkel provides point and normal offsets. Other target attributes, including TANGENT, are rejected
+with a diagnostic. A morphing primitive without source normals leaves normals unauthored so a
+consumer can derive them from the deformed points. The resulting shading depends on the consumer.
 
 Mesh primitives use float POSITION and optional float NORMAL, TANGENT, TEXCOORD_n
 and COLOR_0 accessors, or the [quantized formats](#quantized-attributes). Accessors
 may be interleaved. Indices are glTF unsigned byte, unsigned short or unsigned int.
 USD subdivision is disabled and winding remains right-handed; strips and fans are
 expanded into triangles, including degenerate triangles, with alternating strip
-winding. Absent normals are generated per face for flat shading.
+winding. Absent normals on primitives without morph targets are generated per face for flat shading.
 
 ## Quantized attributes
 

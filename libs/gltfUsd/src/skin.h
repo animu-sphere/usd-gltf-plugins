@@ -18,9 +18,9 @@ namespace gltfUsd
 [[nodiscard]] bool AuthorSkeletons(const fastgltf::Asset& asset, const SceneMap& map,
                                    const pxr::UsdStagePtr& stage);
 
-// Authors a shared animation and its skeleton bindings in the current variant.
-[[nodiscard]] bool AuthorJointAnimation(const SceneMap& map, const AnimationValues& values,
-                                        const pxr::UsdStagePtr& stage, const pxr::SdfPath& root,
-                                        const pxr::TfToken& name);
+// Authors joint and morph values and their skeleton bindings in the current edit target.
+[[nodiscard]] bool AuthorSkelAnimation(const SceneMap& map, const AnimationValues& values,
+                                       const pxr::UsdStagePtr& stage, const pxr::SdfPath& root,
+                                       const pxr::TfToken& name);
 
 } // namespace gltfUsd

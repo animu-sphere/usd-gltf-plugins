@@ -49,10 +49,9 @@ TOLERANCE = 1e-5
 OPTIONAL_WARNING = re.compile(r"glTF optional extension '(.*)' is not supported")
 # The text of a rejection, and the causes that make it a fitting one.
 DIAGNOSTIC_CAUSES = {
-    "morph weight animation is not supported": ("morph targets",),
+    "missing base attribute for morph target": ("morph target attribute",),
+    "unsupported morph target attribute": ("morph target attribute",),
     "which has a matrix": ("animated matrix",),
-    "morph weights are not supported": ("morph targets",),
-    "morph targets are not supported": ("morph targets",),
     "primitive mode": ("points or lines",),
     "sparse accessors are not supported": ("sparse accessor",),
     "without a bufferView are not supported": ("accessor without a bufferView",),
@@ -143,12 +142,23 @@ class Asset:
         dtype = numpy.dtype(COMPONENTS[component]).newbyteorder("<")
         width = TYPES[accessor["type"]]
         count = accessor["count"]
-        if "bufferView" not in accessor:
-            return numpy.zeros((count, width), dtype)
-        view = self.json["bufferViews"][accessor["bufferView"]]
-        stride = view.get("byteStride") or dtype.itemsize * width
-        offset = view.get("byteOffset", 0) + accessor.get("byteOffset", 0)
-        values = numpy.ndarray((count, width), dtype, self.buffer(view["buffer"]), offset, (stride, dtype.itemsize))
+        if "bufferView" in accessor:
+            view = self.json["bufferViews"][accessor["bufferView"]]
+            stride = view.get("byteStride") or dtype.itemsize * width
+            offset = view.get("byteOffset", 0) + accessor.get("byteOffset", 0)
+            values = numpy.ndarray((count, width), dtype, self.buffer(view["buffer"]),
+                                   offset, (stride, dtype.itemsize))
+        else:
+            values = numpy.zeros((count, width), dtype)
+        if sparse := accessor.get("sparse"):
+            indices, replacements = sparse["indices"], sparse["values"]
+            index_type = numpy.dtype(COMPONENTS[indices["componentType"]]).newbyteorder("<")
+            rows = numpy.frombuffer(self.buffer_view(indices["bufferView"]), index_type,
+                                    sparse["count"], indices.get("byteOffset", 0))
+            data = numpy.frombuffer(self.buffer_view(replacements["bufferView"]), dtype,
+                                    sparse["count"] * width, replacements.get("byteOffset", 0))
+            values = values.copy()
+            values[rows] = data.reshape(-1, width)
         if normalize and component in NORMALIZED_SCALE and accessor.get("normalized"):
             return numpy.maximum(values.astype(numpy.float64) / NORMALIZED_SCALE[component], -1.0)
         return values
@@ -325,6 +335,8 @@ def check_primitive(check, asset, prim, primitive, label):
     normals = mesh.GetNormalsAttr().Get()
     if "NORMAL" in attributes:
         check.close(normals, asset.accessor(attributes["NORMAL"]), f"{label} normals")
+    elif primitive.get("targets"):
+        check.expect(not normals, f"{label} authors normals for a morph target without base normals")
     else:
         check_generated_normals(check, mesh, normals, positions, authored, label)
 
@@ -354,6 +366,41 @@ def check_primitive(check, asset, prim, primitive, label):
     check.expect(bool(mesh.GetDoubleSidedAttr().Get()) == bool(material.get("doubleSided")),
                  f"{label} doubleSided differs")
     return expected, material, "COLOR_0" in attributes
+
+
+def check_morph_targets(check, asset, prim, mesh, primitive, node_index, label):
+    from pxr import UsdSkel
+
+    targets = primitive["targets"]
+    binding = UsdSkel.BindingAPI(prim)
+    tokens = list(binding.GetBlendShapesAttr().Get() or [])
+    check.expect(tokens == [f"Node_{node_index}_Target_{i}" for i in range(len(targets))],
+                 f"{label} blend shape tokens")
+    paths = binding.GetBlendShapeTargetsRel().GetTargets()
+    if not check.expect(len(paths) == len(targets), f"{label} blend shape target count"):
+        return
+    count = len(asset.accessor(primitive["attributes"]["POSITION"]))
+    for i, (path, target) in enumerate(zip(paths, targets)):
+        shape = UsdSkel.BlendShape.Get(prim.GetStage(), path)
+        if not check.expect(shape and path == prim.GetPath().AppendChild(f"BlendShape_{i}"),
+                            f"{label} has no local blend shape {i}"):
+            continue
+        offsets = asset.accessor(target["POSITION"]) if "POSITION" in target else numpy.zeros((count, 3))
+        check.close(shape.GetOffsetsAttr().Get(), offsets, f"{label} target {i} offsets")
+        if "NORMAL" in target:
+            check.close(shape.GetNormalOffsetsAttr().Get(), asset.accessor(target["NORMAL"]),
+                        f"{label} target {i} normal offsets")
+    skeleton = binding.GetInheritedSkeleton()
+    if not check.expect(skeleton, f"{label} has no morph skeleton"):
+        return
+    animation = UsdSkel.Animation(UsdSkel.BindingAPI(skeleton.GetPrim()).GetInheritedAnimationSource())
+    if check.expect(animation, f"{label} has no morph weight source"):
+        order = list(animation.GetBlendShapesAttr().Get())
+        weights = animation.GetBlendShapeWeightsAttr().Get()
+        node = asset.json["nodes"][node_index]
+        defaults = node.get("weights", mesh.get("weights", [0] * len(targets)))
+        if check.expect(all(token in order for token in tokens), f"{label} morph weights are unmapped"):
+            check.close([weights[order.index(token)] for token in tokens], defaults, f"{label} morph defaults")
 
 
 def check_generated_normals(check, mesh, normals, positions, triangles, label):
@@ -1007,7 +1054,7 @@ def check_animation(check, stage, asset, node_paths):
     values at each keyframe, just before it and inside each segment, checks that the properties it
     does not animate have no time samples there, and checks each animation's end and the stage's
     timeline."""
-    from pxr import Usd
+    from pxr import Usd, UsdSkel
 
     animations = asset.json.get("animations", [])
     if not animations:
@@ -1024,7 +1071,7 @@ def check_animation(check, stage, asset, node_paths):
         for number, channel in enumerate(animation["channels"]):
             target = channel["target"]
             node, path = target.get("node"), target.get("path")
-            if node in node_paths and path in ANIMATED_ATTRIBUTES:
+            if node in node_paths and (path in ANIMATED_ATTRIBUTES or path == "weights"):
                 yield number, channel, node, path
 
     animated = {(node, path) for animation in animations for _, _, node, path in targets(animation)}
@@ -1045,7 +1092,22 @@ def check_animation(check, stage, asset, node_paths):
             if not stage.GetPrimAtPath(node_paths[node]):
                 # A joint without a prim is compared through skinning.
                 continue
-            attribute = stage.GetAttributeAtPath(f"{node_paths[node]}.{ANIMATED_ATTRIBUTES[path]}")
+            slots = None
+            if path == "weights":
+                mesh = asset.json["meshes"][asset.json["nodes"][node]["mesh"]]
+                count = len(mesh["primitives"][0]["targets"])
+                anim = UsdSkel.Animation.Get(stage, f"/Asset/animations/{names[index]}")
+                if not check.expect(anim, f"{label} has no morph animation"):
+                    continue
+                attribute = anim.GetBlendShapeWeightsAttr()
+                order = list(anim.GetBlendShapesAttr().Get() or [])
+                tokens = [f"Node_{node}_Target_{i}" for i in range(count)]
+                if not check.expect(all(token in order for token in tokens), f"{label} weights are unmapped"):
+                    continue
+                slots = [order.index(token) for token in tokens]
+                values = values.reshape(-1, count)
+            else:
+                attribute = stage.GetAttributeAtPath(f"{node_paths[node]}.{ANIMATED_ATTRIBUTES[path]}")
             if not check.expect(attribute and attribute.GetNumTimeSamples() > 0, f"{label} is not authored"):
                 continue
             if interpolation == "CUBICSPLINE":
@@ -1071,9 +1133,13 @@ def check_animation(check, stage, asset, node_paths):
                         actual = -actual
                 else:
                     actual = numpy.array(value, numpy.float64)
+                    if slots is not None:
+                        actual = actual[slots]
                 worst = max(worst, float(numpy.abs(actual - expected).max()))
             check.expect(worst <= limit, f"{label}: values differ by {worst:.3g}")
         for node, path in sorted(animated - own):
+            if path == "weights":
+                continue  # The shared weight array can still have samples for other nodes.
             if not stage.GetPrimAtPath(node_paths[node]):
                 continue
             attribute = stage.GetAttributeAtPath(f"{node_paths[node]}.{ANIMATED_ATTRIBUTES[path]}")
@@ -1216,6 +1282,9 @@ def check_meaning(stage, asset):
                 mesh_prim = stage.GetPrimAtPath(mesh_path)
                 if check.expect(mesh_prim and mesh_prim.IsA(UsdGeom.Mesh), f"{mesh_path} is not a Mesh"):
                     bound, material, has_colors = check_primitive(check, asset, mesh_prim, primitive, label)
+                    if primitive.get("targets"):
+                        check_morph_targets(check, asset, mesh_prim, document["meshes"][mesh_index],
+                                            primitive, index, label)
                     materials[bound] = (material, has_colors)
                     if "skin" in node:
                         placements.append((mesh_prim, primitive, index, node["skin"]))
@@ -1418,28 +1487,26 @@ def rejection_causes(document):
             skin = document["skins"][node["skin"]]
             if "inverseBindMatrices" in skin and "sparse" in document["accessors"][skin["inverseBindMatrices"]]:
                 causes.add("sparse accessor")
-        if "weights" in node:
-            causes.add("morph targets")
         if "mesh" in node:
             causes |= mesh_causes(document, document["meshes"][node["mesh"]])
     # Every animation is authored, but only on the selected scene.
     for animation in document.get("animations", []):
         for channel in animation.get("channels", []):
             node = channel["target"].get("node")
-            if node in seen and channel["target"].get("path") == "weights":
-                causes.add("morph targets")
-            elif node in seen and "matrix" in nodes[node]:
+            if node in seen and "matrix" in nodes[node]:
                 causes.add("animated matrix")
     return sorted(causes)
 
 
 def mesh_causes(document, mesh):
-    causes = {"morph targets"} if "weights" in mesh else set()
+    causes = set()
     for primitive in mesh.get("primitives", []):
         if primitive.get("mode", 4) not in (4, 5, 6):
             causes.add("points or lines")
-        if primitive.get("targets"):
-            causes.add("morph targets")
+        for target in primitive.get("targets", []):
+            for name in target:
+                if name not in ("POSITION", "NORMAL") or name not in primitive["attributes"]:
+                    causes.add(f"morph target attribute {name}")
         accessors = [*primitive.get("attributes", {}).values()]
         if "indices" in primitive:
             accessors.append(primitive["indices"])

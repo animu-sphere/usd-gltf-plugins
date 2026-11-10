@@ -33,7 +33,7 @@ using namespace pxr;
 // interpolating them, so the step is exact; without that, a ramp this short would remain.
 constexpr double HoldTimeCodes = 1e-7;
 // How far the lines between a CUBICSPLINE sampler's time samples may stray from its curve: in a
-// quaternion's components, or in a translation's or scale's times the sampler's largest value.
+// quaternion's components, or relative to the sampler's largest translation, scale or weight.
 constexpr double CubicTolerance = 1e-4;
 // The most pieces a CUBICSPLINE segment is cut into, so that extreme tangents cannot exhaust memory.
 constexpr std::size_t MaxPieces = 256;
@@ -44,15 +44,15 @@ constexpr double ViewTolerance = 0.001;
 using Value = std::array<double, 4>;
 
 // A sampler's keyframes, as glTF gives them.
-struct Keyframes
+template <class T> struct Keyframes
 {
     fastgltf::AnimationPath path = fastgltf::AnimationPath::Translation;
     fastgltf::AnimationInterpolation interpolation = fastgltf::AnimationInterpolation::Linear;
     std::size_t width = 3;
     std::vector<double> times; // Seconds
-    std::vector<Value> vertices;
-    std::vector<Value> ins;  // CUBICSPLINE only
-    std::vector<Value> outs; // CUBICSPLINE only
+    std::vector<T> vertices;
+    std::vector<T> ins;  // CUBICSPLINE only
+    std::vector<T> outs; // CUBICSPLINE only
 };
 
 // A float, or a normalized integer as glTF decodes it.
@@ -77,8 +77,9 @@ readComponent(const std::byte* data, fastgltf::ComponentType type)
     }
 }
 
+template <class T>
 double
-norm(const Value& value, std::size_t width)
+norm(const T& value, std::size_t width)
 {
     double sum = 0.0;
     for (std::size_t i = 0; i < width; ++i)
@@ -114,10 +115,11 @@ readTimes(const fastgltf::Asset& asset, std::size_t index, const gltfCore::Buffe
     return true;
 }
 
+template <class T>
 bool
 readKeyframes(const fastgltf::Asset& asset, const gltfCore::BufferLoader& loadBuffer,
-              const fastgltf::AnimationSampler& sampler, fastgltf::AnimationPath path,
-              Keyframes& result, std::string& error)
+              const fastgltf::AnimationSampler& sampler, fastgltf::AnimationPath path, T initial,
+              std::size_t width, Keyframes<T>& result, std::string& error)
 {
     result.path = path;
     result.interpolation = sampler.interpolation;
@@ -133,7 +135,8 @@ readKeyframes(const fastgltf::Asset& asset, const gltfCore::BufferLoader& loadBu
     }
 
     const bool rotation = path == fastgltf::AnimationPath::Rotation;
-    result.width = rotation ? 4 : 3;
+    const bool weights = path == fastgltf::AnimationPath::Weights;
+    result.width = width;
     if (sampler.outputAccessor >= asset.accessors.size())
     {
         error = "output accessor index is out of range";
@@ -141,56 +144,63 @@ readKeyframes(const fastgltf::Asset& asset, const gltfCore::BufferLoader& loadBu
     }
     const auto componentType = asset.accessors[sampler.outputAccessor].componentType;
     const bool quantized = componentType != fastgltf::ComponentType::Float;
-    if (quantized && (!rotation || (componentType != fastgltf::ComponentType::Byte &&
-                                    componentType != fastgltf::ComponentType::UnsignedByte &&
-                                    componentType != fastgltf::ComponentType::Short &&
-                                    componentType != fastgltf::ComponentType::UnsignedShort)))
+    if (quantized &&
+        ((!rotation && !weights) || (componentType != fastgltf::ComponentType::Byte &&
+                                     componentType != fastgltf::ComponentType::UnsignedByte &&
+                                     componentType != fastgltf::ComponentType::Short &&
+                                     componentType != fastgltf::ComponentType::UnsignedShort)))
     {
         error = "output has an invalid component type";
         return false;
     }
     const auto componentSize = fastgltf::getComponentByteSize(componentType);
     gltfCore::AccessorData data;
-    if (!gltfCore::GetAccessorData(
-            asset, sampler.outputAccessor,
-            rotation ? fastgltf::AccessorType::Vec4 : fastgltf::AccessorType::Vec3, componentType,
-            result.width * componentSize, false, data, error, loadBuffer, quantized))
+    const auto type =
+        weights ? fastgltf::AccessorType::Scalar
+                : (rotation ? fastgltf::AccessorType::Vec4 : fastgltf::AccessorType::Vec3);
+    const auto elementsPerValue = weights ? width : 1;
+    if (!gltfCore::GetAccessorData(asset, sampler.outputAccessor, type, componentType,
+                                   (weights ? 1 : width) * componentSize, false, data, error,
+                                   loadBuffer, quantized, weights))
     {
         error = "output " + error;
         return false;
     }
-    const auto perKeyframe = cubic ? 3 : 1;
-    if (data.count != result.times.size() * perKeyframe)
+    const std::size_t perKeyframe = cubic ? 3 : 1;
+    if (data.count % elementsPerValue != 0 || data.count / elementsPerValue % perKeyframe != 0 ||
+        data.count / elementsPerValue / perKeyframe != result.times.size())
     {
         error = "output count does not match the input's";
         return false;
     }
 
-    std::vector<Value> values(data.count, Value{});
-    for (std::size_t i = 0; i < data.count; ++i)
+    const auto valueCount = data.count / elementsPerValue;
+    for (std::size_t i = 0; i < valueCount; ++i)
     {
-        for (std::size_t c = 0; c < result.width; ++c)
+        T value = initial;
+        for (std::size_t c = 0; c < width; ++c)
         {
-            values[i][c] = readComponent(data.bytes.data() + i * data.stride + c * componentSize,
-                                         componentType);
-            if (!std::isfinite(values[i][c]))
+            const auto* element = data.Element(weights ? i * width + c : i);
+            value[c] =
+                element ? readComponent(element + (weights ? 0 : c * componentSize), componentType)
+                        : 0.0;
+            if (!std::isfinite(value[c]))
             {
                 error = "output values are not finite";
                 return false;
             }
         }
-    }
-    for (std::size_t k = 0; k < result.times.size(); ++k)
-    {
-        if (cubic)
+        if (cubic && i % 3 == 0)
         {
-            result.ins.push_back(values[3 * k]);
-            result.vertices.push_back(values[3 * k + 1]);
-            result.outs.push_back(values[3 * k + 2]);
+            result.ins.push_back(std::move(value));
+        }
+        else if (cubic && i % 3 == 2)
+        {
+            result.outs.push_back(std::move(value));
         }
         else
         {
-            result.vertices.push_back(values[k]);
+            result.vertices.push_back(std::move(value));
         }
     }
 
@@ -216,13 +226,14 @@ readKeyframes(const fastgltf::Asset& asset, const gltfCore::BufferLoader& loadBu
 }
 
 // The CUBICSPLINE curve of segment k, at the fraction u of it.
-Value
-hermite(const Keyframes& keyframes, std::size_t k, double u)
+template <class T>
+T
+hermite(const Keyframes<T>& keyframes, std::size_t k, double u)
 {
     const double delta = keyframes.times[k + 1] - keyframes.times[k];
     const double u2 = u * u;
     const double u3 = u2 * u;
-    Value result{};
+    T result = keyframes.vertices[k];
     for (std::size_t c = 0; c < keyframes.width; ++c)
     {
         result[c] = (2 * u3 - 3 * u2 + 1) * keyframes.vertices[k][c] +
@@ -236,22 +247,25 @@ hermite(const Keyframes& keyframes, std::size_t k, double u)
 // How many equal pieces keep the lines between samples of segment k within the tolerance of its
 // curve. The curve's second derivative is linear in u, so its largest norm is at an end, and a
 // piece of length h strays from the curve by at most that norm times h^2 / 8.
+template <class T>
 std::size_t
-pieceCount(const Keyframes& keyframes, std::size_t k, double scale)
+pieceCount(const Keyframes<T>& keyframes, std::size_t k, double scale)
 {
     const double delta = keyframes.times[k + 1] - keyframes.times[k];
-    Value start{};
-    Value end{};
+    double startSquared = 0.0;
+    double endSquared = 0.0;
     for (std::size_t c = 0; c < keyframes.width; ++c)
     {
         const double v0 = keyframes.vertices[k][c];
         const double v1 = keyframes.vertices[k + 1][c];
         const double b0 = delta * keyframes.outs[k][c];
         const double a1 = delta * keyframes.ins[k + 1][c];
-        start[c] = -6 * v0 - 4 * b0 + 6 * v1 - 2 * a1;
-        end[c] = 6 * v0 + 2 * b0 - 6 * v1 + 4 * a1;
+        const double start = -6 * v0 - 4 * b0 + 6 * v1 - 2 * a1;
+        const double end = 6 * v0 + 2 * b0 - 6 * v1 + 4 * a1;
+        startSquared += start * start;
+        endSquared += end * end;
     }
-    const double largest = std::max(norm(start, keyframes.width), norm(end, keyframes.width));
+    const double largest = std::sqrt(std::max(startSquared, endSquared));
     const double pieces = std::ceil(std::sqrt(largest / (8 * CubicTolerance * scale)));
     if (!(pieces <= double(MaxPieces + 1)))
     {
@@ -262,9 +276,9 @@ pieceCount(const Keyframes& keyframes, std::size_t k, double scale)
 
 // The time samples that reproduce the sampler: its keyframes, a hold before each STEP keyframe, and
 // points of each CUBICSPLINE segment. Sets `capped` when a segment needed more than MaxPieces.
+template <class T>
 bool
-expand(const Keyframes& keyframes, std::vector<std::pair<double, Value>>& result, bool& capped,
-       std::string& error)
+expand(const Keyframes<T>& keyframes, TimeSamples<T>& result, bool& capped, std::string& error)
 {
     const bool rotation = keyframes.path == fastgltf::AnimationPath::Rotation;
     double scale = 1.0;
@@ -535,20 +549,51 @@ readAnimation(const fastgltf::Asset& asset, const gltfCore::BufferLoader& loadBu
         {
             continue;
         }
-        if (path == fastgltf::AnimationPath::Weights)
-        {
-            return fail("morph weight animation is not supported yet");
-        }
         if (!std::holds_alternative<fastgltf::TRS>(asset.nodes[nodeIndex].transform))
         {
             return fail("animates node " + std::to_string(nodeIndex) + ", which has a matrix");
         }
-
-        Keyframes keyframes;
+        if (path == fastgltf::AnimationPath::Weights)
+        {
+            const auto count = map.nodes[*position].morphWeights.size();
+            if (count == 0)
+            {
+                return fail("morph weight animation requires a mesh with targets");
+            }
+            Keyframes<std::vector<double>> keyframes;
+            TimeSamples<std::vector<double>> samples;
+            std::string error;
+            if (!readKeyframes(asset, loadBuffer, animation.samplers[channel.samplerIndex], path,
+                               std::vector<double>(count), count, keyframes, error) ||
+                !expand(keyframes, samples, capped, error))
+            {
+                return fail(error);
+            }
+            auto& weights = values.weights[*position];
+            for (const auto& [code, value] : samples)
+            {
+                VtFloatArray sample;
+                for (const auto weight : value)
+                {
+                    if (!std::isfinite(weight) ||
+                        std::abs(weight) > std::numeric_limits<float>::max())
+                    {
+                        return fail("animated morph weights exceed the finite float range");
+                    }
+                    sample.push_back(static_cast<float>(weight));
+                }
+                weights.emplace_back(code, std::move(sample));
+            }
+            values.endTimeCode =
+                std::max(values.endTimeCode, keyframes.times.back() * TimeCodesPerSecond);
+            continue;
+        }
+        Keyframes<Value> keyframes;
         std::vector<std::pair<double, Value>> samples;
         std::string error;
         if (!readKeyframes(asset, loadBuffer, animation.samplers[channel.samplerIndex], path,
-                           keyframes, error) ||
+                           Value{}, path == fastgltf::AnimationPath::Rotation ? 4 : 3, keyframes,
+                           error) ||
             !expand(keyframes, samples, capped, error))
         {
             return fail(error);
@@ -605,6 +650,7 @@ PlanAnimation(const fastgltf::Asset& asset, const gltfCore::BufferLoader& loadBu
             return false;
         }
         plan.endTimeCode = std::max(plan.endTimeCode, values.endTimeCode);
+        plan.hasChannels = plan.hasChannels || !values.weights.empty();
         for (std::size_t position = 0; position < map.nodes.size(); ++position)
         {
             if (values.nodes[position])

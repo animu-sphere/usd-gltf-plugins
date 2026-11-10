@@ -7,6 +7,7 @@
 #include <fastgltf/core.hpp>
 
 #include <cmath>
+#include <limits>
 #include <string>
 #include <utility>
 #include <variant>
@@ -93,9 +94,9 @@ MapScene(const fastgltf::Asset& asset, std::size_t sceneIndex, const pxr::SdfPat
             return std::nullopt;
         }
         const auto& node = asset.nodes[index];
-        if (!node.weights.empty())
+        if (!node.weights.empty() && !node.meshIndex)
         {
-            TF_RUNTIME_ERROR("glTF node %zu: morph weights are not supported yet", index);
+            TF_RUNTIME_ERROR("glTF node %zu: morph weights require a mesh", index);
             return std::nullopt;
         }
         MappedNode mapped;
@@ -120,6 +121,33 @@ MapScene(const fastgltf::Asset& asset, std::size_t sceneIndex, const pxr::SdfPat
             mapped.mesh =
                 mapped.path.AppendChild(TfToken("Mesh_" + std::to_string(*node.meshIndex)));
             map.meshes[*node.meshIndex].push_back(mapped.mesh);
+            const auto& mesh = asset.meshes[*node.meshIndex];
+            const auto count = mesh.primitives.empty() ? 0 : mesh.primitives.front().targets.size();
+            const auto& weights = node.weights.empty() ? mesh.weights : node.weights;
+            if (!weights.empty() && weights.size() != count)
+            {
+                TF_RUNTIME_ERROR("glTF node %zu: morph weight count does not match target count",
+                                 index);
+                return std::nullopt;
+            }
+            mapped.morphWeights.resize(count, 0.0f);
+            for (std::size_t i = 0; i < count; ++i)
+            {
+                if (!weights.empty())
+                {
+                    const double weight = weights[i];
+                    if (!std::isfinite(weight) ||
+                        std::abs(weight) > std::numeric_limits<float>::max())
+                    {
+                        TF_RUNTIME_ERROR("glTF node %zu: morph weights must be finite floats",
+                                         index);
+                        return std::nullopt;
+                    }
+                    mapped.morphWeights[i] = static_cast<float>(weight);
+                }
+                mapped.blendShapes.emplace_back("Node_" + std::to_string(index) + "_Target_" +
+                                                std::to_string(i));
+            }
         }
         const auto position = map.nodes.size();
         map.positions[index] = position;

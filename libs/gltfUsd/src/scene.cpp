@@ -186,6 +186,11 @@ authorAnimations(const UsdStageRefPtr& stage, const SdfPath& root, const SceneMa
 {
     if (plan.animations.empty())
     {
+        if (!AuthorSkelAnimation(map, {}, stage, root, TfToken("Rest")))
+        {
+            TF_RUNTIME_ERROR("Could not author static glTF morph weights");
+            return false;
+        }
         return true;
     }
     static const TfToken setName("animation");
@@ -235,7 +240,7 @@ authorAnimations(const UsdStageRefPtr& stage, const SdfPath& root, const SceneMa
                 return fail();
             }
         }
-        if (!AuthorJointAnimation(map, values, stage, root, TfToken(variantName(a))))
+        if (!AuthorSkelAnimation(map, values, stage, root, TfToken(variantName(a))))
         {
             return fail();
         }
@@ -370,17 +375,20 @@ authorScene(const fastgltf::Asset& asset, const std::string& sourcePath,
     {
         return {};
     }
-    if (!map->skins.empty())
+    // Bind each copy independently, since they may use different skins or morph weights.
+    for (std::size_t position = 0; position < map->nodes.size(); ++position)
     {
-        // All mesh copies exist now. Bind each copy independently, since they may use different skins.
-        for (const auto& mapped : map->nodes)
+        const auto& mapped = map->nodes[position];
+        const auto& node = asset.nodes[mapped.index];
+        if (node.skinIndex && !BindSkinnedMesh(asset, *node.meshIndex, stage, mapped.mesh,
+                                               map->skins.at(*node.skinIndex), loadBuffer))
         {
-            const auto& node = asset.nodes[mapped.index];
-            if (node.skinIndex && !BindSkinnedMesh(asset, *node.meshIndex, stage, mapped.mesh,
-                                                   map->skins.at(*node.skinIndex), loadBuffer))
-            {
-                return {};
-            }
+            return {};
+        }
+        if (!mapped.blendShapes.empty() &&
+            !BindMorphMesh(asset.meshes[*node.meshIndex], stage, mapped, animation, position))
+        {
+            return {};
         }
     }
     if (!authorAnimations(stage, root.GetPath(), *map, animation, corrections))
