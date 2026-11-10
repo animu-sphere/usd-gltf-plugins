@@ -95,6 +95,16 @@ python tests\check_samples.py build\cy2026-windows-x86_64-py313-usd <glTF-Sample
 It exits nonzero if a result differs, and keeps images and logs in `sample_check` in the build
 directory. `--update` accepts the new results. Without `--render` it needs no GPU.
 
+For a visual check in usdview, open Fox from an adjacent glTF-Sample-Assets checkout.
+
+```powershell
+ost plugin build plugins/usdGltfFileFormat --profile lookdev
+$fox = (Resolve-Path ../glTF-Sample-Assets/Models/Fox/glTF-Binary/Fox.glb).Path
+ost plugin view plugins/usdGltfFileFormat $fox --profile lookdev
+```
+
+Use the timeline to play the clip and the `animation` variant set on `/Root` to choose another.
+
 To measure import time, peak resident memory and repeated mesh point/topology arrays, in the
 matching USD environment and without a GPU:
 

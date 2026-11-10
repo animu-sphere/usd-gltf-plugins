@@ -1049,11 +1049,38 @@ def sampled(times, values, interpolation, path, t):
     return value / numpy.linalg.norm(value) if rotation else value
 
 
+def check_animated_world_transforms(check, stage, asset, node_paths, channels, end, index):
+    from pxr import UsdGeom
+
+    nodes = asset.json["nodes"]
+    identity = numpy.identity(4)
+    # node_paths is in scene traversal order, with parents before their children.
+    prims = [(node, path, stage.GetPrimAtPath(path)) for node, path in node_paths.items()]
+    for fraction in (0, 0.25, 0.5, 0.75, 1) if end else (0,):
+        seconds = fraction * end
+        cache = UsdGeom.XformCache(seconds * TIME_CODES_PER_SECOND)
+        worlds = {}
+        for node, path, prim in prims:
+            local = dict(nodes[node])
+            for component, (times, values, interpolation) in channels.get(node, {}).items():
+                local[component] = sampled(times, values, interpolation, component, seconds)
+            world = node_matrix(local) @ worlds.get(path.rpartition("/")[0], identity)
+            worlds[path] = world
+            if prim:
+                # Allow cubic sampling error and USD's loss of precision when composing an orient
+                # near identity. The component comparisons still use their sampler tolerances.
+                actual = numpy.array(cache.GetLocalToWorldTransform(prim))
+                magnitude = numpy.maximum(1.0, numpy.linalg.norm(world, axis=1, keepdims=True))
+                error = float(numpy.max(numpy.abs(actual - world) / magnitude))
+                check.expect(error <= 3e-4,
+                             f"{path} animation {index} at {seconds:g}s: relative world transform error {error:.3g}")
+
+
 def check_animation(check, stage, asset, node_paths):
     """Chooses each animation's variant and compares its channels on the selected nodes with glTF's
     values at each keyframe, just before it and inside each segment, checks that the properties it
-    does not animate have no time samples there, and checks each animation's end and the stage's
-    timeline."""
+    does not animate have no time samples there, and checks each animation's world transforms,
+    end and the stage's timeline."""
     from pxr import Usd, UsdSkel
 
     animations = asset.json.get("animations", [])
@@ -1075,12 +1102,14 @@ def check_animation(check, stage, asset, node_paths):
                 yield number, channel, node, path
 
     animated = {(node, path) for animation in animations for _, _, node, path in targets(animation)}
+    has_transforms = any(path in ANIMATED_ATTRIBUTES for _, path in animated)
     end = None
     for index, animation in enumerate(animations):
         with Usd.EditContext(stage, stage.GetSessionLayer()):
             variants.SetVariantSelection(names[index])
         own_end = 0.0
         own = set()
+        transforms = {}
         for number, channel, node, path in targets(animation):
             own.add((node, path))
             sampler = animation["samplers"][channel["sampler"]]
@@ -1089,6 +1118,8 @@ def check_animation(check, stage, asset, node_paths):
             values = asset.accessor(sampler["output"]).astype(numpy.float64)
             label = f"animation {index} channel {number} on Node_{node}"
             own_end = max(own_end, float(times[-1]))
+            if path in ANIMATED_ATTRIBUTES:
+                transforms.setdefault(node, {})[path] = times, values, interpolation
             if not stage.GetPrimAtPath(node_paths[node]):
                 # A joint without a prim is compared through skinning.
                 continue
@@ -1145,6 +1176,8 @@ def check_animation(check, stage, asset, node_paths):
             attribute = stage.GetAttributeAtPath(f"{node_paths[node]}.{ANIMATED_ATTRIBUTES[path]}")
             check.expect(attribute and attribute.GetNumTimeSamples() == 0,
                          f"animation {index} moves {path} of Node_{node}, which it does not animate")
+        if has_transforms:
+            check_animated_world_transforms(check, stage, asset, node_paths, transforms, own_end, index)
         data = root.GetCustomDataByKey("gltf") or {}
         check.close(data.get("endTimeCode", -1.0), own_end * TIME_CODES_PER_SECOND, f"animation {index} end")
         name = animation.get("name") or None

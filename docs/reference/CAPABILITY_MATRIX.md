@@ -120,14 +120,15 @@ Storm through MaterialX and UsdPreviewSurface, and compares pixels. The
 [README](../../README.md#development) has the command, and
 [ADR 0007](../adr/0007-display-check.md) explains the comparisons and their limits.
 
-Last result: 681 comparisons passed, none failed, at the v0.2.0 release candidate after a clean
-build, on Windows with OpenUSD 26.08, the OpenStrata lookdev runtime and an NVIDIA RTX A5000. It was
-the second such result after the 18 anisotropy comparisons were added. The iridescence suite passed
-663 comparisons, and the preceding sheen suite 639. The earlier specular suite passed
-621 twice, and was the first with the unlit, ior, clearcoat, transmission, volume and specular
-comparisons. An earlier result, on
-`7de8b8f` with lights added, gave byte-identical images in two runs. This checks simple fixtures, not
-general shading correctness.
+The current scene hierarchy passed all 681 comparisons on Windows with OpenUSD 26.08, the OpenStrata
+lookdev runtime and an NVIDIA RTX A5000. The v0.2.0 release candidate also passed all 681 comparisons
+after a clean build. The iridescence suite passed 663 comparisons, and the preceding sheen suite 639.
+The earlier specular suite passed 621 twice, and was the first with the unlit, ior, clearcoat,
+transmission, volume and specular comparisons. An earlier result, on `7de8b8f` with lights added,
+gave byte-identical images in two runs.
+
+The Khronos Fox GLB also opened interactively in usdview through `ost plugin view` on the same
+runtime. The manual command is in the [README](../../README.md#development).
 
 The [reflection fixture](../../tests/fixtures/reflections.gltf) has four front-facing
 triangles: no reflection, a reflected parent, a reflected child, and two reflections. The
@@ -341,6 +342,12 @@ The collection was checked on Windows with OpenUSD 26.08. Skinned world-space po
 at each animation's start and end agree with glTF within 1e-4 of the mesh's size after rounding
 animated joint scales to half precision. Node animation and morph weights are compared at keyframes,
 just before them and inside segments. Morph offsets and default weights are also compared.
+For assets with node animation, the world transforms of retained nodes were compared at the start,
+quarter points and end of every variant. All 339 files matched the baseline for opening and USD data
+with these checks. The two CommercialRefrigerator files show the
+[documented near-identity rotation limit](../adr/0029-node-animation.md#limits) at 3.5 seconds,
+where world matrix elements differ by up to 2.16e-4.
+
 Seven files previously rejected for morph targets draw at default time through both shader paths
 in Storm with the OpenStrata lookdev runtime and an NVIDIA RTX A5000. The other render results
 are from previous runs in the same environment. NodePerformanceTest's GLB timed out through both
