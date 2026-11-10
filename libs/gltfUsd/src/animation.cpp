@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "animation.h"
 
+#include "component.h"
+
 #include "pxr/base/gf/matrix4d.h"
 #include "pxr/base/gf/quatd.h"
 #include "pxr/base/gf/vec3d.h"
@@ -53,22 +55,11 @@ struct Keyframes
     std::vector<Value> outs; // CUBICSPLINE only
 };
 
-std::uint32_t
-readUnsigned(const std::byte* data, std::size_t size)
-{
-    std::uint32_t value = 0;
-    for (std::size_t i = 0; i < size; ++i)
-    {
-        value |= std::uint32_t(std::to_integer<unsigned char>(data[i])) << (8 * i);
-    }
-    return value;
-}
-
 // A float, or a normalized integer as glTF decodes it.
 double
 readComponent(const std::byte* data, fastgltf::ComponentType type)
 {
-    const auto bits = readUnsigned(data, fastgltf::getComponentByteSize(type));
+    const auto bits = ReadUnsigned(data, fastgltf::getComponentByteSize(type));
     switch (type)
     {
     case fastgltf::ComponentType::Float:

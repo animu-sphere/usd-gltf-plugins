@@ -10,6 +10,9 @@ here.
 
 ### Added
 
+- Skins and skeletal animation through `UsdSkel`. Each skin gets its own skeleton and its
+  mesh placements bind to it. The animation variant switches the joint and node motion together.
+  See [ADR 0028](docs/adr/0028-skin-placement.md) and [ADR 0030](docs/adr/0030-animation-choice.md).
 - Node animation: the translation, rotation and scale channels of every animation become time
   samples of `translate`, `orient` and `scale` operations at 24 time codes per second, with `STEP`,
   `LINEAR` and `CUBICSPLINE` interpolation. Assets with animations were rejected before. Each

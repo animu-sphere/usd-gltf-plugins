@@ -51,7 +51,6 @@ OPTIONAL_WARNING = re.compile(r"glTF optional extension '(.*)' is not supported"
 DIAGNOSTIC_CAUSES = {
     "morph weight animation is not supported": ("morph targets",),
     "which has a matrix": ("animated matrix",),
-    "skins are not supported": ("skin",),
     "morph weights are not supported": ("morph targets",),
     "morph targets are not supported": ("morph targets",),
     "primitive mode": ("points or lines",),
@@ -63,7 +62,7 @@ REQUIRED_DIAGNOSTIC = re.compile(r"unsupported required extensions: (.*)")
 COMPONENTS = {5120: numpy.int8, 5121: numpy.uint8, 5122: numpy.int16, 5123: numpy.uint16, 5125: numpy.uint32,
               5126: numpy.float32}
 NORMALIZED_SCALE = {5120: 127.0, 5121: 255.0, 5122: 32767.0, 5123: 65535.0}
-TYPES = {"SCALAR": 1, "VEC2": 2, "VEC3": 3, "VEC4": 4}
+TYPES = {"SCALAR": 1, "VEC2": 2, "VEC3": 3, "VEC4": 4, "MAT4": 16}
 PREVIEW_WRAP = {10497: "repeat", 33648: "mirror", 33071: "clamp"}
 MTLX_WRAP = {10497: "periodic", 33648: "mirror", 33071: "clamp"}
 IMAGE_SIGNATURES = (b"\x89PNG\r\n\x1a\n", b"\xff\xd8\xff")
@@ -100,6 +99,12 @@ class Asset:
         else:
             self.json = json.loads(data.decode("utf-8"))
         self.buffers = {}
+
+    def get(self, key):
+        return self.json.get(key, [])
+
+    def matrices(self, index):
+        return self.accessor(index).astype(numpy.float64).reshape(-1, 4, 4).transpose(0, 2, 1)
 
     def read_glb(self, data):
         offset = 12
@@ -1036,10 +1041,13 @@ def check_animation(check, stage, asset, node_paths):
             times = asset.accessor(sampler["input"])[:, 0].astype(numpy.float64)
             values = asset.accessor(sampler["output"]).astype(numpy.float64)
             label = f"animation {index} channel {number} on Node_{node}"
+            own_end = max(own_end, float(times[-1]))
+            if not stage.GetPrimAtPath(node_paths[node]):
+                # A joint without a prim is compared through skinning.
+                continue
             attribute = stage.GetAttributeAtPath(f"{node_paths[node]}.{ANIMATED_ATTRIBUTES[path]}")
             if not check.expect(attribute and attribute.GetNumTimeSamples() > 0, f"{label} is not authored"):
                 continue
-            own_end = max(own_end, float(times[-1]))
             if interpolation == "CUBICSPLINE":
                 # The plugin samples a cubic within 1e-4 of its largest value, or of a quaternion's.
                 vertices = values[1::3]
@@ -1066,6 +1074,8 @@ def check_animation(check, stage, asset, node_paths):
                 worst = max(worst, float(numpy.abs(actual - expected).max()))
             check.expect(worst <= limit, f"{label}: values differ by {worst:.3g}")
         for node, path in sorted(animated - own):
+            if not stage.GetPrimAtPath(node_paths[node]):
+                continue
             attribute = stage.GetAttributeAtPath(f"{node_paths[node]}.{ANIMATED_ATTRIBUTES[path]}")
             check.expect(attribute and attribute.GetNumTimeSamples() == 0,
                          f"animation {index} moves {path} of Node_{node}, which it does not animate")
@@ -1083,9 +1093,86 @@ def check_animation(check, stage, asset, node_paths):
                     "animation timeline")
 
 
+def check_skinning(check, stage, asset, plan, node_paths, placements):
+    from pxr import Usd, UsdGeom, UsdSkel, Vt
+    from probe_skins import Pose, reference_points
+
+    scene = f"/Asset/scenes/Scene_{plan.scene}"
+    skeletons = {}
+    for index, skin in plan.skeletons.items():
+        space = node_paths[skin["space"]] if skin["space"] is not None else scene
+        skeleton = UsdSkel.Skeleton.Get(stage, f"{space}/Skeleton_{index}")
+        if check.expect(skeleton, f"missing Skeleton_{index}"):
+            joints = skeleton.GetJointsAttr().Get()
+            check.expect(list(joints) == [plan.token(j) for j in skin["joints"]],
+                         f"Skeleton_{index} joint order differs")
+            skeletons[index] = skeleton
+
+    meshes = []
+    for prim, primitive, node, index in placements:
+        if index not in skeletons:
+            continue
+        mesh = UsdGeom.Mesh(prim)
+        binding = UsdSkel.BindingAPI(prim)
+        check.expect(binding.GetSkeletonRel().GetTargets() == [skeletons[index].GetPath()],
+                     f"{prim.GetPath()}: wrong skeleton binding")
+        attrs = primitive["attributes"]
+        sets = range(sum(name.startswith("JOINTS_") for name in attrs))
+        weights = numpy.concatenate([asset.accessor(attrs[f"WEIGHTS_{i}"]) for i in sets], axis=1)
+        meshes.append((mesh, node, index, {
+            "points": asset.accessor(attrs["POSITION"]),
+            "joints": numpy.concatenate([asset.accessor(attrs[f"JOINTS_{i}"]) for i in sets], axis=1),
+            "weights": weights / weights.sum(axis=1, keepdims=True),
+        }))
+
+    def compare(animation, seconds, half_joints, cache):
+        time = Usd.TimeCode.Default() if animation is None else Usd.TimeCode(seconds * TIME_CODES_PER_SECOND)
+        pose = Pose(asset, plan.parent, animation, seconds)
+        rounded = Pose(asset, plan.parent, animation, seconds, half_joints)
+        xforms = UsdGeom.XformCache(time)
+        skinning = {index: cache.GetSkelQuery(skeleton).ComputeSkinningTransforms(time)
+                    for index, skeleton in skeletons.items()}
+        for mesh, node, index, data in meshes:
+            query = cache.GetSkinningQuery(mesh.GetPrim())
+            points = Vt.Vec3fArray(mesh.GetPointsAttr().Get())
+            label = f"{mesh.GetPath()} animation {animation} at {seconds:g}s"
+            if not check.expect(query and query.ComputeSkinnedPoints(skinning[index], points, time),
+                                f"{label}: UsdSkel did not compute skinning"):
+                continue
+            world = numpy.array(xforms.GetLocalToWorldTransform(skeletons[index].GetPrim()))
+            actual = (numpy.c_[numpy.array(points), numpy.ones(len(points))] @ world)[:, :3]
+            expected = reference_points(asset, data, node, index, pose, rounded, plan)
+            scale = max(float(numpy.ptp(expected, axis=0).max()), 1e-6)
+            error = float(numpy.abs(actual - expected).max() / scale)
+            check.expect(error <= 1e-4, f"{label}: relative skinned point error {error:.3g}")
+
+    roots = [UsdSkel.Root(prim) for prim in stage.Traverse() if prim.IsA(UsdSkel.Root)]
+
+    def populate():
+        cache = UsdSkel.Cache()
+        for root in roots:
+            cache.Populate(root, Usd.PrimDefaultPredicate)
+        return cache
+
+    compare(None, 0, (), populate())
+    joints = {joint for skin in plan.skeletons.values() for joint in skin["joints"]}
+    variants = stage.GetDefaultPrim().GetVariantSet("animation")
+    for index, animation in enumerate(asset.get("animations")):
+        with Usd.EditContext(stage, stage.GetSessionLayer()):
+            variants.SetVariantSelection(f"Animation_{index}")
+        channels = [c for c in animation["channels"] if c["target"].get("node") in node_paths]
+        moved = {c["target"]["node"] for c in channels}
+        end = max((float(asset.accessor(animation["samplers"][c["sampler"]]["input"])[-1, 0])
+                   for c in channels), default=0.0)
+        cache = populate()
+        for seconds in sorted({0, end}):
+            compare(index, seconds, moved & joints, cache)
+    stage.GetSessionLayer().Clear()
+
+
 def check_meaning(stage, asset):
     """Returns what differs between the stage and the file, walking the selected scene."""
-    from pxr import Usd, UsdGeom, UsdLux
+    from pxr import Usd, UsdGeom, UsdLux, UsdSkel
 
     check = Check()
     document = asset.json
@@ -1100,16 +1187,26 @@ def check_meaning(stage, asset):
     lights = document.get("extensions", {}).get("KHR_lights_punctual", {}).get("lights", [])
     materials = {}
     node_paths = {}
+    plan = None
+    dropped = set()
+    placements = []
+    if roots and document.get("skins"):
+        from probe_skins import Plan, VARIANTS
+
+        plan = Plan(asset, VARIANTS[0])
+        dropped = set(plan.dropped)
 
     def walk(index, parent_path, parent_world):
         node = document["nodes"][index]
         path = f"{parent_path}/Node_{index}"
         node_paths[index] = path
         prim = stage.GetPrimAtPath(path)
-        if not check.expect(prim and prim.IsA(UsdGeom.Xform), f"{path} is not an Xform"):
-            return
         world = node_matrix(node) @ parent_world
-        check.close(numpy.array(cache.GetLocalToWorldTransform(prim)), world, f"Node_{index} world transform")
+        if index in dropped:
+            check.expect(not prim, f"{path} has a prim for a joint without attachments")
+        elif check.expect(prim and (prim.IsA(UsdGeom.Xform) or prim.IsA(UsdSkel.Root)),
+                          f"{path} is neither Xform nor SkelRoot"):
+            check.close(numpy.array(cache.GetLocalToWorldTransform(prim)), world, f"Node_{index} world transform")
         if "mesh" in node:
             mesh_index = node["mesh"]
             for number, primitive in enumerate(document["meshes"][mesh_index]["primitives"]):
@@ -1120,6 +1217,8 @@ def check_meaning(stage, asset):
                 if check.expect(mesh_prim and mesh_prim.IsA(UsdGeom.Mesh), f"{mesh_path} is not a Mesh"):
                     bound, material, has_colors = check_primitive(check, asset, mesh_prim, primitive, label)
                     materials[bound] = (material, has_colors)
+                    if "skin" in node:
+                        placements.append((mesh_prim, primitive, index, node["skin"]))
         if "camera" in node:
             camera_index = node["camera"]
             camera_path = f"{path}/Camera_{camera_index}"
@@ -1150,6 +1249,8 @@ def check_meaning(stage, asset):
     for root in roots:
         walk(root, f"/Asset/scenes/Scene_{document.get('scene', 0)}", numpy.identity(4))
     check_animation(check, stage, asset, node_paths)
+    if placements:
+        check_skinning(check, stage, asset, plan, node_paths, placements)
     actual = {str(prim.GetPath()) for prim in stage.Traverse() if prim.IsA(UsdGeom.Mesh)}
     check.expect(actual == expected_paths, f"{len(actual)} meshes authored, expected {len(expected_paths)}")
     cameras = {str(prim.GetPath()) for prim in stage.Traverse() if prim.IsA(UsdGeom.Camera)}
@@ -1314,7 +1415,9 @@ def rejection_causes(document):
         node = nodes[index]
         pending += node.get("children", [])
         if "skin" in node:
-            causes.add("skin")
+            skin = document["skins"][node["skin"]]
+            if "inverseBindMatrices" in skin and "sparse" in document["accessors"][skin["inverseBindMatrices"]]:
+                causes.add("sparse accessor")
         if "weights" in node:
             causes.add("morph targets")
         if "mesh" in node:
@@ -1348,8 +1451,6 @@ def mesh_causes(document, mesh):
                 causes.add("sparse accessor")
             elif "bufferView" not in accessor and not compressed:
                 causes.add("accessor without a bufferView")
-        if set(primitive.get("attributes", {})) & {"JOINTS_0", "WEIGHTS_0"}:
-            causes.add("skin")
     return causes
 
 
@@ -1416,7 +1517,7 @@ def sample_files(root):
 
 
 def sample_commit(root):
-    return subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"], check=True, capture_output=True,
+    return subprocess.run(["git", "--git-dir", str(root / ".git"), "rev-parse", "HEAD"], check=True, capture_output=True,
                           text=True).stdout.strip()
 
 

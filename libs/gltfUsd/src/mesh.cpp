@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "mesh.h"
 
+#include "component.h"
 #include "gltfCore/accessor.h"
 #include "material.h"
+#include "sceneMap.h"
 
 #include <fastgltf/core.hpp>
 
@@ -17,6 +19,7 @@
 #include "pxr/usd/usdGeom/primvarsAPI.h"
 #include "pxr/usd/usdGeom/tokens.h"
 #include "pxr/usd/usdGeom/xform.h"
+#include "pxr/usd/usdSkel/bindingAPI.h"
 
 #include <algorithm>
 #include <bit>
@@ -38,22 +41,11 @@ using namespace pxr;
 
 static_assert(sizeof(float) == 4 && std::numeric_limits<float>::is_iec559);
 
-std::uint32_t
-readUnsigned(const std::byte* data, std::size_t size)
-{
-    std::uint32_t value = 0;
-    for (std::size_t i = 0; i < size; ++i)
-    {
-        value |= std::uint32_t(std::to_integer<unsigned char>(data[i])) << (8 * i);
-    }
-    return value;
-}
-
 float
 readRealComponent(const std::byte* data, std::size_t size, fastgltf::ComponentType type,
                   bool normalized)
 {
-    const auto bits = readUnsigned(data, size);
+    const auto bits = ReadUnsigned(data, size);
     if (type == fastgltf::ComponentType::Float)
     {
         return std::bit_cast<float>(bits);
@@ -396,7 +388,7 @@ readIndices(const fastgltf::Asset& asset, std::size_t index, std::size_t pointCo
     values.resize(data.count);
     for (std::size_t i = 0; i < data.count; ++i)
     {
-        const auto value = readUnsigned(data.bytes.data() + i * data.stride, size);
+        const auto value = ReadUnsigned(data.bytes.data() + i * data.stride, size);
         const auto reserved = size == 4 ? std::numeric_limits<std::uint32_t>::max()
                                         : (std::uint32_t(1) << (size * 8)) - 1;
         if (value >= pointCount || value == reserved)
@@ -483,7 +475,7 @@ authorPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& primiti
             }
             texcoords.emplace_back(set, &attribute);
         }
-        else
+        else if (!attribute.name.starts_with("JOINTS_") && !attribute.name.starts_with("WEIGHTS_"))
         {
             error = "unsupported or repeated vertex attribute: " + attribute.name;
             return false;
@@ -684,6 +676,167 @@ authorPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& primiti
     return true;
 }
 
+// Collects the indices of a vertex attribute's numbered sets in set order.
+bool
+skinAccessors(const fastgltf::Primitive& primitive, std::string_view prefix,
+              std::vector<std::pair<std::size_t, std::size_t>>& sets, std::string& error)
+{
+    for (const auto& attribute : primitive.attributes)
+    {
+        if (!attribute.name.starts_with(prefix))
+        {
+            continue;
+        }
+        const auto suffix = std::string_view(attribute.name).substr(prefix.size());
+        std::size_t number = 0;
+        const auto parsed = std::from_chars(suffix.data(), suffix.data() + suffix.size(), number);
+        if ((suffix.size() > 1 && suffix.front() == '0') || parsed.ec != std::errc{} ||
+            parsed.ptr != suffix.data() + suffix.size())
+        {
+            error = "invalid skin attribute: " + attribute.name;
+            return false;
+        }
+        sets.emplace_back(number, attribute.accessorIndex);
+    }
+    std::sort(sets.begin(), sets.end());
+    for (std::size_t i = 0; i < sets.size(); ++i)
+    {
+        if (sets[i].first != i)
+        {
+            error = std::string(prefix) + " sets must start at zero and be consecutive";
+            return false;
+        }
+    }
+    return true;
+}
+
+bool
+readInfluenceSet(const fastgltf::Asset& asset, std::size_t jointsIndex, std::size_t weightsIndex,
+                 const gltfCore::BufferLoader& loadBuffer, const std::vector<int>& remap,
+                 std::size_t pointCount, std::size_t width, std::size_t offset, VtIntArray& indices,
+                 VtFloatArray& weights, std::string& error)
+{
+    using fastgltf::ComponentType;
+    if (jointsIndex >= asset.accessors.size() || weightsIndex >= asset.accessors.size())
+    {
+        error = "skin attribute accessor index is out of range";
+        return false;
+    }
+    const auto jointType = asset.accessors[jointsIndex].componentType;
+    const auto weightType = asset.accessors[weightsIndex].componentType;
+    const bool quantized = weightType != ComponentType::Float;
+    if ((jointType != ComponentType::UnsignedByte && jointType != ComponentType::UnsignedShort) ||
+        (quantized && weightType != ComponentType::UnsignedByte &&
+         weightType != ComponentType::UnsignedShort))
+    {
+        error = "invalid skin attribute component type";
+        return false;
+    }
+    const auto jointSize = fastgltf::getComponentByteSize(jointType);
+    const auto weightSize = fastgltf::getComponentByteSize(weightType);
+    gltfCore::AccessorData joints, values;
+    if (!gltfCore::GetAccessorData(asset, jointsIndex, fastgltf::AccessorType::Vec4, jointType,
+                                   4 * jointSize, true, joints, error, loadBuffer) ||
+        !gltfCore::GetAccessorData(asset, weightsIndex, fastgltf::AccessorType::Vec4, weightType,
+                                   4 * weightSize, true, values, error, loadBuffer, quantized))
+    {
+        return false;
+    }
+    if (joints.count != pointCount || values.count != pointCount)
+    {
+        error = "skin attribute and position counts differ";
+        return false;
+    }
+    for (std::size_t p = 0; p < pointCount; ++p)
+    {
+        for (std::size_t c = 0; c < 4; ++c)
+        {
+            const auto joint =
+                ReadUnsigned(joints.bytes.data() + p * joints.stride + c * jointSize, jointSize);
+            const auto weight =
+                readRealComponent(values.bytes.data() + p * values.stride + c * weightSize,
+                                  weightSize, weightType, quantized);
+            if (joint >= remap.size() || !std::isfinite(weight) || weight < 0.0f)
+            {
+                error = "skin influence has an out-of-range joint or an invalid weight";
+                return false;
+            }
+            const auto slot = p * width + offset + c;
+            indices[slot] = remap[joint];
+            weights[slot] = weight;
+        }
+    }
+    return true;
+}
+
+bool
+bindPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& primitive,
+              const UsdPrim& prim, const MappedSkin& skin, const gltfCore::BufferLoader& loadBuffer,
+              std::string& error)
+{
+    std::vector<std::pair<std::size_t, std::size_t>> joints, weights;
+    if (!skinAccessors(primitive, "JOINTS_", joints, error) ||
+        !skinAccessors(primitive, "WEIGHTS_", weights, error))
+    {
+        return false;
+    }
+    if (joints.empty() || joints.size() != weights.size())
+    {
+        error = "skinned primitive must have paired JOINTS_n and WEIGHTS_n attributes";
+        return false;
+    }
+    // Geometry has already validated the presence, index and count of POSITION.
+    const auto pointCount =
+        asset.accessors[primitive.findAttribute("POSITION")->accessorIndex].count;
+    if (joints.size() > std::numeric_limits<int>::max() / 4 ||
+        pointCount > std::numeric_limits<std::size_t>::max() / sizeof(float) / 4 / joints.size())
+    {
+        error = "too many skin influences";
+        return false;
+    }
+    const auto width = 4 * joints.size();
+    VtIntArray indices(pointCount * width);
+    VtFloatArray influences(pointCount * width);
+    for (std::size_t i = 0; i < joints.size(); ++i)
+    {
+        if (!readInfluenceSet(asset, joints[i].second, weights[i].second, loadBuffer, skin.remap,
+                              pointCount, width, 4 * i, indices, influences, error))
+        {
+            return false;
+        }
+    }
+    // Normalize across all sets together, including when the source weights were quantized.
+    for (std::size_t p = 0; p < pointCount; ++p)
+    {
+        const auto start = p * width;
+        double sum = 0.0;
+        for (std::size_t c = 0; c < width; ++c)
+        {
+            sum += influences[start + c];
+        }
+        if (sum == 0.0)
+        {
+            error = "skin weights sum to zero at a vertex";
+            return false;
+        }
+        for (std::size_t c = 0; c < width; ++c)
+        {
+            influences[start + c] = float(influences[start + c] / sum);
+        }
+    }
+    const auto binding = UsdSkelBindingAPI::Apply(prim);
+    const int elementSize = static_cast<int>(width);
+    if (!binding || !binding.CreateSkeletonRel().SetTargets({skin.path}) ||
+        !binding.CreateGeomBindTransformAttr().Set(GfMatrix4d(1.0)) ||
+        !binding.CreateJointIndicesPrimvar(false, elementSize).Set(indices) ||
+        !binding.CreateJointWeightsPrimvar(false, elementSize).Set(influences))
+    {
+        error = "could not author the skin binding";
+        return false;
+    }
+    return true;
+}
+
 } // namespace
 
 bool
@@ -722,6 +875,27 @@ ConvertMesh(const fastgltf::Asset& asset, std::size_t meshIndex, const pxr::UsdS
                              materials))
         {
             TF_RUNTIME_ERROR("glTF mesh %zu primitive %zu: %s", meshIndex, i, error.c_str());
+            return false;
+        }
+    }
+    return true;
+}
+
+bool
+BindSkinnedMesh(const fastgltf::Asset& asset, std::size_t meshIndex, const pxr::UsdStagePtr& stage,
+                const pxr::SdfPath& path, const MappedSkin& skin,
+                const gltfCore::BufferLoader& loadBuffer)
+{
+    const auto& primitives = asset.meshes[meshIndex].primitives;
+    for (std::size_t i = 0; i < primitives.size(); ++i)
+    {
+        const auto prim =
+            stage->GetPrimAtPath(path.AppendChild(TfToken("Primitive_" + std::to_string(i))));
+        std::string error;
+        if (!bindPrimitive(asset, primitives[i], prim, skin, loadBuffer, error))
+        {
+            TF_RUNTIME_ERROR("glTF skinned mesh %zu primitive %zu at %s: %s", meshIndex, i,
+                             path.GetText(), error.c_str());
             return false;
         }
     }

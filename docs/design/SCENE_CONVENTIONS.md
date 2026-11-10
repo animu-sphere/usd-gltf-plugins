@@ -69,16 +69,20 @@ the [decision record](../adr/0028-skin-placement.md).
   the common root, or the scene. The skeleton prim is a child of that node's prim.
 - Its joints are the skin's joints and the nodes between them and the space, parents first and
   siblings in glTF order. Each is the token of its node's path from the scene, so a node has the same
-  token in every skeleton. Joint indices are remapped to this order.
+  token in every skeleton. `jointNames` holds the node's name, with `Node_{index}` as the fallback.
+  Joint indices are remapped to this order.
 - Rest transforms are the nodes' local transforms. Bind transforms are the inverses of the inverse
-  bind matrices, in the skeleton's space; a node between joints has its rest transform there.
-  `geomBindTransform` is the identity.
+  bind matrices, in the skeleton's space. An absent inverse bind accessor supplies identity
+  matrices. A node between joints has its rest transform in the skeleton's space.
 - Skins that share joints are separate skeletons. A skin that several nodes use binds each of their
-  meshes to one skeleton.
+  meshes to one skeleton. Each skinned primitive binds independently with identity
+  `geomBindTransform` and vertex joint index and weight primvars. Each consecutive pair of
+  `JOINTS_n` and `WEIGHTS_n` accessors contributes four influences per vertex. The importer
+  normalizes the weights together and uses those attributes on placements with a skin.
 
 A joint node is only a skeleton joint, without an `Xform`, unless something must be below it: a mesh,
 camera or light, a skeleton whose space it is, or a child that keeps a prim. A joint that keeps a prim
-has the same transform and animation on its `Xform` as in the skeleton.
+uses the same source transform and animation values for its `Xform` and skeleton joint.
 
 For each skin, the deepest common ancestor of its skeleton prim and its skinned meshes is a skel
 root, unless it lies below another skin's. That prim, a node's `Xform` or the scene's, becomes a
@@ -102,7 +106,9 @@ selects `Animation_0`; an asset without animations has none. See the
   samples. A node that no animation moves keeps a matrix.
 - Each variant defines its animation's `UsdSkelAnimation` `Animation_{index}` below
   `/Asset/animations`, with the joints it moves, and binds it through `skel:animationSource` on each
-  skeleton that has one of them.
+  skeleton that has one of them. Its translation, rotation and scale arrays are sampled at the
+  union of the joint channels' sample times. An unanimated component uses its node's own value.
+  At default time, skeletons use their rest transforms.
 - A camera's or light's correction for scale below a node that any animation moves is inside each
   variant.
 - `customData` on `/Asset` inside a variant has a dictionary `gltf` with the animation's

@@ -11,13 +11,9 @@ Scene graph correctness comes first. The [scene hierarchy](../adr/0026-scene-hie
 [animation choice](../adr/0030-animation-choice.md) decisions set the structure; each task below
 builds on the last.
 
-1. Skins through `UsdSkel`, placed as the skin placement decision specifies: skeletons, joints,
-   bindings, skel roots and skeletal animation through `skel:animationSource` in each animation's
-   variant, with skins and joints added to the conversion's map of source indices to USD paths.
-   Record the half-precision scales of animated joints as a limit.
-2. Morph targets and weights, static and animated, including skinned meshes and meshes that several
+1. Morph targets and weights, static and animated, including skinned meshes and meshes that several
    nodes use.
-3. Representative fixtures and samples for transform equivalence over time, and consumer checks
+2. Representative fixtures and samples for transform equivalence over time, and consumer checks
    where feasible, with the release record calling out the path change and its migration.
 
 ### Release criteria

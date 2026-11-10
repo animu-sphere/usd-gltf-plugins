@@ -3,11 +3,13 @@
 
 #include "pxr/pxr.h"
 #include "pxr/base/gf/matrix4d.h"
+#include "pxr/base/tf/token.h"
 #include "pxr/usd/sdf/path.h"
 
 #include <fastgltf/types.hpp>
 
 #include <cstddef>
+#include <map>
 #include <optional>
 #include <vector>
 
@@ -20,6 +22,7 @@ struct MappedNode
     std::size_t index = 0;
     // The parent's position in SceneMap::nodes, or nullopt for a root node of the scene.
     std::optional<std::size_t> parent;
+    // Empty after skin placement for a joint without a prim.
     pxr::SdfPath path;
     // The path of the node's mesh, or empty for a node without one.
     pxr::SdfPath mesh;
@@ -29,8 +32,21 @@ struct MappedNode
     pxr::GfMatrix4d world{1.0};
 };
 
-// Where conversion puts the selected scene's source objects. Paths are kept rather than derived from
-// glTF parents, because skins will place joints and skel roots where glTF has no prim.
+struct MappedJoint
+{
+    std::size_t position; // In SceneMap::nodes
+    pxr::TfToken token;
+    pxr::GfMatrix4d bind;
+};
+
+struct MappedSkin
+{
+    pxr::SdfPath path;
+    std::vector<MappedJoint> joints; // In scene order, including nodes between source joints
+    std::vector<int> remap;          // From the glTF skin's joint order to `joints`
+};
+
+// Where conversion puts the selected scene's source objects.
 struct SceneMap
 {
     std::size_t sceneIndex = 0;
@@ -41,6 +57,10 @@ struct SceneMap
     std::vector<std::optional<std::size_t>> positions;
     // By mesh index, the mesh's path below each node that uses it, in the order of `nodes`.
     std::vector<std::vector<pxr::SdfPath>> meshes;
+    // By skin index. Only skins used in the selected scene have skeletons.
+    std::map<std::size_t, MappedSkin> skins;
+    // Existing scene or node paths whose types become SkelRoot.
+    pxr::SdfPathVector skelRoots;
 };
 
 // Checks the scene's nodes and maps them below `scenes`, without authoring anything. Reports an

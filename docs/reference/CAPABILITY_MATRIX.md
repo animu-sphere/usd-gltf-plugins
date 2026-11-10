@@ -64,7 +64,8 @@ CI success is not evidence of display compatibility.
 | KTX2 (`KHR_texture_basisu`) | Experimental | ETC1S and UASTC LDR 4x4 single 2D images, up to 16384 per side, from bufferViews, data URIs and restricted local files, served as PNG by the package resolver and decoded on each read, without a cache. Other codecs, cubemaps and arrays are rejected. Import reads the header only, so a damaged body fails when read, with a warning, after the layer is published. Tested in CI, with the [display check](#display-checks) on Windows. See the [decision record](../adr/0005-ktx2-decoder.md). | `libs/gltfTexture/tests/image.cpp`, `tests/test_file_format.py::test_ktx2_images_are_served_as_png`, `tests/test_file_format.py::test_ktx2_is_preferred_over_its_fallback_and_does_not_warn`, `tests/test_file_format.py::test_ktx2_file_resolves_after_moving_and_on_reload`, `tests/test_file_format.py::test_ktx2_failures_preserve_layer`, `tests/test_file_format.py::test_ktx2_orientation_required_by_the_extension_is_accepted`, `tests/test_file_format.py::test_damaged_ktx2_body_fails_when_read`, `tests/test_file_format.py::test_ktx2_textures_view_fixture` |
 | WebP (`EXT_texture_webp`) | Experimental | Still lossy and lossless images, with or without alpha, from bufferViews, data URIs and restricted local files, served as PNG by the package resolver and decoded on each read, without a cache. Used over a plain source, and not over KTX2 when a texture has both. Animations are rejected. Import checks the RIFF chunks and bitstream header, so a truncated file fails import; damage inside a valid bitstream fails when read, with a warning, after the layer is published. Tested in CI only: display has not been checked, and no sample asset has been run. See the [decision record](../adr/0014-webp-decoder.md). | `libs/gltfTexture/tests/image.cpp`, `tests/test_file_format.py::test_webp_images_are_served_as_png`, `tests/test_file_format.py::test_webp_is_used_over_its_fallback_and_does_not_warn`, `tests/test_file_format.py::test_ktx2_is_preferred_over_webp`, `tests/test_file_format.py::test_webp_file_resolves_after_moving_and_on_reload`, `tests/test_file_format.py::test_webp_failures_preserve_layer`, `tests/test_file_format.py::test_damaged_webp_body_fails_when_read` |
 | Point and line primitives, other vertex attributes, sparse accessors | Unsupported | Rejected with a diagnostic. | `tests/test_file_format.py::test_mesh_failures_and_reload_preservation` |
-| Skins and morphs | Unsupported | Rejected when used in the selected scene, including morph targets, node or mesh morph weights and animations of weights. | `tests/test_file_format.py::test_unsupported_features_fail_without_publishing`, `tests/test_file_format.py::test_animation_failures_preserve_layer` |
+| Skins and skeletal animation | Experimental | One skeleton per used skin with remapped vertex influences and skel roots on existing paths. Supports all paired influence sets, unsigned byte or unsigned short joint indices, float or normalized unsigned byte or short weights, and finite, affine, invertible float inverse bind matrices. Weights are normalized across sets. Rejects invalid joints, bind matrices, influence accessors and zero total weights. Sparse accessors are unsupported. Each animation variant binds its joint animation on the skeletons it moves. Animated joint scales use `half3[]`, including constant scales on moved joints, and can round the skinned pose. Animated translations and scales outside the finite USD ranges are rejected. Tested on local Windows. See [scene conventions](../design/SCENE_CONVENTIONS.md#skeletons-and-animation). | `tests/test_file_format.py::test_skin_bindings_and_animation_variants`, `tests/test_file_format.py::test_skin_failures_preserve_layer`, `tests/check_samples.py` |
+| Morph targets and weights | Unsupported | Rejected when used in the selected scene, including morph targets, node or mesh morph weights and animations of weights. | `tests/test_file_format.py::test_unsupported_features_fail_without_publishing`, `tests/test_file_format.py::test_animation_failures_preserve_layer` |
 | Node animation | Experimental | Translation, rotation and scale channels of every animation, as `translate`, `orient` and `scale` time samples at 24 time codes per second from 0, with the node's own values as defaults. Each animation is a variant `Animation_{index}` of a variant set `animation` on `/Asset`, which selects `Animation_0`, with the animation's end and name in that variant's `customData`; the stage's timeline ends with the longest animation, and a shorter one holds its last values. A selection that names no variant leaves the animated nodes at an identity transform, without a diagnostic. `STEP` and `LINEAR` match glTF within float precision; `CUBICSPLINE` is sampled within 1e-4 of its curve, in at most 256 pieces per segment, with a warning beyond. Channels without a node or outside the selected scene are ignored. A camera or light below a changing scale, or below a rotation that changes under a nonuniform scale or shear, fails, as do weights channels, animated matrix nodes and invalid samplers, in any animation. USD composes an `orient` near the identity up to about 0.26 degrees off its value. Tested in CI, and compared with every sample's glTF values for every animation in the [sample check](#sample-assets); not rendered over time. See the decision records on [node animation](../adr/0029-node-animation.md) and [choosing an animation](../adr/0030-animation-choice.md). | `tests/test_file_format.py::test_node_animation_interpolation`, `tests/test_file_format.py::test_every_animation_has_a_variant`, `tests/test_file_format.py::test_animation_channels_that_are_not_authored`, `tests/test_file_format.py::test_animated_cameras_keep_their_correction`, `tests/test_file_format.py::test_animation_failures_preserve_layer`, `tests/probe_animation.py`, `tests/probe_animation_choice.py`, `tests/check_samples.py` |
 | Export | Unsupported | Not implemented. | |
 | Anisotropy (`KHR_materials_anisotropy`) | Experimental | Optional or required. MaterialX `gltf_pbr` strength and rotation; texture B times strength and `atan2(2G - 1, 2R - 1)` plus rotation, as non-color data, with UV sets, transforms and wrap modes. Finite factor angles reduce modulo a full turn, and a zero direction selects angle 0. A strength of 0 and an unlit material author none and read no anisotropy image; input values and UV sets are still checked. UsdPreviewSurface ignores anisotropy with a warning. MaterialX uses a renderer-derived tangent frame, with a warning: supplied glTF tangents and handedness do not control shading, so orientation can differ from glTF. Tested locally on Windows, including the [display check](#display-checks) and [sample check](#sample-assets); no glTF reference-renderer equivalence is claimed. See [ADR 0023](../adr/0023-anisotropy.md). | `tests/test_file_format.py::test_anisotropy_materials`, `tests/test_file_format.py::test_anisotropy_textures`, `tests/test_file_format.py::test_anisotropy_failures_preserve_layer`, `tests/check_display.py`, `tests/probe_anisotropy.py` |
@@ -336,36 +337,34 @@ not in this repository: 339 files in 150 models. The result for each file is in
 [`tests/sample_baseline.json`](../../tests/sample_baseline.json), and
 [ADR 0010](../adr/0010-sample-baseline.md) explains what is compared and its limits.
 
-Last result: the whole collection with every animation in its variant, on Windows with OpenUSD 26.08,
-without rendering, and InterpolationTest also rendered with the OpenStrata lookdev runtime and an NVIDIA
-RTX A5000. Every file opened or was rejected as before, with the same meaning; the only change is that
-InterpolationTest no longer warns that it authors only the first of its nine animations. Chosen through
-its variant, each animation's values agreed with glTF's at every keyframe, just before it and inside
-every segment, the properties it does not animate had no time samples, and its end was in `customData`.
-The other files' render results are from the previous run, with node animation, in which every opened
-file drew except the NodePerformanceTest GLB, which still times out. Animation was compared as values,
-not rendered over time. It is not part of CI.
+Last result: the whole collection with skins, on Windows with OpenUSD 26.08. The 18 files previously
+rejected for skins alone now open. Their world-space skinned points at rest and at each animation's
+start and end agree with glTF within 1e-4 of the mesh's size after rounding animated joint scales to
+half precision. Node animation values are compared at keyframes, just before them and inside
+segments. The 18 newly opened files drew at the default time through both shader paths in Storm
+with the OpenStrata lookdev runtime and an NVIDIA RTX A5000. The remaining render results are from
+previous runs in the same environment. NodePerformanceTest's GLB timed out through both shader
+paths. The sample check runs outside CI.
 
 | Result | Files | What it means |
 | --- | --- | --- |
-| Opened | 276 | The stage opens. No file crashed or timed out while opening. |
-| Rejected | 63 | Each has a diagnostic naming a cause the file really has. |
-| Meaning verified | 217 | USD agrees with values decoded from the file, in all that is compared, and the file uses no ignored extension. |
+| Opened | 294 | The stage opens. No file crashed or timed out while opening. |
+| Rejected | 45 | Each has a diagnostic naming a cause the file really has. |
+| Meaning verified | 235 | USD agrees with values decoded from the file, in all that is compared, and the file uses no ignored extension. |
 | Meaning partial | 59 | The same, but the file uses an optional extension that is ignored, with a warning. What it changes is not compared. |
 | Meaning differs | 0 | |
-| Rendered | 275 | Storm drew something through both shader paths. No pixel was judged, so this is not evidence of correct display. One more file timed out through both. |
+| Rendered | 293 | Storm drew through both shader paths, measured by coverage in a static frame. One more file timed out through both. |
 
 Why files are rejected, read from each file. Most files have several causes, so a count of files that
 have a cause is not what supporting it would open:
 
 | Cause | Files with it | Files with only it |
 | --- | --- | --- |
-| Skin | 24 | 18 |
-| Requires `KHR_draco_mesh_compression` | 18 | 13 |
+| Requires `KHR_draco_mesh_compression` | 18 | 17 |
 | Morph targets, including animated weights | 10 | 9 |
 | Requires a material extension | 4 | 4 |
 | Requires `KHR_node_visibility` | 4 | 4 |
-| Requires meshopt compression | 5 | 3 |
+| Requires meshopt compression | 5 | 5 |
 | Points or lines | 3 | 3 |
 | Sparse accessor | 2 | 2 |
 

@@ -18,17 +18,6 @@ namespace
 
 using namespace pxr;
 
-// Returns what a node uses that cannot be converted, or nullptr.
-const char*
-unsupportedNodeContent(const fastgltf::Node& node)
-{
-    if (node.skinIndex)
-    {
-        return "skins are";
-    }
-    return node.weights.empty() ? nullptr : "morph weights are";
-}
-
 bool
 nodeMatrix(const fastgltf::Node& node, GfMatrix4d& result)
 {
@@ -104,9 +93,9 @@ MapScene(const fastgltf::Asset& asset, std::size_t sceneIndex, const pxr::SdfPat
             return std::nullopt;
         }
         const auto& node = asset.nodes[index];
-        if (const char* unsupported = unsupportedNodeContent(node))
+        if (!node.weights.empty())
         {
-            TF_RUNTIME_ERROR("glTF node %zu: %s not supported yet", index, unsupported);
+            TF_RUNTIME_ERROR("glTF node %zu: morph weights are not supported yet", index);
             return std::nullopt;
         }
         MappedNode mapped;
