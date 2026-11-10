@@ -31,7 +31,7 @@ Register the plugin by setting `PXR_PLUGINPATH_NAME` to
 from pxr import Usd
 
 stage = Usd.Stage.Open("model.glb")
-print(stage.GetDefaultPrim().GetPath())  # /Asset
+print(stage.GetDefaultPrim().GetPath())  # /Root
 ```
 
 ## Development

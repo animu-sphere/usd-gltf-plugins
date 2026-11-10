@@ -1,6 +1,6 @@
 # Material design
 
-Each glTF material maps to one `UsdShadeMaterial` under `/Asset/mtl` with
+Each glTF material maps to one `UsdShadeMaterial` under `/Root/Materials` with
 both a MaterialX `gltf_pbr`-based path and a UsdPreviewSurface
 fallback. Use render-context-specific surface outputs as appropriate; verify
 the actual output names and connections against the targeted OpenUSD and

@@ -290,10 +290,10 @@ def author(g, variant, output):
     stage.SetTimeCodesPerSecond(TIME_CODES_PER_SECOND)
     UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.y)
     UsdGeom.SetStageMetersPerUnit(stage, 1)
-    asset = UsdGeom.Xform.Define(stage, "/Asset")
+    asset = UsdGeom.Xform.Define(stage, "/Root")
     stage.SetDefaultPrim(asset.GetPrim())
-    UsdGeom.Scope.Define(stage, "/Asset/scenes")
-    scene_path = Sdf.Path(f"/Asset/scenes/Scene_{plan.scene}")
+    UsdGeom.Scope.Define(stage, "/Root/Scenes")
+    scene_path = Sdf.Path(f"/Root/Scenes/Scene_{plan.scene}")
     times = probe_times(g)
     animation = 0 if g.get("animations") else None
     poses = {t: Pose(g, plan.parent, animation, t) for t in times}
@@ -427,7 +427,7 @@ def author(g, variant, output):
             if any(not np.allclose(poses[t].local[j], rest.local[j]) for t in times):
                 animated_tokens[plan.token(j)] = j
     if animated_tokens and animation is not None:
-        animations = Sdf.Path("/Asset/animations")
+        animations = Sdf.Path("/Root/Animations")
         UsdGeom.Scope.Define(stage, animations)
         anim = UsdSkel.Animation.Define(stage, animations.AppendChild(f"Animation_{animation}"))
         tokens = sorted(animated_tokens)

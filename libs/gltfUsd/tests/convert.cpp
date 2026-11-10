@@ -63,13 +63,13 @@ convertsATriangle()
     }
 
     const auto stage = pxr::UsdStage::Open(layer);
-    if (stage->GetDefaultPrim().GetPath() != pxr::SdfPath("/Asset"))
+    if (stage->GetDefaultPrim().GetPath() != pxr::SdfPath("/Root"))
     {
-        return fail("the default prim is not /Asset");
+        return fail("the default prim is not /Root");
     }
-    if (!stage->GetPrimAtPath(pxr::SdfPath("/Asset/scenes/Scene_0")))
+    if (!stage->GetPrimAtPath(pxr::SdfPath("/Root/Scenes/Scene_0")))
     {
-        return fail("there is no /Asset/scenes/Scene_0");
+        return fail("there is no /Root/Scenes/Scene_0");
     }
     std::size_t meshes = 0;
     for (const auto& prim : stage->Traverse())

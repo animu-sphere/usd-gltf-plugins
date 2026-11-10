@@ -112,10 +112,10 @@ def define_static(stage, g, plan, moved):
     `moved` get translate, orient and scale operations without values; others a matrix. Returns the
     prim path of each kept node and of each skeleton."""
     nodes = g.get("nodes")
-    asset = UsdGeom.Xform.Define(stage, "/Asset")
+    asset = UsdGeom.Xform.Define(stage, "/Root")
     stage.SetDefaultPrim(asset.GetPrim())
-    UsdGeom.Scope.Define(stage, "/Asset/scenes")
-    scene = Sdf.Path(f"/Asset/scenes/Scene_{plan.scene}")
+    UsdGeom.Scope.Define(stage, "/Root/Scenes")
+    scene = Sdf.Path(f"/Root/Scenes/Scene_{plan.scene}")
     path = {}
     for n in plan.order:
         if n in plan.kept:
@@ -215,8 +215,8 @@ def author_animation(stage, g, plan, a, path, skeleton_path, moved, defaults=Tru
                     key=plan.token)
     if not joints:
         return None
-    UsdGeom.Scope.Define(stage, "/Asset/animations")
-    anim = UsdSkel.Animation.Define(stage, f"/Asset/animations/Animation_{a}")
+    UsdGeom.Scope.Define(stage, "/Root/Animations")
+    anim = UsdSkel.Animation.Define(stage, f"/Root/Animations/Animation_{a}")
     anim.CreateJointsAttr([plan.token(j) for j in joints])
     for t in keys({j: by_node[j] for j in joints}):
         trs = [trs_at(g, by_node, j, t) for j in joints]
@@ -278,7 +278,7 @@ def author(g, candidate, output, label):
             ops = UsdGeom.Xformable(stage.GetPrimAtPath(path[n])).GetOrderedXformOps()
             for op, name, value in zip(ops, PATHS, rest_trs(g.get("nodes")[n])):
                 op.Set(usd_value(name, value))
-    asset = stage.GetPrimAtPath("/Asset")
+    asset = stage.GetPrimAtPath("/Root")
     variant_set = asset.GetVariantSets().AddVariantSet("animation")
     for a in range(count):
         variant_set.AddVariant(f"Animation_{a}")
@@ -320,7 +320,7 @@ def pose_error(stage, g, a, root="/Host"):
     by_node = channels(g, a)
     times = keys(by_node)
     times = sorted({0.0, *times, times[-1] + 1.0})
-    scene = Sdf.Path(f"{root}/scenes/Scene_{plan.scene}")
+    scene = Sdf.Path(f"{root}/Scenes/Scene_{plan.scene}")
     path = {}
     for n in plan.order:
         if n in plan.kept:
@@ -366,12 +366,12 @@ def check(g, candidate, files):
         direct = Usd.Stage.Open(str(files[a]))
         if selection:
             with Usd.EditContext(direct, direct.GetSessionLayer()):
-                direct.GetPrimAtPath("/Asset").GetVariantSets().GetVariantSet("animation").SetVariantSelection(
+                direct.GetPrimAtPath("/Root").GetVariantSets().GetVariantSet("animation").SetVariantSelection(
                     selection)
         result["selections"][a] = {
             "error": worst, "at": at, "animationSources": sources,
             "expectedEnd": end_of(g, a), "stageEnd": direct.GetEndTimeCode(),
-            "variantEnd": direct.GetPrimAtPath("/Asset").GetCustomDataByKey("gltf:endTimeCode"),
+            "variantEnd": direct.GetPrimAtPath("/Root").GetCustomDataByKey("gltf:endTimeCode"),
             "validation": validate(direct)}
     # No selection anywhere but the asset's own.
     result["unchosen"] = pose_error(host_stage(files[0], None), g, 0)[:2]
@@ -448,7 +448,7 @@ def plugin_checks(output, glb, fixture):
     used = [l for l in stage.GetUsedLayers() if l.GetFileFormat().formatId == "gltf"]
     out["reference"] = [(pathlib.PurePath(l.identifier.split(":SDF_FORMAT_ARGS:")[0]).name,
                          l.GetFileFormatArguments()) for l in used]
-    out["referenceComposes"] = bool(stage.GetPrimAtPath("/Host/scenes"))
+    out["referenceComposes"] = bool(stage.GetPrimAtPath("/Host/Scenes"))
 
     package = output / "host.usdz"
     package.unlink(missing_ok=True)
@@ -459,7 +459,7 @@ def plugin_checks(output, glb, fixture):
     stage = Usd.Stage.Open(str(package))
     used = [l for l in stage.GetUsedLayers() if l.GetFileFormat().formatId == "gltf"]
     out["package"] = [(l.identifier.split("host.usdz")[-1], l.GetFileFormatArguments()) for l in used]
-    out["packageComposes"] = bool(stage.GetPrimAtPath("/Host/scenes"))
+    out["packageComposes"] = bool(stage.GetPrimAtPath("/Host/Scenes"))
 
     printed = output / "usdcat.usda"
     printed.unlink(missing_ok=True)

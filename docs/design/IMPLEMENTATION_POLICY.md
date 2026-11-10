@@ -15,7 +15,7 @@ file through `Usd.Stage.Open`, without a dedicated renderer.
 5. Use usd-vrm-plugins as a structural and material implementation reference,
    without a code, library, or build dependency or forced common library.
 6. Prioritize import; USD-to-glTF export is a later phase.
-7. Use `/Asset`, `/Asset/scenes`, and `/Asset/mtl` as the basic scene layout.
+7. Use `/Root`, `/Root/Scenes`, and `/Root/Materials` as the basic scene layout.
 8. Provide both MaterialX and UsdPreviewSurface shading paths in UsdShade.
 9. Provide a standard-image conversion path for KTX2 and WebP rather than
    requiring imaging that reads them from consumers.

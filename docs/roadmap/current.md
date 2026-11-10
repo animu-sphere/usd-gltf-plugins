@@ -16,7 +16,7 @@ builds on the last.
 
 ### Release criteria
 
-- Imported assets have stable paths below `/Asset/scenes/Scene_{index}` and `/Asset/mtl`, and nested
+- Imported assets have stable paths below `/Root/Scenes/Scene_{index}` and `/Root/Materials`, and nested
   nodes, with their meshes, cameras and lights, match the source's world transforms.
 - Skins work with several skinned meshes and shared joints, and skel roots are existing prims, so a
   node's path does not depend on whether the asset has skins.

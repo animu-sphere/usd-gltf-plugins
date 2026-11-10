@@ -41,7 +41,7 @@ def check_inside_session(package):
         assert (resources / name).is_file(), f"{name} is not in the package"
 
     stage = Usd.Stage.Open(str(FIXTURES / "reflections.gltf"))
-    assert stage and stage.GetDefaultPrim().GetPath() == "/Asset", "a .gltf file did not open"
+    assert stage and stage.GetDefaultPrim().GetPath() == "/Root", "a .gltf file did not open"
     assert any(prim.GetTypeName() == "Mesh" for prim in stage.Traverse()), "no mesh was imported"
 
     stage = Usd.Stage.Open(str(FIXTURES / "ktx2_textures.gltf"))

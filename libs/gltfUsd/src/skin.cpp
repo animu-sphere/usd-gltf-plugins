@@ -527,7 +527,7 @@ AuthorSkelAnimation(const SceneMap& map, const AnimationValues& values, const Us
     {
         return true;
     }
-    const auto scope = UsdGeomScope::Define(stage, root.AppendChild(TfToken("animations")));
+    const auto scope = UsdGeomScope::Define(stage, root.AppendChild(TfToken("Animations")));
     if (!scope)
     {
         return false;

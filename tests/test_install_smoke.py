@@ -16,8 +16,8 @@ plugin = Plug.Registry().GetPluginWithName("UsdGltfFileFormat")
 assert plugin is not None
 assert pathlib.Path(sys.argv[1]).resolve() in pathlib.Path(plugin.path).resolve().parents, plugin.path
 stage = Usd.Stage.Open(sys.argv[2])
-assert stage.GetDefaultPrim().GetPath() == "/Asset"
-assert stage.GetPrimAtPath("/Asset/scenes/Scene_0")
+assert stage.GetDefaultPrim().GetPath() == "/Root"
+assert stage.GetPrimAtPath("/Root/Scenes/Scene_0")
 assert any(prim.GetTypeName() == "Mesh" for prim in stage.Traverse())
 """
 
