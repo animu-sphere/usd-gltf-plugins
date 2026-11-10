@@ -43,8 +43,23 @@ caller's scope, as [ADR 0001](0001-image-assets.md#lifetime-cache-and-concurrenc
 requires. A checker timeout must not be described as a failed `Stage.Open` without
 measuring that operation separately.
 
+## Image read measurements
+
+After stage opening and geometry inspection, resolve the shader file inputs in
+one `Ar.ResolverScopedCache`. Open each distinct resolved path once per pass,
+twice in the same scope, so the second pass can detect reuse. Both shader paths
+can refer to the same image. Deduplication keeps the workload independent of how
+many shader nodes refer to it. Report the wall time of each pass separately from
+`Stage.Open`.
+
+Enable OpenUSD tracing during the passes and count the calls into KTX2-to-PNG
+conversion, with their total elapsed time. This includes transcoding and PNG
+encoding inside the converter. Source resolution, image header checks outside
+the converter, and the opening of PNG, JPEG or WebP images contribute to the
+pass time without counting as KTX2 conversions.
+
 ## Limits
 
 No throughput target, mesh instancing, lazy loading or long-lived cache is adopted.
-KTX2 decode counts and time, and measurements on other platforms, remain later
-work. This check says nothing about display compatibility.
+The image passes measure a serial resolver workload. Renderer loading and
+display compatibility need separate checks.

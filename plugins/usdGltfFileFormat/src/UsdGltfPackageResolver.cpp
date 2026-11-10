@@ -7,6 +7,7 @@
 #include "pxr/base/tf/diagnostic.h"
 #include "pxr/base/tf/registryManager.h"
 #include "pxr/base/tf/type.h"
+#include "pxr/base/trace/trace.h"
 #include "pxr/usd/ar/asset.h"
 #include "pxr/usd/ar/definePackageResolver.h"
 #include "pxr/usd/ar/inMemoryAsset.h"
@@ -87,6 +88,17 @@ findImage(const std::shared_ptr<Package>& package, const std::string& entry, Pac
            requested == gltfTexture::ServedFormat(image.format);
 }
 
+bool
+convertToPng(const PackagedImage& image, std::vector<std::byte>& png, std::string& error)
+{
+    if (image.format == gltfTexture::ImageFormat::Ktx2)
+    {
+        TRACE_SCOPE("UsdGltfFileFormat KTX2 to PNG");
+        return gltfTexture::ConvertToPng(image.bytes, image.format, png, error);
+    }
+    return gltfTexture::ConvertToPng(image.bytes, image.format, png, error);
+}
+
 } // namespace
 
 // Serves embedded images from the source file, and KTX2 and WebP images converted to PNG, so
@@ -111,6 +123,7 @@ class UsdGltfPackageResolver final : public ArPackageResolver
     OpenAsset(const std::string& resolvedPackagePath,
               const std::string& resolvedPackagedPath) override
     {
+        TRACE_SCOPE("UsdGltfFileFormat image open");
         const auto package = findPackage(resolvedPackagePath);
         PackagedImage image;
         if (!findImage(package, resolvedPackagedPath, image))
@@ -123,7 +136,7 @@ class UsdGltfPackageResolver final : public ArPackageResolver
         // The source can have changed since import, and the image loader must not see
         // a damaged image. See docs/adr/0006-image-failures.md.
         if (!gltfTexture::CheckImage(image.bytes, image.format, error) ||
-            (converted && !gltfTexture::ConvertToPng(image.bytes, image.format, *png, error)))
+            (converted && !convertToPng(image, *png, error)))
         {
             TF_WARN("Cannot read '%s' in '%s': %s", resolvedPackagedPath.c_str(),
                     resolvedPackagePath.c_str(), error.c_str());

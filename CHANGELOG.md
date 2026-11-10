@@ -6,6 +6,13 @@ All notable changes to `usd-gltf-plugins` are recorded here. The format follows
 recorded in the [capability matrix](docs/reference/CAPABILITY_MATRIX.md), not
 here.
 
+## [Unreleased]
+
+### Added
+
+- The import measurement tool records KTX2 conversion calls and time in two image read passes.
+  The [development guide](docs/DEVELOPMENT.md) gives the command for the fixed sample set.
+
 ## [0.3.0] - 2026-11-11
 
 ### Added
