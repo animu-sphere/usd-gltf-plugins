@@ -18,9 +18,12 @@ namespace gltfUsd
 struct MappedNode
 {
     std::size_t index = 0;
+    // The parent's position in SceneMap::nodes, or nullopt for a root node of the scene.
+    std::optional<std::size_t> parent;
     pxr::SdfPath path;
     // The path of the node's mesh, or empty for a node without one.
     pxr::SdfPath mesh;
+    // At time 0 when an animation moves the node or its ancestors, and otherwise as the node states.
     pxr::GfMatrix4d local{1.0};
     // Relative to the asset, and so to the scene, which has no transform.
     pxr::GfMatrix4d world{1.0};

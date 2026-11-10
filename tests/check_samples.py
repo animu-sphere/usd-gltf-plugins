@@ -49,7 +49,8 @@ TOLERANCE = 1e-5
 OPTIONAL_WARNING = re.compile(r"glTF optional extension '(.*)' is not supported")
 # The text of a rejection, and the causes that make it a fitting one.
 DIAGNOSTIC_CAUSES = {
-    "animations are not supported": ("animations",),
+    "morph weight animation is not supported": ("morph targets",),
+    "which has a matrix": ("animated matrix",),
     "skins are not supported": ("skin",),
     "morph weights are not supported": ("morph targets",),
     "morph targets are not supported": ("morph targets",),
@@ -956,6 +957,100 @@ def check_occlusion(check, shader, strength, label):
         check.close(values, (strength, 1 - strength), f"{label} Preview occlusion strength")
 
 
+ANIMATED_ATTRIBUTES = {"translation": "xformOp:translate", "rotation": "xformOp:orient",
+                       "scale": "xformOp:scale"}
+TIME_CODES_PER_SECOND = 24
+
+
+def sampled(times, values, interpolation, path, t):
+    """glTF's value of a sampler at t seconds. values has one row per output element."""
+    rotation = path == "rotation"
+    if interpolation == "CUBICSPLINE":
+        ins, vertices, outs = values[0::3], values[1::3], values[2::3]
+    else:
+        vertices = values
+    if rotation and interpolation != "CUBICSPLINE":
+        vertices = vertices / numpy.linalg.norm(vertices, axis=1, keepdims=True)
+    if t <= times[0] or len(times) == 1:
+        return vertices[0]
+    if t >= times[-1]:
+        return vertices[-1]
+    k = int(numpy.searchsorted(times, t, side="right") - 1)
+    if t == times[k] or interpolation == "STEP":
+        return vertices[k]
+    delta = times[k + 1] - times[k]
+    u = (t - times[k]) / delta
+    if interpolation == "LINEAR":
+        if not rotation:
+            return vertices[k] + u * (vertices[k + 1] - vertices[k])
+        a, b = vertices[k], vertices[k + 1]
+        dot = float(numpy.dot(a, b))
+        if dot < 0:
+            b, dot = -b, -dot
+        theta = math.acos(min(1.0, dot))
+        if theta < 1e-9:
+            return a
+        return (math.sin((1 - u) * theta) * a + math.sin(u * theta) * b) / math.sin(theta)
+    u2, u3 = u * u, u * u * u
+    value = ((2 * u3 - 3 * u2 + 1) * vertices[k] + (u3 - 2 * u2 + u) * delta * outs[k] +
+             (-2 * u3 + 3 * u2) * vertices[k + 1] + (u3 - u2) * delta * ins[k + 1])
+    return value / numpy.linalg.norm(value) if rotation else value
+
+
+def check_animation(check, stage, asset, node_paths):
+    """Compares the first animation's channels on the selected nodes with glTF's values at each
+    keyframe, just before it and inside each segment, and the stage's timeline with its range."""
+    animations = asset.json.get("animations", [])
+    if not animations:
+        return
+    animation = animations[0]
+    end = None
+    for number, channel in enumerate(animation["channels"]):
+        target = channel["target"]
+        node, path = target.get("node"), target.get("path")
+        if node not in node_paths or path not in ANIMATED_ATTRIBUTES:
+            continue
+        sampler = animation["samplers"][channel["sampler"]]
+        interpolation = sampler.get("interpolation", "LINEAR")
+        times = asset.accessor(sampler["input"])[:, 0].astype(numpy.float64)
+        values = asset.accessor(sampler["output"]).astype(numpy.float64)
+        label = f"animation 0 channel {number} on Node_{node}"
+        attribute = stage.GetAttributeAtPath(f"{node_paths[node]}.{ANIMATED_ATTRIBUTES[path]}")
+        if not check.expect(attribute and attribute.GetNumTimeSamples() > 0, f"{label} is not authored"):
+            continue
+        end = max(end or 0.0, float(times[-1]))
+        if interpolation == "CUBICSPLINE":
+            # The plugin samples a cubic within 1e-4 of its largest value, or of a quaternion's.
+            vertices = values[1::3]
+            limit = 2e-4 * (1.0 if path == "rotation" else max(1e-9, float(numpy.abs(vertices).max())))
+        else:
+            limit = TOLERANCE * (1.0 if path == "rotation" else max(1.0, float(numpy.abs(values).max())))
+        query = [times[0] - 1, times[-1] + 1]
+        for k, t in enumerate(times):
+            query.append(t)
+            if k + 1 < len(times):
+                following = times[k + 1]
+                query += [t + (following - t) * f for f in (0.25, 0.5, 0.75)]
+                query.append(following - 1e-6)
+        worst = 0.0
+        for t in query:
+            expected = sampled(times, values, interpolation, path, t)
+            value = attribute.Get(t * TIME_CODES_PER_SECOND)
+            if path == "rotation":
+                actual = numpy.array([*value.GetImaginary(), value.GetReal()], numpy.float64)
+                if numpy.dot(actual, expected) < 0:
+                    actual = -actual
+            else:
+                actual = numpy.array(value, numpy.float64)
+            worst = max(worst, float(numpy.abs(actual - expected).max()))
+        check.expect(worst <= limit, f"{label}: values differ by {worst:.3g}")
+    if end is not None:
+        timeline = (stage.GetTimeCodesPerSecond(), stage.GetFramesPerSecond(), stage.GetStartTimeCode(),
+                    stage.GetEndTimeCode())
+        check.close(timeline, (TIME_CODES_PER_SECOND, TIME_CODES_PER_SECOND, 0, end * TIME_CODES_PER_SECOND),
+                    "animation timeline")
+
+
 def check_meaning(stage, asset):
     """Returns what differs between the stage and the file, walking the selected scene."""
     from pxr import Usd, UsdGeom, UsdLux
@@ -972,10 +1067,12 @@ def check_meaning(stage, asset):
     expected_lights = set()
     lights = document.get("extensions", {}).get("KHR_lights_punctual", {}).get("lights", [])
     materials = {}
+    node_paths = {}
 
     def walk(index, parent_path, parent_world):
         node = document["nodes"][index]
         path = f"{parent_path}/Node_{index}"
+        node_paths[index] = path
         prim = stage.GetPrimAtPath(path)
         if not check.expect(prim and prim.IsA(UsdGeom.Xform), f"{path} is not an Xform"):
             return
@@ -1020,6 +1117,7 @@ def check_meaning(stage, asset):
 
     for root in roots:
         walk(root, f"/Asset/scenes/Scene_{document.get('scene', 0)}", numpy.identity(4))
+    check_animation(check, stage, asset, node_paths)
     actual = {str(prim.GetPath()) for prim in stage.Traverse() if prim.IsA(UsdGeom.Mesh)}
     check.expect(actual == expected_paths, f"{len(actual)} meshes authored, expected {len(expected_paths)}")
     cameras = {str(prim.GetPath()) for prim in stage.Traverse() if prim.IsA(UsdGeom.Camera)}
@@ -1172,8 +1270,6 @@ def rejection_causes(document):
     """Lists everything in a file that is unsupported, read from the file and not the diagnostic."""
     required = set(document.get("extensionsRequired", [])) - IMPLEMENTED_EXTENSIONS
     causes = {f"requires {name}" for name in required}
-    if document.get("animations"):
-        causes.add("animations")
     nodes = document.get("nodes", [])
     scenes = document.get("scenes", [])
     pending = list(scenes[document.get("scene", 0)].get("nodes", [])) if scenes else []
@@ -1191,6 +1287,13 @@ def rejection_causes(document):
             causes.add("morph targets")
         if "mesh" in node:
             causes |= mesh_causes(document, document["meshes"][node["mesh"]])
+    # Only the first animation is authored, and only on the selected scene.
+    for channel in (document.get("animations") or [{}])[0].get("channels", []):
+        node = channel["target"].get("node")
+        if node in seen and channel["target"].get("path") == "weights":
+            causes.add("morph targets")
+        elif node in seen and "matrix" in nodes[node]:
+            causes.add("animated matrix")
     return sorted(causes)
 
 

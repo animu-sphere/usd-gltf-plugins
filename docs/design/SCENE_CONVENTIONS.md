@@ -89,7 +89,24 @@ A skinned node keeps its transform and animation for its other children; neither
 skinned mesh, as glTF requires.
 
 An animated node, which glTF requires to use translation, rotation and scale rather than a matrix, has
-`translate`, quaternion `orient` and `scale` operations with time samples. Joints are animated by a `UsdSkelAnimation` bound
+`translate` (`double3`), `orient` (`quatf`) and `scale` (`float3`) operations, in that order. Each has
+the node's own value as its default, and an animated one also has time samples. See the
+[decision record](../adr/0029-node-animation.md).
+
+- A time code is a glTF second times 24. A layer with an authored channel has `timeCodesPerSecond`
+  and `framesPerSecond` of 24, `startTimeCode` 0 and `endTimeCode` at its last keyframe.
+- `LINEAR` keyframes are time samples, which USD interpolates as glTF does. `STEP` adds the previous
+  value 1e-7 time codes before each keyframe, which UsdStage holds rather than interpolates.
+  `CUBICSPLINE` adds points of each segment, evaluated by glTF's equation, so that the lines between
+  them stay within 1e-4 of the curve, in a quaternion's components or times the sampler's largest
+  value, in at most 256 pieces. Rotations are normalized.
+- Only the first animation is authored. Channels without a node, or whose node is outside the
+  selected scene, are ignored.
+- A camera or light below an animated node keeps the correction for scale computed at time 0. Its
+  path must not have a scale that changes, nor a rotation that changes below a transform that is not
+  a rotation and uniform scale.
+
+Joints are animated by a `UsdSkelAnimation` bound
 through `skel:animationSource`, and morph targets through blend shapes, not as node transforms. A
 `UsdSkelAnimation` holds joint and blend shape values; it is not a whole glTF animation, which can
 also move nodes, so choosing one glTF animation must switch all of them together.

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "gltfUsd/scene.h"
 
+#include "animation.h"
 #include "camera.h"
 #include "light.h"
 #include "material.h"
@@ -22,6 +23,7 @@
 #include "pxr/usd/usdGeom/scope.h"
 #include "pxr/usd/usdGeom/tokens.h"
 #include "pxr/usd/usdGeom/xform.h"
+#include "pxr/usd/usdGeom/xformOp.h"
 
 #include <fastgltf/core.hpp>
 
@@ -66,6 +68,36 @@ placeMesh(const fastgltf::Asset& asset, const SceneMap& map, std::size_t meshInd
     return true;
 }
 
+// The stated value as the operation's default, and the animation's values as its time samples.
+// Through the attribute rather than SdfLayer::SetTimeSample, whose typed overload rejected values of
+// the right type on macOS.
+template <class T>
+bool
+setValues(const UsdGeomXformOp& op, const T& stated, const TimeSamples<T>& samples)
+{
+    if (!op || !op.Set(stated))
+    {
+        return false;
+    }
+    for (const auto& [code, value] : samples)
+    {
+        if (!op.Set(value, UsdTimeCode(code)))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+// glTF composes T * R * S, which is the order of these operations.
+bool
+authorAnimatedTransform(const UsdGeomXform& xform, const NodeAnimation& animation)
+{
+    return setValues(xform.AddTranslateOp(), animation.statedTranslation, animation.translation) &&
+           setValues(xform.AddOrientOp(), animation.statedRotation, animation.rotation) &&
+           setValues(xform.AddScaleOp(), animation.statedScale, animation.scale);
+}
+
 SdfLayerRefPtr
 authorScene(const fastgltf::Asset& asset, const std::string& sourcePath,
             const gltfCore::BufferLoader& loadBuffer, std::size_t selectedIndex)
@@ -96,8 +128,9 @@ authorScene(const fastgltf::Asset& asset, const std::string& sourcePath,
         TF_RUNTIME_ERROR("Could not author glTF layer scopes");
         return {};
     }
-    const auto map = MapScene(asset, selectedIndex, scenes.GetPath());
-    if (!map)
+    auto map = MapScene(asset, selectedIndex, scenes.GetPath());
+    AnimationPlan animation;
+    if (!map || !PlanAnimation(asset, loadBuffer, *map, animation))
     {
         return {};
     }
@@ -117,10 +150,19 @@ authorScene(const fastgltf::Asset& asset, const std::string& sourcePath,
         TF_RUNTIME_ERROR("Could not author glTF stage metrics");
         return {};
     }
+    if (animation.index)
+    {
+        // glTF's timeline starts at 0 seconds.
+        stage->SetTimeCodesPerSecond(TimeCodesPerSecond);
+        stage->SetFramesPerSecond(TimeCodesPerSecond);
+        stage->SetStartTimeCode(0.0);
+        stage->SetEndTimeCode(animation.endTimeCode);
+    }
 
     MaterialAuthor materials(asset, sourcePath, loadBuffer, stage, mtl.GetPath());
-    for (const auto& mapped : map->nodes)
+    for (std::size_t position = 0; position < map->nodes.size(); ++position)
     {
+        const auto& mapped = map->nodes[position];
         const auto index = mapped.index;
         const auto& node = asset.nodes[index];
         const auto xform = UsdGeomXform::Define(stage, mapped.path);
@@ -130,7 +172,9 @@ authorScene(const fastgltf::Asset& asset, const std::string& sourcePath,
             TF_RUNTIME_ERROR("Could not author glTF node %zu", index);
             return {};
         }
-        if (!xform.AddTransformOp().Set(mapped.local))
+        const auto& moved = animation.nodes[position];
+        if (moved ? !authorAnimatedTransform(xform, *moved)
+                  : !xform.AddTransformOp().Set(mapped.local))
         {
             TF_RUNTIME_ERROR("Could not author glTF node %zu transform", index);
             return {};
@@ -239,11 +283,6 @@ ConvertScene(const fastgltf::Asset& asset, const std::string& sourcePath,
     if (selected->usedFallback)
     {
         TF_WARN("glTF has no default scene; selecting scene 0");
-    }
-    if (!asset.animations.empty())
-    {
-        TF_RUNTIME_ERROR("glTF animations are not supported yet");
-        return {};
     }
     for (const auto& extension : asset.extensionsUsed)
     {

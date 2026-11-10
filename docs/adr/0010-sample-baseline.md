@@ -48,7 +48,11 @@ a change is an edit that a pull request shows.
 
 ## Compared for meaning
 
-For the selected scene: stage metrics; prim paths and the mesh count; world transforms; each camera's
+For the selected scene: stage metrics; prim paths and the mesh count; world transforms at the
+default time; the first animation's translation, rotation and scale values at each keyframe, 1e-6
+seconds before it and a quarter, half and three quarters into each segment, against glTF's
+interpolation, within 1e-5 of their size or 2e-4 for `CUBICSPLINE`, and the timeline they give
+([ADR 0029](0029-node-animation.md)); each camera's
 view and projection, as a renderer combines them; each light's position, direction, color,
 intensity and cone, through the UsdLux definitions in [ADR 0013](0013-lights.md); points,
 triangles (in any rotation that keeps winding), normals including generated ones, UV sets with V

@@ -57,6 +57,7 @@ available when the decision was made; they are not progress reports:
 - [0026: Scene hierarchy](adr/0026-scene-hierarchy.md)
 - [0027: Plugin workspace members](adr/0027-plugin-workspace.md)
 - [0028: Skin placement](adr/0028-skin-placement.md)
+- [0029: Node animation](adr/0029-node-animation.md)
 
 New decisions go in `docs/adr/NNNN-title.md`.
 
