@@ -38,9 +38,10 @@ commit to be tagged:
 
 ## Release process
 
-1. Open one release pull request. It sets the version in `openstrata.toml` and the bundle manifest,
-   gives the changelog a dated section, adds `docs/releases/vX.Y.Z.md`, and moves the next version
-   out of the backlog. A pre-release such as `v0.1.0-alpha.1` needs none of this.
+1. Open one release pull request. It sets `VERSION` and the matching versions in `openstrata.toml`
+   and the bundle and library descriptors, updates the library dependency ranges, gives the
+   changelog a dated section, adds `docs/releases/vX.Y.Z.md`, and moves the next version out of the
+   backlog. A pre-release uses the workspace version and the `[Unreleased]` changelog section.
 2. After merging, run the release workflow by hand on `main`, and the display and sample checks on
    that commit.
 3. Push the tag. The workflow also pushes the packages to GHCR, and creates a draft release with

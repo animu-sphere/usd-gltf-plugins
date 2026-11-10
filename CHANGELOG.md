@@ -6,13 +6,16 @@ All notable changes to `usd-gltf-plugins` are recorded here. The format follows
 recorded in the [capability matrix](docs/reference/CAPABILITY_MATRIX.md), not
 here.
 
-## [Unreleased]
+## [0.3.0] - 2026-11-11
 
 ### Added
 
 - Skins and skeletal animation through `UsdSkel`. Each skin gets its own skeleton and its
   mesh placements bind to it. The animation variant switches the joint and node motion together.
   See [ADR 0028](docs/adr/0028-skin-placement.md) and [ADR 0030](docs/adr/0030-animation-choice.md).
+- Morph targets through `UsdSkel` blend shapes, with POSITION and NORMAL deltas, per-node default
+  weights and animated weights. Morphing also works on skinned meshes and precedes skinning.
+  See the [scene conventions](docs/design/SCENE_CONVENTIONS.md#morph-targets).
 - Node animation: the translation, rotation and scale channels of every animation become time
   samples of `translate`, `orient` and `scale` operations at 24 time codes per second, with `STEP`,
   `LINEAR` and `CUBICSPLINE` interpolation. Assets with animations were rejected before. Each
@@ -27,8 +30,9 @@ here.
 - **Breaking** — `/Root` is the default prim. Materials go under `/Root/Materials`, the selected
   scene under `/Root/Scenes/Scene_{index}`, and skeletal or morph animation prims under
   `/Root/Animations` where needed. When scene 0 is selected, `/Asset/geo/Node_3/Mesh_0` moves to
-  `/Root/Scenes/Scene_0/Node_3/Mesh_0`. Implicit default-prim references still compose. Update
-  explicit references, overrides, collections and relationships that target old paths.
+  `/Root/Scenes/Scene_0/Node_3/Mesh_0`. `/Asset/mtl/Material_0` moves to `/Root/Materials/Material_0`.
+  Implicit default-prim references still compose. Update explicit references, overrides, collections
+  and relationships that target old paths.
   See the [scene conventions](docs/design/SCENE_CONVENTIONS.md#structure-and-names).
 - A mesh that several nodes use is converted once and copied below each of them, rather than read
   again for each node. The authored prims are unchanged.
