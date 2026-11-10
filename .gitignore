@@ -9,10 +9,5 @@
 /plugins/*/.strata/
 /plugins/*/build/
 /plugins/*/dist/
-# The standalone bundle build's outputs (plugins/usdGltfFileFormat/CMakeLists.txt).
-/plugins/*/lib/
-/plugins/*/plugin/resources/*/plugInfo.json
-/plugins/*/plugin/resources/*/NOTICES.txt
-/plugins/*/plugin/resources/*/LICENSE
 CMakeUserPresets.json
 __pycache__/

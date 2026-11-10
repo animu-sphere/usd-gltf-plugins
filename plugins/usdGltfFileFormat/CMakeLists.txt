@@ -28,11 +28,10 @@ if(PROJECT_IS_TOP_LEVEL)
     set(BUILD_TESTING OFF)
     usd_gltf_add_libraries()
 endif()
-# The root sets the build directory. Standalone, the outputs go to the bundle's own directory, as in
-# OpenStrata's bundle templates: `ost plugin view` reads them there, while `ost plugin test` and
-# `ost plugin package` read the installed stage.
+# The root sets the build directory. Standalone, the outputs go to this build's directory: every
+# `ost plugin` command reads the installed stage, `view` and `test-view` since OpenStrata 0.23.20.
 if(NOT DEFINED USD_GLTF_OUTPUT_ROOT)
-    set(USD_GLTF_OUTPUT_ROOT "${CMAKE_CURRENT_SOURCE_DIR}")
+    set(USD_GLTF_OUTPUT_ROOT "${CMAKE_CURRENT_BINARY_DIR}")
 endif()
 set(_usd_gltf_resources "${USD_GLTF_OUTPUT_ROOT}/plugin/resources/usdGltfFileFormat")
 
