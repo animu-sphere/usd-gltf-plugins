@@ -68,34 +68,34 @@ placeMesh(const fastgltf::Asset& asset, const SceneMap& map, std::size_t meshInd
     return true;
 }
 
-// The stated value as the operation's default, and the animation's values as its time samples,
-// written to the layer directly because an animation can have very many.
+// The stated value as the operation's default, and the animation's values as its time samples.
+// Through the attribute rather than SdfLayer::SetTimeSample, whose typed overload rejected values of
+// the right type on macOS.
 template <class T>
 bool
-setValues(const UsdGeomXformOp& op, const T& stated, const TimeSamples<T>& samples,
-          const SdfLayerHandle& layer)
+setValues(const UsdGeomXformOp& op, const T& stated, const TimeSamples<T>& samples)
 {
     if (!op || !op.Set(stated))
     {
         return false;
     }
-    const auto path = op.GetAttr().GetPath();
     for (const auto& [code, value] : samples)
     {
-        layer->SetTimeSample(path, code, value);
+        if (!op.Set(value, UsdTimeCode(code)))
+        {
+            return false;
+        }
     }
     return true;
 }
 
 // glTF composes T * R * S, which is the order of these operations.
 bool
-authorAnimatedTransform(const UsdGeomXform& xform, const NodeAnimation& animation,
-                        const SdfLayerHandle& layer)
+authorAnimatedTransform(const UsdGeomXform& xform, const NodeAnimation& animation)
 {
-    return setValues(xform.AddTranslateOp(), animation.statedTranslation, animation.translation,
-                     layer) &&
-           setValues(xform.AddOrientOp(), animation.statedRotation, animation.rotation, layer) &&
-           setValues(xform.AddScaleOp(), animation.statedScale, animation.scale, layer);
+    return setValues(xform.AddTranslateOp(), animation.statedTranslation, animation.translation) &&
+           setValues(xform.AddOrientOp(), animation.statedRotation, animation.rotation) &&
+           setValues(xform.AddScaleOp(), animation.statedScale, animation.scale);
 }
 
 SdfLayerRefPtr
@@ -173,7 +173,7 @@ authorScene(const fastgltf::Asset& asset, const std::string& sourcePath,
             return {};
         }
         const auto& moved = animation.nodes[position];
-        if (moved ? !authorAnimatedTransform(xform, *moved, layer)
+        if (moved ? !authorAnimatedTransform(xform, *moved)
                   : !xform.AddTransformOp().Set(mapped.local))
         {
             TF_RUNTIME_ERROR("Could not author glTF node %zu transform", index);
