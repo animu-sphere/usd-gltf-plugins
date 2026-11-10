@@ -5589,6 +5589,14 @@ class FileFormatTest(unittest.TestCase):
                             actual = scale.Get(seconds * 24)
                             self.assertLessEqual(max(abs(a - e) for a, e in zip(actual, expected)), 2e-4,
                                                  seconds)
+                            parent = {"rotation": slerp(TURN_START, TURN_END, min(1, max(0, seconds - 0.5)))}
+                            child = {"translation": [0, 1, 0], "scale": expected}
+                            world = gltf_local(child) * gltf_local(parent)
+                            mesh = stage.GetPrimAtPath(scene + "Node_1/Node_2/Mesh_0/Primitive_0")
+                            self.assertTrue(mesh)
+                            actual_world = UsdGeom.XformCache(seconds * 24).GetLocalToWorldTransform(mesh)
+                            self.assertTrue(Gf.IsClose(actual_world, world, 3e-4),
+                                            (seconds, actual_world, world))
 
                         # A stage with other time codes per second sees the same times in seconds.
                         host = Usd.Stage.CreateInMemory()
@@ -5763,20 +5771,38 @@ class FileFormatTest(unittest.TestCase):
                     stage = Usd.Stage.Open(str(path))
                     variants = stage.GetPrimAtPath("/Root").GetVariantSets().GetVariantSet("animation")
                     layer = stage.GetRootLayer()
+                    node_path = scene + "Node_0/Node_1"
                     for child in ("Camera_0", "Light_0"):
                         # The correction's operation is outside the variants, and its value inside.
-                        spec = layer.GetAttributeAtPath(f"{scene}Node_0/Node_1/{child}.xformOp:transform")
+                        spec = layer.GetAttributeAtPath(f"{node_path}/{child}.xformOp:transform")
                         self.assertFalse(spec.HasDefaultValue(), child)
+
+                    for reloaded in (False, True):
+                        if reloaded:
+                            self.assertTrue(layer.Reload(True))
+                            self.assertEqual(variants.GetVariantSelection(), "Animation_1")
                         for name in ("Animation_0", "Animation_1"):
                             with Usd.EditContext(stage, stage.GetSessionLayer()):
-                                variants.SetVariantSelection(name)
-                            prim = stage.GetPrimAtPath(f"{scene}Node_0/Node_1/{child}")
-                            self.assertTrue(prim)
+                                self.assertTrue(variants.SetVariantSelection(name))
                             for code in (Usd.TimeCode.Default(), 0, 6, 12, 24, 48):
-                                world = UsdGeom.XformCache(code).GetLocalToWorldTransform(prim)
-                                for row in range(3):
-                                    self.assertAlmostEqual(Gf.Vec3d(*world[row][:3]).GetLength(), 1.0,
-                                                           places=5, msg=(child, name, code))
+                                node = dict(nodes[1])
+                                if code != Usd.TimeCode.Default():
+                                    if name == "Animation_0":
+                                        u = min(code / 24, 1)
+                                        node["translation"] = [3 * u, 0, 5]
+                                        node["rotation"] = quaternion((1, 1, 0), 120 * u)
+                                    else:
+                                        node["rotation"] = quaternion((0, 0, 1), 30 + 120 * code / 48)
+                                world = gltf_local(node) * gltf_local(nodes[0])
+                                rigid = Gf.Matrix4d().SetScale(Gf.Vec3d(0.5)) * world
+                                cache = UsdGeom.XformCache(code)
+                                for path, expected in ((node_path, world), (node_path + "/Camera_0", rigid),
+                                                       (node_path + "/Light_0", rigid)):
+                                    prim = stage.GetPrimAtPath(path)
+                                    self.assertTrue(prim)
+                                    actual = cache.GetLocalToWorldTransform(prim)
+                                    self.assertTrue(Gf.IsClose(actual, expected, 1e-5),
+                                                    (path, name, code, reloaded, actual, expected))
 
     def test_animation_failures_preserve_layer(self):
         camera = [{"type": "perspective", "perspective": {"yfov": 1, "znear": 0.1}}]

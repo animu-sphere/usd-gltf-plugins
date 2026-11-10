@@ -6,13 +6,9 @@ implementation order, which investigation may change. Each feature follows the
 
 ## v0.3.0: scene graph, animation and deformation
 
-Scene graph correctness comes first. The [scene hierarchy](../adr/0026-scene-hierarchy.md),
+The [scene hierarchy](../adr/0026-scene-hierarchy.md),
 [skin placement](../adr/0028-skin-placement.md), [node animation](../adr/0029-node-animation.md) and
-[animation choice](../adr/0030-animation-choice.md) decisions set the structure; each task below
-builds on the last.
-
-- Representative fixtures and samples for transform equivalence over time, and consumer checks
-  where feasible, with the release record calling out the path change and its migration.
+[animation choice](../adr/0030-animation-choice.md) decisions set the structure.
 
 ### Release criteria
 
@@ -27,7 +23,8 @@ builds on the last.
 - Invalid samplers have diagnostics, and unsupported interpolation and deformation are explicit.
   Behavior that differs from glTF is recorded as a limit in the capability matrix and the release
   record, and display tests state their environment.
-- The release record and changelog call out the breaking change of prim paths.
+- The release record and changelog call out the breaking change of prim paths and explain how to
+  update references and overrides.
 - The [release gate](README.md#release-gate) is satisfied.
 
 If the scope grows too large, keep scene graph and correctness work in this version and defer
