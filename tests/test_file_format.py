@@ -837,6 +837,19 @@ def topology_document(extension, mode, indices, external=False, normal=False, in
 
 
 class FileFormatTest(unittest.TestCase):
+    def test_import_measurement_counts_ktx2_decodes(self):
+        from measure_import import inspect_asset
+
+        result = inspect_asset(pathlib.Path(__file__).parent / "fixtures" / "ktx2_textures.gltf")
+        # Each image appears in both shader paths. Read each once per pass, including
+        # the PNG control, and count only actual KTX2 conversions.
+        self.assertEqual(result["image_asset_count"], 6)
+        self.assertEqual(len(result["image_read_passes"]), 2)
+        for read_pass in result["image_read_passes"]:
+            self.assertEqual(read_pass["ktx2_decode_calls"], 5)
+            self.assertGreater(read_pass["ktx2_decode_seconds"], 0)
+            self.assertLessEqual(read_pass["ktx2_decode_seconds"], read_pass["read_seconds"])
+
     def test_import_measurement_counts_repeated_geometry(self):
         from measure_import import inspect_asset
 

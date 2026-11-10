@@ -28,7 +28,7 @@ CI success is not evidence of display compatibility.
 | `.gltf` / `.glb` registration and import | Verified (USD data, CI) | Read only; writing and editing are declared unsupported. Eager conversion on read. | `tests/test_file_format.py::test_registration_and_capabilities` |
 | Scene selection | Verified (USD data, CI) | Declared default scene, or scene 0 with a warning. No scenes or an invalid default fail. Scenes are never merged. | `libs/gltfCore/tests/scene_selection.cpp`, `tests/test_file_format.py::test_first_scene_fallback_warns`, `tests/test_file_format.py::test_failures_report_diagnostics` |
 | Node hierarchy and transforms | Verified (USD data, CI) | The selected scene's nodes below `/Root/Scenes/Scene_{index}`, which has no transform, named after source indices. TRS and matrix nodes. Invalid quaternions and perspective matrices fail. A quaternion within the tolerance of unit length is normalized. Nested nodes match the source's world transforms. A mesh that several nodes use is converted once and copied below each, not shared. | `tests/test_file_format.py::test_scene_hierarchy_and_transforms`, `tests/test_file_format.py::test_nested_nodes_keep_parentage_and_world_transforms`, `tests/test_file_format.py::test_rotations_are_normalized_within_the_tolerance`, `tests/test_file_format.py::test_node_order_and_optional_extension_warning` |
-| Import measurements | Experimental | Fresh-process stage-open time, peak resident memory and repeated point/topology arrays. Local Windows observations only; see [measurements](#import-measurements) and [ADR 0024](../adr/0024-import-measurements.md). | `tests/measure_import.py`, `tests/test_file_format.py::test_import_measurement_counts_repeated_geometry` |
+| Import measurements | Experimental | Fresh-process stage-open time, peak resident memory, repeated point/topology arrays, and KTX2 conversion count and time. See [measurements](#import-measurements) and [ADR 0024](../adr/0024-import-measurements.md). | `tests/measure_import.py`, `tests/test_file_format.py::test_import_measurement_counts_repeated_geometry`, `tests/test_file_format.py::test_import_measurement_counts_ktx2_decodes` |
 | Cameras | Verified (USD data, CI) | Perspective, finite and infinite, and orthographic, below each node that uses them, with the node's scale cancelled as glTF ignores it. An undefined aspect ratio is authored as 1 and keeps `yfov` only where the renderer matches the viewport's height, and an infinite projection ends at 1,000,000. Degenerate, reflected and sheared nodes and values outside the specification fail. Compared as a renderer combines view and projection, not rendered. See the [decision record](../adr/0012-cameras.md). | `tests/test_file_format.py::test_cameras`, `tests/test_file_format.py::test_cameras_reference_into_a_scaled_stage`, `tests/test_file_format.py::test_camera_failures_preserve_layer`, `tests/test_file_format.py::test_cameras_outside_selected_scene_are_not_checked` |
 | Lights (`KHR_lights_punctual`) | Experimental | Directional, point and spot, optional or required, below each node that uses them, with the node's scale, shear and reflection cancelled. A directional light is a distant light in lux. A point or spot light is a sphere of 1 millimeter whose intensity gives glTF's candela, so a renderer that ignores `treatAsPoint` draws a small sphere. The cone's softness approximates glTF's spot falloff, and Storm ignores the cone. `range` is ignored, with a warning. Degenerate nodes and values outside the specification fail. Tested in CI, with the [display check](#display-checks) on Windows. See the [decision record](../adr/0013-lights.md). | `tests/test_file_format.py::test_lights`, `tests/test_file_format.py::test_lights_reference_into_a_scaled_stage`, `tests/test_file_format.py::test_light_range_is_ignored_with_a_warning`, `tests/test_file_format.py::test_light_failures_preserve_layer`, `tests/test_file_format.py::test_lights_required_and_outside_selected_scene`, `tests/check_display.py` |
 | Triangle-based meshes | Verified (USD data, CI) | Indexed and non-indexed TRIANGLES, TRIANGLE_STRIP and TRIANGLE_FAN with float or quantized POSITION. Interleaved accessors are accepted. | `tests/test_file_format.py::test_triangle_meshes`, `tests/test_file_format.py::test_triangle_strips_and_fans`, `tests/test_file_format.py::test_triangle_strip_and_fan_index_types_and_nonindexed_counts`, `tests/test_file_format.py::test_mesh_schema_attributes` |
@@ -73,32 +73,41 @@ CI success is not evidence of display compatibility.
 
 ## Import measurements
 
-[`tests/measure_import.py`](../../tests/measure_import.py) measures `Usd.Stage.Open` before
-inspecting mesh arrays. The [development guide](../DEVELOPMENT.md) has the command and
-[ADR 0024](../adr/0024-import-measurements.md) defines the measurements and sharing decision.
+The [development guide](../DEVELOPMENT.md) gives the baseline command. The first two
+assets are repository fixtures. The other three use glTF-Sample-Assets at commit
+`8f492390ddc7a2ae221a1369ef560589cf8c70fb`, including the external buffer and textures
+for AnisotropyBarnLamp.
 
-On Windows 11 x86-64, MSVC and OpenUSD 26.08 in the OpenStrata cy2026 USD runtime,
-with Python 3.13.14 and an AMD64 Family 25 Model 97 processor, three fresh processes per
-asset gave the ranges below. Samples are from commit `8f49239`. Runs within each
-measurement command were serial, with OS file caches left intact; sample inspection
-and tests also ran during collection, so these are exploratory observations, not
-isolated benchmark results. The tool does not explicitly resolve shader image assets
-or render in the timed region; the importer's image validation is included.
-Peak resident memory was sampled immediately after opening and includes Python and USD.
+The ranges below cover three serial runs per asset on Windows 11 x86-64 with
+MSVC Release, OpenUSD 26.08 in the OpenStrata cy2026 USD runtime, Python 3.13.14 and
+an AMD Ryzen 9 7950X. Each run uses a fresh process with OS file caches intact.
+Peak resident memory is sampled immediately after `Usd.Stage.Open` and includes
+Python and USD. Mesh inspection and image reads take place afterwards.
+See [ADR 0024](../adr/0024-import-measurements.md#image-read-measurements).
 
 | Asset | Open seconds, min to max | Peak resident MiB, min to max | Mesh occurrences / unique point-topology arrays | Array bytes / unique bytes |
 | --- | --- | --- | --- | --- |
-| `tests/fixtures/base_color_textures.gltf` | 0.069 to 0.077 | 74.84 to 75.33 | 10 / 10 | 800 / 800 |
-| `NodePerformanceTest/glTF-Binary/NodePerformanceTest.glb` | 15.018 to 16.525 | 513.77 to 515.95 | 10000 / 10000 | 13074488 / 13074488 |
-| `NodePerformanceTest/glTF/NodePerformanceTest.gltf` | 21.072 to 23.220 | 494.32 to 505.25 | 10000 / 10000 | 13074488 / 13074488 |
-| `ABeautifulGame/glTF/ABeautifulGame.gltf` | 0.214 to 0.238 | 137.20 to 137.55 | 49 / 8 | 35215292 / 8438344 |
+| `tests/fixtures/base_color_textures.gltf` | 0.072 to 0.082 | 77.64 to 78.04 | 10 / 10 | 800 / 800 |
+| `tests/fixtures/ktx2_textures.gltf` | 0.097 to 0.111 | 93.34 to 94.07 | 6 / 6 | 480 / 480 |
+| `NodePerformanceTest/glTF-Binary/NodePerformanceTest.glb` | 15.472 to 16.246 | 519.30 to 520.82 | 10000 / 10000 | 13074488 / 13074488 |
+| `ABeautifulGame/glTF-Binary/ABeautifulGame.glb` | 0.160 to 0.164 | 193.55 to 194.21 | 49 / 8 | 35314352 / 8524312 |
+| `AnisotropyBarnLamp/glTF-KTX-BasisU/AnisotropyBarnLamp.gltf` | 0.103 to 0.136 | 95.39 to 95.46 | 3 / 3 | 255792 / 255792 |
 
 Array bytes count points, face counts and face indices only. Identical arrays do not
 establish that materials, normals, UVs or other primvars can be shared, and their
 difference is not predicted RSS savings. NodePerformanceTest has no repeated arrays
-by this metric, while ABeautifulGame is a candidate for later sharing experiments.
-The importer still duplicates meshes. These measurements do not cover KTX2 decode
-time, renderer loading, concurrent import throughput or other platforms.
+by this metric, while ABeautifulGame has about 25.5 MiB of repeated point and topology data.
+
+The image passes open each distinct resolved shader image once per pass. Both
+passes share one resolver cache scope. Time in the KTX2 converter includes PNG encoding.
+
+| Asset | Images | Read pass 1 (ms) | Read pass 2 (ms) | KTX2 calls, pass 1 / pass 2 | KTX2 time, pass 1 (ms) | KTX2 time, pass 2 (ms) |
+| --- | --- | --- | --- | --- | --- | --- |
+| `base_color_textures.gltf` | 5 | 0.26 to 0.41 | 0.23 to 0.34 | 0 / 0 | 0 | 0 |
+| `ktx2_textures.gltf` | 6 | 1.75 to 2.03 | 1.68 to 1.90 | 5 / 5 | 0.09 to 0.14 | 0.06 |
+| `NodePerformanceTest.glb` | 100 | 0.99 to 1.18 | 0.97 to 1.12 | 0 / 0 | 0 | 0 |
+| `ABeautifulGame.glb` | 33 | 0.99 to 1.05 | 0.97 to 0.99 | 0 / 0 | 0 | 0 |
+| `AnisotropyBarnLamp.gltf` | 4 | 232.44 to 245.67 | 231.16 to 244.33 | 4 / 4 | 224.42 to 236.02 | 223.99 to 236.75 |
 
 ## Tested environments
 

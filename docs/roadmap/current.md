@@ -6,10 +6,9 @@ implementation order, which investigation may change. Each feature follows the
 
 ## v0.4.0: optimization and developer tools
 
-- Establish a reproducible sample set and record import latency, peak RSS, repeated mesh arrays,
-  and KTX2 decode counts and time. Extend the existing [import measurements](../reference/CAPABILITY_MATRIX.md#import-measurements).
-- Use the measurements to choose improvement targets for mesh sharing and image caching. Resolve
-  the [mesh sharing decision](backlog.md#decisions-for-later-versions) before introducing shared
+- Evaluate reuse of converted images within a resolver scope and mesh sharing on ABeautifulGame
+  against the [import baseline](../reference/CAPABILITY_MATRIX.md#import-measurements). Resolve the
+  [mesh sharing decision](backlog.md#decisions-for-later-versions) before introducing shared
   definitions or native instancing. Verify scene placement, rendering, and cache isolation across
   stages, resolvers and threads.
 - Define and test a portable package for derived USD and converted images. Verify that it opens

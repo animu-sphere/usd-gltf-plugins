@@ -72,13 +72,23 @@ ost plugin view plugins/usdGltfFileFormat $fox --profile lookdev
 
 Use the timeline to play the clip and the `animation` variant set on `/Root` to choose another.
 
-To measure import time, peak resident memory and repeated mesh point/topology arrays, in the
-matching USD environment and without a GPU:
+To measure import time, peak resident memory, repeated mesh point/topology arrays and KTX2
+conversion, build the current checkout and use its matching USD environment. The measurement
+does not need a GPU. For the [baseline sample set](reference/CAPABILITY_MATRIX.md#import-measurements),
+use the Khronos sample checkout at the commit recorded there.
 
-```sh
-python tests/measure_import.py build/cy2026-windows-x86_64-py313-usd model.glb --output build/import.json
+```powershell
+ost env cy2026 --profile usd --shell powershell | Out-String | Invoke-Expression
+$assets = @(
+    "tests/fixtures/base_color_textures.gltf"
+    "tests/fixtures/ktx2_textures.gltf"
+    "../glTF-Sample-Assets/Models/NodePerformanceTest/glTF-Binary/NodePerformanceTest.glb"
+    "../glTF-Sample-Assets/Models/ABeautifulGame/glTF-Binary/ABeautifulGame.glb"
+    "../glTF-Sample-Assets/Models/AnisotropyBarnLamp/glTF-KTX-BasisU/AnisotropyBarnLamp.gltf"
+)
+python tests/measure_import.py build/cy2026-windows-x86_64-py313-usd @assets --output build/import.json
 ```
 
-Each of three serial runs opens the asset in a fresh process. OS file caches are not flushed.
-The JSON report records the source and plugin hashes, runtime and individual measurements;
-identical points and topology alone do not establish that meshes can share all their data.
+Other assets can be passed by path. Each of three serial runs opens the asset in a fresh process
+with the OS file caches intact. The JSON report records the hashes of the main source files and
+plugin binary, the runtime, and the individual measurements.

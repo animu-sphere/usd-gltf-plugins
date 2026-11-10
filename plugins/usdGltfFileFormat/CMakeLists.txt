@@ -45,7 +45,7 @@ target_link_libraries(UsdGltfFileFormat PRIVATE
     gltfCore::gltfCore
     gltfTexture::gltfTexture
     gltfUsd::gltfUsd)
-usd_gltf_link_openusd(TARGET UsdGltfFileFormat COMPONENTS sdf ar tf)
+usd_gltf_link_openusd(TARGET UsdGltfFileFormat COMPONENTS sdf ar tf trace)
 
 # plugInfo.json names the library as ../../../lib/, relative to itself.
 set_target_properties(UsdGltfFileFormat PROPERTIES

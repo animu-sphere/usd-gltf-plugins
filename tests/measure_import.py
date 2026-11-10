@@ -1,13 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Measure stage opening and repeated mesh geometry in fresh processes, without rendering.
+"""Measure stage opening, repeated mesh geometry and KTX2 reads without rendering.
 
 Activate the matching USD runtime, then run:
     python tests/measure_import.py <build> <asset> [<asset> ...] --output <report.json>
 
 Runs are serial. OS file caches are not flushed. Peak resident memory covers the
 worker process up to the end of Stage.Open, including Python and USD libraries.
-Geometry counts are collected afterwards; matching points and topology do not
-imply that materials, normals, UVs or other primvars can be shared.
+Geometry counts and two image read passes are collected afterwards. Matching
+points and topology alone do not establish that meshes can share all their data.
 """
 
 import argparse
@@ -48,6 +48,57 @@ def peak_resident_bytes():
     return value if sys.platform == "darwin" else value * 1024
 
 
+def trace_nodes(root):
+    yield root
+    for child in root.children:
+        yield from trace_nodes(child)
+
+
+def read_images(stage):
+    from pxr import Ar, Trace, UsdShade
+
+    paths = set()
+    resolver = Ar.GetResolver()
+    collector = Trace.Collector()
+    passes = []
+    with Ar.ResolverScopedCache():
+        for prim in stage.Traverse():
+            shader = UsdShade.Shader(prim)
+            image = shader.GetInput("file") if shader else None
+            if image:
+                asset = image.Get()
+                if not asset or not asset.resolvedPath:
+                    raise RuntimeError(f"Cannot resolve image on {prim.GetPath()}")
+                paths.add(asset.resolvedPath)
+        images = [Ar.ResolvedPath(path) for path in sorted(paths)]
+        has_packaged_images = any(Ar.IsPackageRelativePath(path) for path in paths)
+
+        for _ in range(2):
+            reporter = Trace.Reporter("glTF image reads")
+            collector.enabled = True
+            started = time.perf_counter()
+            try:
+                for path in images:
+                    if not resolver.OpenAsset(path):
+                        raise RuntimeError(f"Cannot read image {path}")
+            finally:
+                elapsed = time.perf_counter() - started
+                collector.enabled = False
+
+            reporter.UpdateTraceTrees()
+            nodes = list(trace_nodes(reporter.aggregateTreeRoot))
+            if has_packaged_images and not any(
+                    node.key == "UsdGltfFileFormat image open" for node in nodes):
+                raise RuntimeError("Missing image open trace events. Rebuild the plugin.")
+            decodes = [node for node in nodes if node.key == "UsdGltfFileFormat KTX2 to PNG"]
+            passes.append({
+                "read_seconds": elapsed,
+                "ktx2_decode_calls": sum(node.count for node in decodes),
+                "ktx2_decode_seconds": sum(node.inclusiveTime for node in decodes) / 1000,
+            })
+    return {"image_asset_count": len(images), "image_read_passes": passes}
+
+
 def inspect_asset(path):
     from pxr import Usd, UsdGeom
 
@@ -81,7 +132,7 @@ def inspect_asset(path):
             "mesh_occurrences": meshes, "point_occurrences": points,
             "unique_point_topology_arrays": len(unique), "point_topology_bytes": geometry_bytes,
             "unique_point_topology_bytes": sum(unique.values()),
-            "usd_version": list(Usd.GetVersion())}
+            "usd_version": list(Usd.GetVersion()), **read_images(stage)}
 
 
 def main():
