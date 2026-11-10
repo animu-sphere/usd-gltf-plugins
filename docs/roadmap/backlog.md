@@ -4,23 +4,6 @@ Later versions, in planned order. Nothing here has started; see the
 [task lifecycle](README.md#task-lifecycle). The next release is in
 [current.md](current.md).
 
-## v0.4.0: optimization and developer tools
-
-- If needed, a CLI calling the same conversion library, not a separate importer.
-- Explicit packaging of derived USD and converted images, so that a portable result does not depend
-  on resolving images at runtime; reusable cache operation.
-- Measurements on one set of samples: import latency, peak RSS, mesh duplicate rate, and KTX2 decode
-  count and time.
-- Shared mesh definitions referenced from scene nodes, then native instancing only where it is valid,
-  after the design review below; image caches. Each with a baseline and an improvement target from
-  those measurements, verifying thread safety, lifetime, and stage and resolver identity.
-- Fuzz and property tests, with malicious URIs, damaged accessors and images, and very large input.
-  A serious security problem is fixed without waiting for this version.
-- More OpenUSD versions and compilers, added only for combinations whose ABI was verified.
-
-**Completion criteria:** reproducible conversion and distribution procedures
-exist, and optimizations are based on measurements.
-
 ## v0.5.0 and later
 
 Prioritize extensions by actual asset demand, the size and license of their dependencies, and the

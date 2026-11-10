@@ -4,16 +4,16 @@ schema: openstrata.library/v1alpha1
 library:
   id: gltfUsd
   # Mirrors VERSION; scripts/make_release_notes.py checks that they agree.
-  version: 0.2.0
+  version: 0.3.0
 cmake:
   package: gltfUsd
   target: gltfUsd::gltfUsd
 requires:
   libraries:
     - id: gltfCore
-      version: ">=0.2,<0.3"
+      version: ">=0.3,<0.4"
     - id: gltfTexture
-      version: ">=0.2,<0.3"
+      version: ">=0.3,<0.4"
 runtime:
   # Static: nothing to put on a loader path.
   directories: []

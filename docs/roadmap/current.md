@@ -4,29 +4,25 @@ Unfinished work only; see the [task lifecycle](README.md#task-lifecycle). Tasks 
 implementation order, which investigation may change. Each feature follows the
 [contract for adding a feature](../design/IMPLEMENTATION_POLICY.md#adding-a-gltf-feature).
 
-## v0.3.0: scene graph, animation and deformation
+## v0.4.0: optimization and developer tools
 
-The [scene hierarchy](../adr/0026-scene-hierarchy.md),
-[skin placement](../adr/0028-skin-placement.md), [node animation](../adr/0029-node-animation.md) and
-[animation choice](../adr/0030-animation-choice.md) decisions set the structure.
+- Establish a reproducible sample set and record import latency, peak RSS, repeated mesh arrays,
+  and KTX2 decode counts and time. Extend the existing [import measurements](../reference/CAPABILITY_MATRIX.md#import-measurements).
+- Use the measurements to choose improvement targets for mesh sharing and image caching. Resolve
+  the [mesh sharing decision](backlog.md#decisions-for-later-versions) before introducing shared
+  definitions or native instancing. Verify scene placement, rendering, and cache isolation across
+  stages, resolvers and threads.
+- Define and test a portable package for derived USD and converted images. Verify that it opens
+  independently of the glTF source, and that repeated conversions can reuse cached results safely.
+  Evaluate a CLI that calls the same conversion library if the packaging workflow needs one.
+- Add fuzz and property coverage for malicious URIs, damaged accessors and images, and very large
+  inputs. Address serious security findings as they are discovered.
+- Verify ABI and package loading for additional OpenUSD versions and compilers before adding them
+  to the supported targets.
 
 ### Release criteria
 
-- Imported assets have stable paths below `/Root/Scenes/Scene_{index}` and `/Root/Materials`, and nested
-  nodes, with their meshes, cameras and lights, match the source's world transforms.
-- Skins work with several skinned meshes and shared joints, and skel roots are existing prims, so a
-  node's path does not depend on whether the asset has skins.
-- Joint and node animation reproduce the expected poses at multiple times, across reload. Morph
-  targets work at rest and with animated weights, including skinned examples.
-- Several animations have a documented, reproducible way to choose one, and are never mixed.
-- No geometry is drawn twice because of resource definitions.
-- Invalid samplers have diagnostics, and unsupported interpolation and deformation are explicit.
-  Behavior that differs from glTF is recorded as a limit in the capability matrix and the release
-  record, and display tests state their environment.
-- The release record and changelog call out the breaking change of prim paths and explain how to
-  update references and overrides.
+- Conversion and distribution procedures are reproducible, including opening a derived package
+  independently of its source.
+- Each shipped optimization has a recorded baseline and a measured result on the same sample set.
 - The [release gate](README.md#release-gate) is satisfied.
-
-If the scope grows too large, keep scene graph and correctness work in this version and defer
-optimization rather than weaken correctness. Until the criteria are met, use a pre-release such as
-`v0.3.0-alpha.1` rather than presenting the work as complete.
