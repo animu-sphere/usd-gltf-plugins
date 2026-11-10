@@ -52,7 +52,8 @@ The third option.
   `ost plugin test-view` do not read that stage but the bundle's directory
   ([open-strata#296](https://github.com/animu-sphere/open-strata/issues/296)), so the standalone build
   cannot stop writing there; it did briefly while this was implemented, and `ost plugin view`
-  could not open a `.glb`.
+  could not open a `.glb`. OpenStrata 0.23.20 fixed it, and the standalone build has written to its
+  build directory since.
 - The root finds OpenUSD once, adds the libraries in dependency order and every bundle under
   `plugins/`, and registers the tests that need the whole workspace.
 - `VERSION` is the one version. CMake reads it, the descriptors mirror it, and

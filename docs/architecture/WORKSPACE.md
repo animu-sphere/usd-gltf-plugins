@@ -53,9 +53,9 @@ built in three ways. The reasons are in [ADR 0027](../adr/0027-plugin-workspace.
 
 The plugin's library goes to `lib/` and its registration to
 `plugin/resources/usdGltfFileFormat/`, and installs to the same layout. In the root build these are
-below the build directory. The standalone bundle build writes them to the bundle's own directory,
-as OpenStrata's bundle templates do, because `ost plugin view` reads them there; `ost plugin test`
-and `ost plugin package` read the stage that `ost plugin build` installs to.
+below the build directory, and in the standalone bundle build below that build's directory. Every
+`ost plugin` command reads the stage that `ost plugin build` installs to; `view` and `test-view` do
+since OpenStrata 0.23.20, and read the bundle's own directory before it.
 
 A library installs its development package (headers, archives, the vendored archives it links,
 and `lib/cmake/<library>/`) only when it is the top-level project, or when
