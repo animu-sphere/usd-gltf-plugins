@@ -998,52 +998,84 @@ def sampled(times, values, interpolation, path, t):
 
 
 def check_animation(check, stage, asset, node_paths):
-    """Compares the first animation's channels on the selected nodes with glTF's values at each
-    keyframe, just before it and inside each segment, and the stage's timeline with its range."""
+    """Chooses each animation's variant and compares its channels on the selected nodes with glTF's
+    values at each keyframe, just before it and inside each segment, checks that the properties it
+    does not animate have no time samples there, and checks each animation's end and the stage's
+    timeline."""
+    from pxr import Usd
+
     animations = asset.json.get("animations", [])
     if not animations:
         return
-    animation = animations[0]
+    root = stage.GetPrimAtPath("/Asset")
+    variants = root.GetVariantSets().GetVariantSet("animation")
+    names = [f"Animation_{index}" for index in range(len(animations))]
+    if not check.expect(sorted(variants.GetVariantNames()) == sorted(names),
+                        f"{len(variants.GetVariantNames())} animation variants, expected {len(animations)}"):
+        return
+    check.expect(variants.GetVariantSelection() == "Animation_0", "Animation_0 is not selected")
+
+    def targets(animation):
+        for number, channel in enumerate(animation["channels"]):
+            target = channel["target"]
+            node, path = target.get("node"), target.get("path")
+            if node in node_paths and path in ANIMATED_ATTRIBUTES:
+                yield number, channel, node, path
+
+    animated = {(node, path) for animation in animations for _, _, node, path in targets(animation)}
     end = None
-    for number, channel in enumerate(animation["channels"]):
-        target = channel["target"]
-        node, path = target.get("node"), target.get("path")
-        if node not in node_paths or path not in ANIMATED_ATTRIBUTES:
-            continue
-        sampler = animation["samplers"][channel["sampler"]]
-        interpolation = sampler.get("interpolation", "LINEAR")
-        times = asset.accessor(sampler["input"])[:, 0].astype(numpy.float64)
-        values = asset.accessor(sampler["output"]).astype(numpy.float64)
-        label = f"animation 0 channel {number} on Node_{node}"
-        attribute = stage.GetAttributeAtPath(f"{node_paths[node]}.{ANIMATED_ATTRIBUTES[path]}")
-        if not check.expect(attribute and attribute.GetNumTimeSamples() > 0, f"{label} is not authored"):
-            continue
-        end = max(end or 0.0, float(times[-1]))
-        if interpolation == "CUBICSPLINE":
-            # The plugin samples a cubic within 1e-4 of its largest value, or of a quaternion's.
-            vertices = values[1::3]
-            limit = 2e-4 * (1.0 if path == "rotation" else max(1e-9, float(numpy.abs(vertices).max())))
-        else:
-            limit = TOLERANCE * (1.0 if path == "rotation" else max(1.0, float(numpy.abs(values).max())))
-        query = [times[0] - 1, times[-1] + 1]
-        for k, t in enumerate(times):
-            query.append(t)
-            if k + 1 < len(times):
-                following = times[k + 1]
-                query += [t + (following - t) * f for f in (0.25, 0.5, 0.75)]
-                query.append(following - 1e-6)
-        worst = 0.0
-        for t in query:
-            expected = sampled(times, values, interpolation, path, t)
-            value = attribute.Get(t * TIME_CODES_PER_SECOND)
-            if path == "rotation":
-                actual = numpy.array([*value.GetImaginary(), value.GetReal()], numpy.float64)
-                if numpy.dot(actual, expected) < 0:
-                    actual = -actual
+    for index, animation in enumerate(animations):
+        with Usd.EditContext(stage, stage.GetSessionLayer()):
+            variants.SetVariantSelection(names[index])
+        own_end = 0.0
+        own = set()
+        for number, channel, node, path in targets(animation):
+            own.add((node, path))
+            sampler = animation["samplers"][channel["sampler"]]
+            interpolation = sampler.get("interpolation", "LINEAR")
+            times = asset.accessor(sampler["input"])[:, 0].astype(numpy.float64)
+            values = asset.accessor(sampler["output"]).astype(numpy.float64)
+            label = f"animation {index} channel {number} on Node_{node}"
+            attribute = stage.GetAttributeAtPath(f"{node_paths[node]}.{ANIMATED_ATTRIBUTES[path]}")
+            if not check.expect(attribute and attribute.GetNumTimeSamples() > 0, f"{label} is not authored"):
+                continue
+            own_end = max(own_end, float(times[-1]))
+            if interpolation == "CUBICSPLINE":
+                # The plugin samples a cubic within 1e-4 of its largest value, or of a quaternion's.
+                vertices = values[1::3]
+                limit = 2e-4 * (1.0 if path == "rotation" else max(1e-9, float(numpy.abs(vertices).max())))
             else:
-                actual = numpy.array(value, numpy.float64)
-            worst = max(worst, float(numpy.abs(actual - expected).max()))
-        check.expect(worst <= limit, f"{label}: values differ by {worst:.3g}")
+                limit = TOLERANCE * (1.0 if path == "rotation" else max(1.0, float(numpy.abs(values).max())))
+            query = [times[0] - 1, times[-1] + 1]
+            for k, t in enumerate(times):
+                query.append(t)
+                if k + 1 < len(times):
+                    following = times[k + 1]
+                    query += [t + (following - t) * f for f in (0.25, 0.5, 0.75)]
+                    query.append(following - 1e-6)
+            worst = 0.0
+            for t in query:
+                expected = sampled(times, values, interpolation, path, t)
+                value = attribute.Get(t * TIME_CODES_PER_SECOND)
+                if path == "rotation":
+                    actual = numpy.array([*value.GetImaginary(), value.GetReal()], numpy.float64)
+                    if numpy.dot(actual, expected) < 0:
+                        actual = -actual
+                else:
+                    actual = numpy.array(value, numpy.float64)
+                worst = max(worst, float(numpy.abs(actual - expected).max()))
+            check.expect(worst <= limit, f"{label}: values differ by {worst:.3g}")
+        for node, path in sorted(animated - own):
+            attribute = stage.GetAttributeAtPath(f"{node_paths[node]}.{ANIMATED_ATTRIBUTES[path]}")
+            check.expect(attribute and attribute.GetNumTimeSamples() == 0,
+                         f"animation {index} moves {path} of Node_{node}, which it does not animate")
+        data = root.GetCustomDataByKey("gltf") or {}
+        check.close(data.get("endTimeCode", -1.0), own_end * TIME_CODES_PER_SECOND, f"animation {index} end")
+        name = animation.get("name") or None
+        check.expect(data.get("name") == name, f"animation {index} is named {data.get('name')!r}, not {name!r}")
+        if own:
+            end = max(end or 0.0, own_end)
+    stage.GetSessionLayer().Clear()
     if end is not None:
         timeline = (stage.GetTimeCodesPerSecond(), stage.GetFramesPerSecond(), stage.GetStartTimeCode(),
                     stage.GetEndTimeCode())
@@ -1287,13 +1319,14 @@ def rejection_causes(document):
             causes.add("morph targets")
         if "mesh" in node:
             causes |= mesh_causes(document, document["meshes"][node["mesh"]])
-    # Only the first animation is authored, and only on the selected scene.
-    for channel in (document.get("animations") or [{}])[0].get("channels", []):
-        node = channel["target"].get("node")
-        if node in seen and channel["target"].get("path") == "weights":
-            causes.add("morph targets")
-        elif node in seen and "matrix" in nodes[node]:
-            causes.add("animated matrix")
+    # Every animation is authored, but only on the selected scene.
+    for animation in document.get("animations", []):
+        for channel in animation.get("channels", []):
+            node = channel["target"].get("node")
+            if node in seen and channel["target"].get("path") == "weights":
+                causes.add("morph targets")
+            elif node in seen and "matrix" in nodes[node]:
+                causes.add("animated matrix")
     return sorted(causes)
 
 

@@ -5,7 +5,6 @@
 #include "pxr/base/gf/vec3d.h"
 #include "pxr/base/gf/vec3f.h"
 #include "pxr/base/tf/diagnostic.h"
-#include "pxr/usd/usdGeom/xformable.h"
 #include "pxr/usd/usdLux/distantLight.h"
 #include "pxr/usd/usdLux/lightAPI.h"
 #include "pxr/usd/usdLux/shapingAPI.h"
@@ -127,30 +126,38 @@ frameOf(const GfMatrix4d& world, GfMatrix4d& result)
 
 } // namespace
 
-bool
-AuthorLight(const fastgltf::Asset& asset, std::size_t nodeIndex, std::size_t lightIndex,
-            const pxr::UsdPrim& parent, const pxr::GfMatrix4d& parentWorld)
+std::optional<pxr::GfMatrix4d>
+LightCorrection(std::size_t nodeIndex, std::size_t lightIndex, const pxr::GfMatrix4d& parentWorld)
 {
     using namespace pxr;
-    if (lightIndex >= asset.lights.size())
-    {
-        TF_RUNTIME_ERROR("glTF light index %zu is out of range", lightIndex);
-        return false;
-    }
-    const auto& source = asset.lights[lightIndex];
-    Emission emission;
-    if (const auto error = emissionOf(source, emission); !error.empty())
-    {
-        TF_RUNTIME_ERROR("glTF light %zu: %s", lightIndex, error.c_str());
-        return false;
-    }
     GfMatrix4d frame;
     if (!frameOf(parentWorld, frame))
     {
         TF_RUNTIME_ERROR("glTF node %zu: light %zu has no position or direction, because the "
                          "node's transform is degenerate",
                          nodeIndex, lightIndex);
-        return false;
+        return std::nullopt;
+    }
+    // USD would scale the sphere and distort the cone with the node, so this cancels its scale.
+    return frame * parentWorld.GetInverse();
+}
+
+pxr::UsdPrim
+AuthorLight(const fastgltf::Asset& asset, std::size_t nodeIndex, std::size_t lightIndex,
+            const pxr::UsdPrim& parent)
+{
+    using namespace pxr;
+    if (lightIndex >= asset.lights.size())
+    {
+        TF_RUNTIME_ERROR("glTF light index %zu is out of range", lightIndex);
+        return {};
+    }
+    const auto& source = asset.lights[lightIndex];
+    Emission emission;
+    if (const auto error = emissionOf(source, emission); !error.empty())
+    {
+        TF_RUNTIME_ERROR("glTF light %zu: %s", lightIndex, error.c_str());
+        return {};
     }
 
     const auto stage = parent.GetStage();
@@ -178,20 +185,15 @@ AuthorLight(const fastgltf::Asset& asset, std::size_t nodeIndex, std::size_t lig
                    shaping.CreateShapingConeSoftnessAttr().Set(float(emission.coneSoftness));
     }
     const UsdLuxLightAPI light(prim);
-    // USD would scale the sphere and distort the cone with the node, so this cancels its scale.
-    const GfMatrix4d local = frame * parentWorld.GetInverse();
     authored =
-        authored &&
-        (GfIsClose(local, GfMatrix4d(1.0), 1e-6) ||
-         UsdGeomXformable(prim).AddTransformOp().Set(local)) &&
-        light.CreateIntensityAttr().Set(float(emission.intensity)) &&
+        authored && light.CreateIntensityAttr().Set(float(emission.intensity)) &&
         light.CreateColorAttr().Set(GfVec3f(source.color[0], source.color[1], source.color[2])) &&
         light.CreateNormalizeAttr().Set(directional) &&
         (source.name.empty() || prim.SetDisplayName(std::string(source.name)));
     if (!authored)
     {
         TF_RUNTIME_ERROR("Could not author glTF light %zu", lightIndex);
-        return false;
+        return {};
     }
     if (source.range && !directional)
     {
@@ -199,7 +201,7 @@ AuthorLight(const fastgltf::Asset& asset, std::size_t nodeIndex, std::size_t lig
                 "the inverse square of distance and does not reach zero",
                 nodeIndex, lightIndex);
     }
-    return true;
+    return prim;
 }
 
 } // namespace gltfUsd

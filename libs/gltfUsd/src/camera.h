@@ -6,13 +6,21 @@
 #include "pxr/usd/usd/prim.h"
 
 #include <cstddef>
+#include <optional>
 
 namespace gltfUsd
 {
 
-// parent is the node's prim, and parentWorld its transform relative to the asset.
-[[nodiscard]] bool AuthorCamera(const fastgltf::Asset& asset, std::size_t nodeIndex,
-                                std::size_t cameraIndex, const pxr::UsdPrim& parent,
-                                const pxr::GfMatrix4d& parentWorld);
+// Defines the camera below its node's prim, `parent`, without a transform, and returns its prim.
+// Reports an error and returns an invalid prim for a camera that cannot be converted.
+[[nodiscard]] pxr::UsdPrim AuthorCamera(const fastgltf::Asset& asset, std::size_t cameraIndex,
+                                        const pxr::UsdPrim& parent);
+
+// The transform of the camera's prim that cancels the scale and shear USD would apply to it from
+// its node, whose transform relative to the asset is `parentWorld`. Reports an error and returns
+// nullopt when that transform is degenerate, reflected or sheared.
+[[nodiscard]] std::optional<pxr::GfMatrix4d> CameraCorrection(std::size_t nodeIndex,
+                                                              std::size_t cameraIndex,
+                                                              const pxr::GfMatrix4d& parentWorld);
 
 } // namespace gltfUsd

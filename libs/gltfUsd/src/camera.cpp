@@ -140,30 +140,37 @@ viewOf(const GfMatrix4d& world, GfMatrix4d& result)
 
 } // namespace
 
-bool
-AuthorCamera(const fastgltf::Asset& asset, std::size_t nodeIndex, std::size_t cameraIndex,
-             const pxr::UsdPrim& parent, const pxr::GfMatrix4d& parentWorld)
+std::optional<pxr::GfMatrix4d>
+CameraCorrection(std::size_t nodeIndex, std::size_t cameraIndex, const pxr::GfMatrix4d& parentWorld)
 {
     using namespace pxr;
-    if (cameraIndex >= asset.cameras.size())
-    {
-        TF_RUNTIME_ERROR("glTF camera index %zu is out of range", cameraIndex);
-        return false;
-    }
-    const auto& source = asset.cameras[cameraIndex];
-    Projection projection;
-    if (const auto error = projectionOf(source, projection); !error.empty())
-    {
-        TF_RUNTIME_ERROR("glTF camera %zu: %s", cameraIndex, error.c_str());
-        return false;
-    }
     GfMatrix4d view;
     if (!viewOf(parentWorld, view))
     {
         TF_RUNTIME_ERROR("glTF node %zu: camera %zu has no view, because the node's transform is "
                          "degenerate, reflected or sheared",
                          nodeIndex, cameraIndex);
-        return false;
+        return std::nullopt;
+    }
+    // USD would scale the view with the node, so this cancels the node's scale and shear.
+    return view * parentWorld.GetInverse();
+}
+
+pxr::UsdPrim
+AuthorCamera(const fastgltf::Asset& asset, std::size_t cameraIndex, const pxr::UsdPrim& parent)
+{
+    using namespace pxr;
+    if (cameraIndex >= asset.cameras.size())
+    {
+        TF_RUNTIME_ERROR("glTF camera index %zu is out of range", cameraIndex);
+        return {};
+    }
+    const auto& source = asset.cameras[cameraIndex];
+    Projection projection;
+    if (const auto error = projectionOf(source, projection); !error.empty())
+    {
+        TF_RUNTIME_ERROR("glTF camera %zu: %s", cameraIndex, error.c_str());
+        return {};
     }
 
     const auto camera = UsdGeomCamera::Define(
@@ -173,16 +180,14 @@ AuthorCamera(const fastgltf::Asset& asset, std::size_t nodeIndex, std::size_t ca
         (!source.name.empty() && !camera.GetPrim().SetDisplayName(std::string(source.name))))
     {
         TF_RUNTIME_ERROR("Could not author glTF camera %zu", cameraIndex);
-        return false;
+        return {};
     }
-    // USD would scale the view with the node, so this cancels the node's scale and shear.
-    const GfMatrix4d local = view * parentWorld.GetInverse();
-    bool authored = GfIsClose(local, GfMatrix4d(1.0), 1e-6) || camera.AddTransformOp().Set(local);
-    authored = authored && camera.CreateProjectionAttr().Set(projection.projection) &&
-               camera.CreateHorizontalApertureAttr().Set(float(projection.horizontalAperture)) &&
-               camera.CreateVerticalApertureAttr().Set(float(projection.verticalAperture)) &&
-               camera.CreateClippingRangeAttr().Set(
-                   GfVec2f(float(projection.znear), float(projection.zfar)));
+    bool authored =
+        camera.CreateProjectionAttr().Set(projection.projection) &&
+        camera.CreateHorizontalApertureAttr().Set(float(projection.horizontalAperture)) &&
+        camera.CreateVerticalApertureAttr().Set(float(projection.verticalAperture)) &&
+        camera.CreateClippingRangeAttr().Set(
+            GfVec2f(float(projection.znear), float(projection.zfar)));
     if (authored && projection.projection == UsdGeomTokens->perspective)
     {
         authored = camera.CreateFocalLengthAttr().Set(float(projection.focalLength));
@@ -190,9 +195,9 @@ AuthorCamera(const fastgltf::Asset& asset, std::size_t nodeIndex, std::size_t ca
     if (!authored)
     {
         TF_RUNTIME_ERROR("Could not author glTF camera %zu", cameraIndex);
-        return false;
+        return {};
     }
-    return true;
+    return camera.GetPrim();
 }
 
 } // namespace gltfUsd

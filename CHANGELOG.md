@@ -10,11 +10,13 @@ here.
 
 ### Added
 
-- Node animation: the translation, rotation and scale channels of a file's first animation become
-  time samples of `translate`, `orient` and `scale` operations at 24 time codes per second, with
-  `STEP`, `LINEAR` and `CUBICSPLINE` interpolation. Assets with animations were rejected before.
-  Other animations are not authored yet, with a warning. See
-  [ADR 0029](docs/adr/0029-node-animation.md).
+- Node animation: the translation, rotation and scale channels of every animation become time
+  samples of `translate`, `orient` and `scale` operations at 24 time codes per second, with `STEP`,
+  `LINEAR` and `CUBICSPLINE` interpolation. Assets with animations were rejected before. Each
+  animation is a variant `Animation_{index}` of a variant set `animation` on `/Asset`, which selects
+  `Animation_0`; a referencing layer chooses another by its own selection. Every animation is
+  validated, so an invalid one rejects the file even when it is not the first. See
+  [ADR 0029](docs/adr/0029-node-animation.md) and [ADR 0030](docs/adr/0030-animation-choice.md).
 - `tests/probe_animation.py`, the experiment behind that decision.
 
 ### Changed

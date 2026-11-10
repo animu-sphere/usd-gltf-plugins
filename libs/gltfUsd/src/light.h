@@ -6,13 +6,20 @@
 #include "pxr/usd/usd/prim.h"
 
 #include <cstddef>
+#include <optional>
 
 namespace gltfUsd
 {
 
-// parent is the node's prim, and parentWorld its transform relative to the asset.
-[[nodiscard]] bool AuthorLight(const fastgltf::Asset& asset, std::size_t nodeIndex,
-                               std::size_t lightIndex, const pxr::UsdPrim& parent,
-                               const pxr::GfMatrix4d& parentWorld);
+// Defines the light below its node's prim, `parent`, without a transform, and returns its prim.
+// Reports an error and returns an invalid prim for a light that cannot be converted.
+[[nodiscard]] pxr::UsdPrim AuthorLight(const fastgltf::Asset& asset, std::size_t nodeIndex,
+                                       std::size_t lightIndex, const pxr::UsdPrim& parent);
+
+// The transform of the light's prim that cancels the scale USD would apply to it from
+// its node, whose transform relative to the asset is `parentWorld`. Reports an error and returns
+// nullopt when that transform is degenerate.
+[[nodiscard]] std::optional<pxr::GfMatrix4d>
+LightCorrection(std::size_t nodeIndex, std::size_t lightIndex, const pxr::GfMatrix4d& parentWorld);
 
 } // namespace gltfUsd

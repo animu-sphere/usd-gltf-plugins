@@ -548,11 +548,12 @@ def hermite(v0, out0, in1, v1, delta, u):
 ANIMATION_FORMATS = {5126: "f", 5120: "b", 5121: "B", 5122: "h", 5123: "H"}
 
 
-def animation_document(extension, samplers, channels, extra_animations=0, nodes=None):
+def animation_document(extension, samplers, channels, more_animations=(), nodes=None):
     """Nodes 0 to 2 in the scene, node 2 below node 1 and node 4 below node 2, and node 3 outside it,
-    with one animation of these samplers and channels and as many empty ones after it. A sampler is a
-    dict of input times, flat output values, and optionally interpolation, type and componentType of
-    the output; a channel is (sampler, node, path), with None for no node."""
+    with an animation of these samplers and channels, and after it one for each (samplers, channels)
+    in more_animations. A sampler is a dict of input times, flat output values, and optionally
+    interpolation, type and componentType of the output; a channel is (sampler, node, path), with
+    None for no node."""
     document, binary = mesh_document("glb")
     document["nodes"] = nodes or [
         {"mesh": 0, "translation": [2, 0, 0]},
@@ -575,25 +576,28 @@ def animation_document(extension, samplers, channels, extra_animations=0, nodes=
         })
         return len(document["accessors"]) - 1
 
-    animation = {"samplers": [], "channels": []}
-    for sampler in samplers:
-        times = sampler["input"]
-        entry = {
-            "input": add_accessor(times, 5126, "SCALAR", min=[min(times)], max=[max(times)]),
-            "output": add_accessor(sampler["output"], sampler.get("componentType", 5126),
-                                   sampler.get("type", "VEC3"),
-                                   **({"normalized": True} if sampler.get("normalized") else {})),
-        }
-        if "interpolation" in sampler:
-            entry["interpolation"] = sampler["interpolation"]
-        animation["samplers"].append(entry)
-    for sampler, node, path in channels:
-        target = {"path": path}
-        if node is not None:
-            target["node"] = node
-        animation["channels"].append({"sampler": sampler, "target": target})
-    document["animations"] = [animation] + [
-        {"samplers": animation["samplers"][:1], "channels": []} for _ in range(extra_animations)]
+    def add_animation(samplers, channels):
+        animation = {"samplers": [], "channels": []}
+        for sampler in samplers:
+            times = sampler["input"]
+            entry = {
+                "input": add_accessor(times, 5126, "SCALAR", min=[min(times)], max=[max(times)]),
+                "output": add_accessor(sampler["output"], sampler.get("componentType", 5126),
+                                       sampler.get("type", "VEC3"),
+                                       **({"normalized": True} if sampler.get("normalized") else {})),
+            }
+            if "interpolation" in sampler:
+                entry["interpolation"] = sampler["interpolation"]
+            animation["samplers"].append(entry)
+        for sampler, node, path in channels:
+            target = {"path": path}
+            if node is not None:
+                target["node"] = node
+            animation["channels"].append({"sampler": sampler, "target": target})
+        return animation
+
+    document["animations"] = [add_animation(samplers, channels)] + [
+        add_animation(*more) for more in more_animations]
 
     document["buffers"][0]["byteLength"] = len(binary)
     if extension == "gltf":
@@ -5546,22 +5550,106 @@ class FileFormatTest(unittest.TestCase):
                         self.assertEqual(bool(translate), animated)
                         self.assertEqual(stage.GetRootLayer().HasTimeCodesPerSecond(), animated)
                         self.assertFalse(stage.GetPrimAtPath(scene + "Node_3"))
-                with self.subTest(extension=extension, case="several animations"):
+
+    def test_every_animation_has_a_variant(self):
+        scene = "/Asset/scenes/Scene_0/"
+        turn = quaternion((0, 1, 0), 90)
+        # Animation 0 moves node 0; animation 1 moves node 0 in another property, and node 1, from
+        # 0.5 to 2.5 seconds; animation 2 moves only node 3, outside the scene.
+        first = ([{"input": [0, 1], "output": [0, 0, 0, 1, 0, 0]}], [(0, 0, "translation")])
+        second = ([{"input": [0.5, 2.5], "output": [1, 1, 1, 3, 3, 3]},
+                   {"input": [0.5, 2.5], "output": quaternion((0, 1, 0), 0) + turn, "type": "VEC4"}],
+                  [(0, 0, "scale"), (1, 1, "rotation")])
+        third = ([{"input": [0, 4], "output": [0, 0, 0, 1, 0, 0]}], [(0, 3, "translation")])
+        with tempfile.TemporaryDirectory() as directory:
+            for extension in ("gltf", "glb"):
+                with self.subTest(extension=extension):
                     path = pathlib.Path(directory) / f"several.{extension}"
-                    document, binary = animation_document(extension, samplers, [(0, 0, "translation")],
-                                                          extra_animations=2)
+                    document, binary = animation_document(extension, *first,
+                                                          more_animations=[second, third])
+                    document["animations"][0]["name"] = "Walk"
+                    document["animations"][2]["name"] = "Outside"
                     write_asset(path, document, binary)
+                    # Converting several animations reports nothing.
                     result = subprocess.run(
-                        [sys.executable, "-c",
-                         "from pxr import Usd; import sys; "
-                         "s = Usd.Stage.Open(sys.argv[1]); "
-                         "a = s.GetAttributeAtPath('/Asset/scenes/Scene_0/Node_0.xformOp:translate'); "
-                         "assert a.GetNumTimeSamples() == 2",
+                        [sys.executable, "-c", "from pxr import Usd; import sys; Usd.Stage.Open(sys.argv[1])",
                          str(path)],
                         capture_output=True, text=True, check=False,
                     )
-                    self.assertEqual(result.returncode, 0, result.stderr)
-                    self.assertIn("glTF has 3 animations; only animation 0 is authored", result.stderr)
+                    self.assertEqual((result.returncode, result.stderr), (0, ""))
+
+                    stage = Usd.Stage.Open(str(path))
+                    asset = stage.GetPrimAtPath("/Asset")
+                    variants = asset.GetVariantSets().GetVariantSet("animation")
+                    self.assertEqual(variants.GetVariantNames(), ["Animation_0", "Animation_1", "Animation_2"])
+                    self.assertEqual(variants.GetVariantSelection(), "Animation_0")
+                    # The layer's timeline ends at the last keyframe of any animation on the scene.
+                    self.assertEqual((stage.GetStartTimeCode(), stage.GetEndTimeCode()), (0, 60))
+
+                    # Operations and their order are outside the variants, and their values inside.
+                    layer = stage.GetRootLayer()
+                    for node in ("Node_0", "Node_1"):
+                        xform = UsdGeom.Xform(stage.GetPrimAtPath(scene + node))
+                        self.assertEqual([op.GetOpName() for op in xform.GetOrderedXformOps()],
+                                         ["xformOp:translate", "xformOp:orient", "xformOp:scale"])
+                        for op in ("translate", "orient", "scale"):
+                            spec = layer.GetAttributeAtPath(f"{scene}{node}.xformOp:{op}")
+                            self.assertFalse(spec.HasDefaultValue())
+                            self.assertEqual(layer.GetNumTimeSamplesForPath(spec.path), 0)
+                    static = UsdGeom.Xform(stage.GetPrimAtPath(scene + "Node_1/Node_2"))
+                    self.assertEqual([op.GetOpName() for op in static.GetOrderedXformOps()],
+                                     ["xformOp:transform"])
+
+                    translate = stage.GetAttributeAtPath(scene + "Node_0.xformOp:translate")
+                    scale = stage.GetAttributeAtPath(scene + "Node_0.xformOp:scale")
+                    orient = stage.GetAttributeAtPath(scene + "Node_1.xformOp:orient")
+                    expected = {
+                        "Animation_0": {"endTimeCode": 24.0, "name": "Walk"},
+                        "Animation_1": {"endTimeCode": 60.0},
+                        "Animation_2": {"endTimeCode": 0.0, "name": "Outside"},
+                    }
+                    for name, data in expected.items():
+                        # A choice on the open stage, in its session layer.
+                        with Usd.EditContext(stage, stage.GetSessionLayer()):
+                            variants.SetVariantSelection(name)
+                        self.assertEqual(asset.GetCustomDataByKey("gltf"), data, name)
+                        # Every variant has the nodes' own values as defaults.
+                        self.assertEqual((translate.Get(), scale.Get(), orient.Get()),
+                                         (Gf.Vec3d(2, 0, 0), Gf.Vec3f(1, 1, 1), Gf.Quatf(1, 0, 0, 0)), name)
+                        samples = [translate.GetNumTimeSamples(), scale.GetNumTimeSamples(),
+                                   orient.GetNumTimeSamples()]
+                        self.assertEqual(samples, {"Animation_0": [2, 0, 0], "Animation_1": [0, 2, 2],
+                                                   "Animation_2": [0, 0, 0]}[name], name)
+                    with Usd.EditContext(stage, stage.GetSessionLayer()):
+                        variants.SetVariantSelection("Animation_1")
+                    # Animation 1 holds its first keyframe before 0.5 seconds and its last after it ends.
+                    self.assertEqual(scale.Get(0), Gf.Vec3f(1, 1, 1))
+                    self.assertEqual(scale.Get(36), Gf.Vec3f(2, 2, 2))
+                    self.assertEqual(scale.Get(100), Gf.Vec3f(3, 3, 3))
+                    self.assert_rotation_close(orient.Get(60), turn, 1e-6)
+                    self.assertEqual(translate.Get(12), Gf.Vec3d(2, 0, 0))
+
+                    # A referencing layer chooses an animation by its own selection, and one that
+                    # names no variant leaves the moved nodes at an identity transform.
+                    for selection, x in (("Animation_0", 0.5), ("Animation_1", 2), ("Animation_9", None)):
+                        host = Usd.Stage.CreateInMemory()
+                        prim = host.DefinePrim("/Host")
+                        prim.GetReferences().AddReference(str(path))
+                        prim.GetVariantSets().GetVariantSet("animation").SetVariantSelection(selection)
+                        node = host.GetPrimAtPath("/Host/scenes/Scene_0/Node_0")
+                        local = UsdGeom.Xformable(node).GetLocalTransformation(12)
+                        if x is None:
+                            self.assertEqual(local, Gf.Matrix4d(1), selection)
+                        else:
+                            self.assertEqual(local.ExtractTranslation(), Gf.Vec3d(x, 0, 0), selection)
+
+                    # A file with animations and a reload keep the variants.
+                    document["animations"][0]["name"] = "Run"
+                    write_asset(path, document, binary)
+                    self.assertTrue(layer.Reload(True))
+                    with Usd.EditContext(stage, stage.GetSessionLayer()):
+                        variants.SetVariantSelection("Animation_0")
+                    self.assertEqual(asset.GetCustomDataByKey("gltf:name"), "Run")
 
     def test_animated_cameras_keep_their_correction(self):
         scene = "/Asset/scenes/Scene_0/"
@@ -5577,21 +5665,40 @@ class FileFormatTest(unittest.TestCase):
             {"input": [0, 1], "output": [2, 2, 2, 2, 2, 2]},
         ]
         channels = [(0, 1, "rotation"), (1, 1, "translation"), (2, 0, "scale")]
+        # Another animation, which turns the camera's node otherwise and lasts longer.
+        other = ([{"input": [0, 2], "output": [2, 2, 2, 2, 2, 2]},
+                  {"input": [0, 2], "output": quaternion((0, 0, 1), 30) + quaternion((0, 0, 1), 150),
+                   "type": "VEC4"}],
+                 [(0, 0, "scale"), (1, 1, "rotation")])
         with tempfile.TemporaryDirectory() as directory:
             for extension in ("gltf", "glb"):
                 with self.subTest(extension=extension):
                     path = pathlib.Path(directory) / f"camera.{extension}"
-                    document, binary = animation_document(extension, samplers, channels, nodes=nodes)
+                    document, binary = animation_document(extension, samplers, channels,
+                                                          more_animations=[other], nodes=nodes)
                     document["scenes"][0]["nodes"] = [0]
                     document["cameras"] = [{"type": "perspective", "perspective": {"yfov": 1, "znear": 0.1}}]
+                    document["extensionsUsed"] = ["KHR_lights_punctual"]
+                    document["extensions"] = {"KHR_lights_punctual": {"lights": [{"type": "spot", "spot": {}}]}}
+                    document["nodes"][1]["extensions"] = {"KHR_lights_punctual": {"light": 0}}
                     write_asset(path, document, binary)
                     stage = Usd.Stage.Open(str(path))
-                    camera = stage.GetPrimAtPath(scene + "Node_0/Node_1/Camera_0")
-                    self.assertTrue(camera)
-                    for code in (Usd.TimeCode.Default(), 0, 6, 12, 24):
-                        world = UsdGeom.XformCache(code).GetLocalToWorldTransform(camera)
-                        for row in range(3):
-                            self.assertAlmostEqual(Gf.Vec3d(*world[row][:3]).GetLength(), 1.0, places=5)
+                    variants = stage.GetPrimAtPath("/Asset").GetVariantSets().GetVariantSet("animation")
+                    layer = stage.GetRootLayer()
+                    for child in ("Camera_0", "Light_0"):
+                        # The correction's operation is outside the variants, and its value inside.
+                        spec = layer.GetAttributeAtPath(f"{scene}Node_0/Node_1/{child}.xformOp:transform")
+                        self.assertFalse(spec.HasDefaultValue(), child)
+                        for name in ("Animation_0", "Animation_1"):
+                            with Usd.EditContext(stage, stage.GetSessionLayer()):
+                                variants.SetVariantSelection(name)
+                            prim = stage.GetPrimAtPath(f"{scene}Node_0/Node_1/{child}")
+                            self.assertTrue(prim)
+                            for code in (Usd.TimeCode.Default(), 0, 6, 12, 24, 48):
+                                world = UsdGeom.XformCache(code).GetLocalToWorldTransform(prim)
+                                for row in range(3):
+                                    self.assertAlmostEqual(Gf.Vec3d(*world[row][:3]).GetLength(), 1.0,
+                                                           places=5, msg=(child, name, code))
 
     def test_animation_failures_preserve_layer(self):
         camera = [{"type": "perspective", "perspective": {"yfov": 1, "znear": 0.1}}]
@@ -5614,6 +5721,11 @@ class FileFormatTest(unittest.TestCase):
                                 "channel 3: targets the same node and path"),
             "weights": (None, lambda d: channel(d, 0)["target"].update(path="weights"),
                         "channel 0: morph weight animation is not supported yet"),
+            # Every animation is validated, not only the first.
+            "later animation": (None, lambda d: d["animations"].append(
+                                    {"samplers": [dict(d["animations"][0]["samplers"][0])],
+                                     "channels": [{"sampler": 0, "target": {"node": 0, "path": "weights"}}]}),
+                                "glTF animation 1 channel 0: morph weight animation is not supported yet"),
             "matrix": (None, lambda d: d["nodes"][1].update(rotation=None) or d["nodes"][1].pop("rotation")
                        or d["nodes"][1].update(matrix=[1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]),
                        "channel 1: animates node 1, which has a matrix"),

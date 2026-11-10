@@ -6,6 +6,7 @@
 #include "gltfCore/accessor.h"
 
 #include "pxr/pxr.h"
+#include "pxr/base/gf/matrix4d.h"
 #include "pxr/base/gf/quatf.h"
 #include "pxr/base/gf/vec3d.h"
 #include "pxr/base/gf/vec3f.h"
@@ -14,6 +15,7 @@
 
 #include <cstddef>
 #include <optional>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -39,24 +41,43 @@ struct NodeAnimation
     pxr::GfVec3f statedScale{1.0f};
 };
 
-// The animation that conversion authors, as time samples.
-struct AnimationPlan
+// What one glTF animation does to the nodes of the selected scene.
+struct AnimationValues
 {
-    // The glTF animation, or nullopt when nothing in the selected scene is animated.
-    std::optional<std::size_t> index;
-    // The last keyframe of the authored channels, in time codes. The timeline starts at 0.
+    // The glTF animation's name, which may be empty.
+    std::string name;
+    // The last keyframe of its channels on the selected scene, in time codes, or 0 without any. Its
+    // timeline starts at 0.
     double endTimeCode = 0.0;
-    // By position in SceneMap::nodes; nullopt for a node that the animation does not move.
+    // By position in SceneMap::nodes; nullopt for a node that no animation moves. A node that
+    // another animation moves has its stated values here, without time samples.
     std::vector<std::optional<NodeAnimation>> nodes;
+    // By position in SceneMap::nodes, the node's transform relative to the asset at time 0.
+    std::vector<pxr::GfMatrix4d> world;
 };
 
-// Reads the first animation's channels that target nodes of the selected scene and turns their
-// samplers into time samples, and sets the local and world transforms in `map` to their values at
-// time 0. Channels without a node, or with a node outside the scene, are ignored. Reports an error
-// and returns false for an invalid channel or sampler, for content that cannot be converted yet, and
-// for a camera or light whose correction for its node's scale would have to change over time.
+// Every animation that conversion authors, as time samples.
+struct AnimationPlan
+{
+    // Every glTF animation, in glTF order, including one that moves nothing in the selected scene.
+    std::vector<AnimationValues> animations;
+    // By position in SceneMap::nodes, whether any animation moves the node.
+    std::vector<char> moved;
+    // By position in SceneMap::nodes, whether any animation moves the node or one of its ancestors.
+    std::vector<char> animated;
+    // The last keyframe of any animation's channels on the selected scene, in time codes.
+    double endTimeCode = 0.0;
+    // Whether any animation has a channel on the selected scene.
+    bool hasChannels = false;
+};
+
+// Reads every animation's channels that target nodes of the selected scene and turns their samplers
+// into time samples, with each node's transforms at each animation's time 0. Channels without a
+// node, or with a node outside the scene, are ignored. Reports an error and returns false for an
+// invalid channel or sampler in any animation, for content that cannot be converted yet, and for a
+// camera or light whose correction for its node's scale would have to change during an animation.
 [[nodiscard]] bool PlanAnimation(const fastgltf::Asset& asset,
-                                 const gltfCore::BufferLoader& loadBuffer, SceneMap& map,
+                                 const gltfCore::BufferLoader& loadBuffer, const SceneMap& map,
                                  AnimationPlan& plan);
 
 } // namespace gltfUsd

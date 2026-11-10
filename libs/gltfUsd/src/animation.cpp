@@ -429,27 +429,31 @@ rotationChanges(const NodeAnimation& animation)
                        [&](const auto& sample) { return differs(sample.second); });
 }
 
-// Sets each node's transforms to their values at time 0, and rejects a camera or light whose
+// Sets each node's transform at the animation's time 0, and rejects a camera or light whose
 // correction for scale, computed from those, would not hold at every time. That correction is
 // constant when no scale on the node's path changes and each rotation that changes is below a
 // similarity: then the node's world transform at any time is a rotation of the one at time 0.
 bool
-placeAtTimeZero(const fastgltf::Asset& asset, SceneMap& map, const AnimationPlan& plan)
+placeAtTimeZero(const fastgltf::Asset& asset, const SceneMap& map, std::size_t animationIndex,
+                AnimationValues& values)
 {
+    values.world.resize(map.nodes.size());
     std::vector<char> belowScale(map.nodes.size(), 0);
     std::vector<char> belowTurn(map.nodes.size(), 0);
     for (std::size_t position = 0; position < map.nodes.size(); ++position)
     {
-        auto& mapped = map.nodes[position];
-        const auto* parent = mapped.parent ? &map.nodes[*mapped.parent] : nullptr;
+        const auto& mapped = map.nodes[position];
+        const GfMatrix4d parentWorld =
+            mapped.parent ? values.world[*mapped.parent] : GfMatrix4d(1.0);
         if (mapped.parent)
         {
             belowScale[position] = belowScale[*mapped.parent];
             belowTurn[position] = belowTurn[*mapped.parent];
         }
-        if (const auto& animation = plan.nodes[position])
+        GfMatrix4d local = mapped.local;
+        if (const auto& animation = values.nodes[position])
         {
-            mapped.local =
+            local =
                 trsMatrix(animation->translation.empty() ? animation->statedTranslation
                                                          : animation->translation.front().second,
                           GfQuatd(animation->rotation.empty() ? animation->statedRotation
@@ -460,13 +464,12 @@ placeAtTimeZero(const fastgltf::Asset& asset, SceneMap& map, const AnimationPlan
             {
                 belowScale[position] = 1;
             }
-            if (rotationChanges(*animation) &&
-                !isSimilarity(parent ? parent->world : GfMatrix4d(1.0)))
+            if (rotationChanges(*animation) && !isSimilarity(parentWorld))
             {
                 belowTurn[position] = 1;
             }
         }
-        mapped.world = parent ? mapped.local * parent->world : mapped.local;
+        values.world[position] = mapped.parent ? local * parentWorld : local;
 
         const auto& node = asset.nodes[mapped.index];
         if (!node.cameraIndex && !node.lightIndex)
@@ -475,42 +478,30 @@ placeAtTimeZero(const fastgltf::Asset& asset, SceneMap& map, const AnimationPlan
         }
         if (belowScale[position])
         {
-            TF_RUNTIME_ERROR(
-                "glTF node %zu: a camera or light below an animated scale that changes "
-                "is not supported",
-                mapped.index);
+            TF_RUNTIME_ERROR("glTF animation %zu, node %zu: a camera or light below an animated "
+                             "scale that changes is not supported",
+                             animationIndex, mapped.index);
             return false;
         }
         if (belowTurn[position])
         {
-            TF_RUNTIME_ERROR("glTF node %zu: a camera or light below a rotation animated under a "
-                             "nonuniform scale or shear is not supported",
-                             mapped.index);
+            TF_RUNTIME_ERROR("glTF animation %zu, node %zu: a camera or light below a rotation "
+                             "animated under a nonuniform scale or shear is not supported",
+                             animationIndex, mapped.index);
             return false;
         }
     }
     return true;
 }
 
-} // namespace
-
+// Reads one animation's channels on the selected scene into `values`, whose nodes have an entry per
+// node of the scene. Returns false after reporting an error.
 bool
-PlanAnimation(const fastgltf::Asset& asset, const gltfCore::BufferLoader& loadBuffer, SceneMap& map,
-              AnimationPlan& plan)
+readAnimation(const fastgltf::Asset& asset, const gltfCore::BufferLoader& loadBuffer,
+              const SceneMap& map, std::size_t animationIndex, AnimationValues& values)
 {
-    plan = {};
-    plan.nodes.resize(map.nodes.size());
-    if (asset.animations.empty())
-    {
-        return true;
-    }
-    if (asset.animations.size() > 1)
-    {
-        TF_WARN("glTF has %zu animations; only animation 0 is authored", asset.animations.size());
-    }
-    constexpr std::size_t animationIndex = 0;
     const auto& animation = asset.animations[animationIndex];
-
+    values.name = std::string(animation.name);
     std::set<std::pair<std::size_t, fastgltf::AnimationPath>> targets;
     bool capped = false;
     for (std::size_t c = 0; c < animation.channels.size(); ++c)
@@ -557,8 +548,7 @@ PlanAnimation(const fastgltf::Asset& asset, const gltfCore::BufferLoader& loadBu
         {
             return fail("morph weight animation is not supported yet");
         }
-        const auto* trs = std::get_if<fastgltf::TRS>(&asset.nodes[nodeIndex].transform);
-        if (!trs)
+        if (!std::holds_alternative<fastgltf::TRS>(asset.nodes[nodeIndex].transform))
         {
             return fail("animates node " + std::to_string(nodeIndex) + ", which has a matrix");
         }
@@ -572,19 +562,13 @@ PlanAnimation(const fastgltf::Asset& asset, const gltfCore::BufferLoader& loadBu
         {
             return fail(error);
         }
-        plan.endTimeCode = std::max(plan.endTimeCode, keyframes.times.back() * TimeCodesPerSecond);
+        values.endTimeCode =
+            std::max(values.endTimeCode, keyframes.times.back() * TimeCodesPerSecond);
 
-        auto& nodeAnimation = plan.nodes[*position];
+        auto& nodeAnimation = values.nodes[*position];
         if (!nodeAnimation)
         {
             nodeAnimation.emplace();
-            const auto& q = trs->rotation;
-            nodeAnimation->statedTranslation =
-                GfVec3d(trs->translation.x(), trs->translation.y(), trs->translation.z());
-            // MapScene has checked that the stated rotation is close to unit length.
-            nodeAnimation->statedRotation =
-                GfQuatf(GfQuatd(q.w(), q.x(), q.y(), q.z()).GetNormalized());
-            nodeAnimation->statedScale = GfVec3f(trs->scale.x(), trs->scale.y(), trs->scale.z());
         }
         for (const auto& [code, value] : samples)
         {
@@ -609,14 +593,74 @@ PlanAnimation(const fastgltf::Asset& asset, const gltfCore::BufferLoader& loadBu
                 "can stray from its curve by more than %g",
                 animationIndex, MaxPieces, CubicTolerance);
     }
-    if (std::none_of(plan.nodes.begin(), plan.nodes.end(),
-                     [](const auto& node) { return node.has_value(); }))
+    return true;
+}
+
+} // namespace
+
+bool
+PlanAnimation(const fastgltf::Asset& asset, const gltfCore::BufferLoader& loadBuffer,
+              const SceneMap& map, AnimationPlan& plan)
+{
+    plan = {};
+    plan.moved.assign(map.nodes.size(), 0);
+    plan.animations.resize(asset.animations.size());
+    for (std::size_t a = 0; a < asset.animations.size(); ++a)
     {
-        plan.endTimeCode = 0.0;
-        return true;
+        auto& values = plan.animations[a];
+        values.nodes.resize(map.nodes.size());
+        if (!readAnimation(asset, loadBuffer, map, a, values))
+        {
+            return false;
+        }
+        plan.endTimeCode = std::max(plan.endTimeCode, values.endTimeCode);
+        for (std::size_t position = 0; position < map.nodes.size(); ++position)
+        {
+            if (values.nodes[position])
+            {
+                plan.moved[position] = 1;
+                plan.hasChannels = true;
+            }
+        }
     }
-    plan.index = animationIndex;
-    return placeAtTimeZero(asset, map, plan);
+
+    // Every animation has the stated values of every node that any animation moves.
+    plan.animated.assign(map.nodes.size(), 0);
+    for (std::size_t position = 0; position < map.nodes.size(); ++position)
+    {
+        const auto& mapped = map.nodes[position];
+        plan.animated[position] =
+            plan.moved[position] || (mapped.parent && plan.animated[*mapped.parent]);
+        if (!plan.moved[position])
+        {
+            continue;
+        }
+        // A moved node has TRS, and MapScene has checked that its rotation is close to unit length.
+        const auto& trs = std::get<fastgltf::TRS>(asset.nodes[mapped.index].transform);
+        const auto& q = trs.rotation;
+        const GfVec3d translation(trs.translation.x(), trs.translation.y(), trs.translation.z());
+        const GfQuatf rotation(GfQuatd(q.w(), q.x(), q.y(), q.z()).GetNormalized());
+        const GfVec3f scale(trs.scale.x(), trs.scale.y(), trs.scale.z());
+        for (auto& values : plan.animations)
+        {
+            auto& node = values.nodes[position];
+            if (!node)
+            {
+                node.emplace();
+            }
+            node->statedTranslation = translation;
+            node->statedRotation = rotation;
+            node->statedScale = scale;
+        }
+    }
+    for (std::size_t a = 0; a < plan.animations.size(); ++a)
+    {
+        if (!placeAtTimeZero(asset, map, a, plan.animations[a]))
+        {
+            return false;
+        }
+    }
+    return true;
 }
 
 } // namespace gltfUsd

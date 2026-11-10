@@ -17,8 +17,10 @@
 #include "pxr/base/vt/array.h"
 #include "pxr/base/vt/value.h"
 #include "pxr/usd/sdf/copyUtils.h"
+#include "pxr/usd/usd/editContext.h"
 #include "pxr/usd/usd/prim.h"
 #include "pxr/usd/usd/stage.h"
+#include "pxr/usd/usd/variantSets.h"
 #include "pxr/usd/usdGeom/metrics.h"
 #include "pxr/usd/usdGeom/scope.h"
 #include "pxr/usd/usdGeom/tokens.h"
@@ -27,11 +29,13 @@
 
 #include <fastgltf/core.hpp>
 
+#include <algorithm>
 #include <condition_variable>
 #include <deque>
 #include <exception>
 #include <future>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -89,13 +93,154 @@ setValues(const UsdGeomXformOp& op, const T& stated, const TimeSamples<T>& sampl
     return true;
 }
 
-// glTF composes T * R * S, which is the order of these operations.
-bool
-authorAnimatedTransform(const UsdGeomXform& xform, const NodeAnimation& animation)
+// A camera or light below a node that an animation moves, and its correction for each animation.
+struct AnimatedCorrection
 {
-    return setValues(xform.AddTranslateOp(), animation.statedTranslation, animation.translation) &&
-           setValues(xform.AddOrientOp(), animation.statedRotation, animation.rotation) &&
-           setValues(xform.AddScaleOp(), animation.statedScale, animation.scale);
+    SdfPath prim;
+    std::vector<GfMatrix4d> corrections; // By animation
+};
+
+using Correction = std::optional<GfMatrix4d> (*)(std::size_t, std::size_t, const GfMatrix4d&);
+
+bool
+isIdentity(const GfMatrix4d& matrix)
+{
+    return GfIsClose(matrix, GfMatrix4d(1.0), 1e-6);
+}
+
+// The transform of a camera's or light's prim, `correct`ed for its node's scale. Without an
+// animation that moves the node or its ancestors, it is a transform operation, unless it is the
+// identity. Otherwise the operation has no value outside the variants, and each animation's
+// correction is added to `animated` for its variant, unless every one is the identity.
+bool
+authorCorrection(const UsdPrim& prim, std::size_t position, std::size_t index, Correction correct,
+                 const SceneMap& map, const AnimationPlan& plan,
+                 std::vector<AnimatedCorrection>& animated)
+{
+    if (!prim)
+    {
+        return false;
+    }
+    const auto nodeIndex = map.nodes[position].index;
+    const bool moves = plan.animated[position];
+    std::vector<GfMatrix4d> corrections;
+    for (std::size_t a = 0; a < (moves ? plan.animations.size() : 1); ++a)
+    {
+        const auto correction =
+            correct(nodeIndex, index,
+                    moves ? plan.animations[a].world[position] : map.nodes[position].world);
+        if (!correction)
+        {
+            return false;
+        }
+        corrections.push_back(*correction);
+    }
+    if (std::all_of(corrections.begin(), corrections.end(), isIdentity))
+    {
+        return true;
+    }
+    const auto op = UsdGeomXformable(prim).AddTransformOp();
+    if (!op || (!moves && !op.Set(corrections.front())))
+    {
+        TF_RUNTIME_ERROR("Could not author the transform of %s", prim.GetPath().GetText());
+        return false;
+    }
+    if (moves)
+    {
+        animated.push_back({prim.GetPath(), std::move(corrections)});
+    }
+    return true;
+}
+
+// The ordered operations of the prim at `path`, or none unless there are `count`.
+std::vector<UsdGeomXformOp>
+orderedOps(const UsdStageRefPtr& stage, const SdfPath& path, std::size_t count)
+{
+    bool resetsXformStack = false;
+    auto ops = UsdGeomXformable(stage->GetPrimAtPath(path)).GetOrderedXformOps(&resetsXformStack);
+    if (ops.size() != count)
+    {
+        return {};
+    }
+    return ops;
+}
+
+// The variant set `animation` on the asset's root, with each animation's values in its variant:
+// the stated values and time samples of each node that any animation moves, cameras' and lights'
+// corrections, and the animation's end and name in the root's customData. Selects the first.
+bool
+authorAnimations(const UsdStageRefPtr& stage, const SdfPath& root, const SceneMap& map,
+                 const AnimationPlan& plan, const std::vector<AnimatedCorrection>& corrections)
+{
+    if (plan.animations.empty())
+    {
+        return true;
+    }
+    static const TfToken setName("animation");
+    if (!stage->GetPrimAtPath(root).GetVariantSets().AddVariantSet(setName))
+    {
+        TF_RUNTIME_ERROR("Could not author the glTF animation variant set");
+        return false;
+    }
+    auto variantName = [](std::size_t a) { return "Animation_" + std::to_string(a); };
+    for (std::size_t a = 0; a < plan.animations.size(); ++a)
+    {
+        const auto& values = plan.animations[a];
+        auto fail = [&]()
+        {
+            TF_RUNTIME_ERROR("Could not author glTF animation %zu", a);
+            return false;
+        };
+        // Selecting the variant recomposes the stage, so prims are looked up by path below.
+        auto variantSet = stage->GetPrimAtPath(root).GetVariantSet(setName);
+        if (!variantSet.AddVariant(variantName(a)) ||
+            !variantSet.SetVariantSelection(variantName(a)))
+        {
+            return fail();
+        }
+        const UsdEditContext context(variantSet.GetVariantEditContext());
+        for (std::size_t position = 0; position < map.nodes.size(); ++position)
+        {
+            if (!plan.moved[position])
+            {
+                continue;
+            }
+            const auto& node = *values.nodes[position];
+            // glTF composes T * R * S, which is the order of these operations.
+            const auto ops = orderedOps(stage, map.nodes[position].path, 3);
+            if (ops.empty() || !setValues(ops[0], node.statedTranslation, node.translation) ||
+                !setValues(ops[1], node.statedRotation, node.rotation) ||
+                !setValues(ops[2], node.statedScale, node.scale))
+            {
+                return fail();
+            }
+        }
+        for (const auto& correction : corrections)
+        {
+            const auto ops = orderedOps(stage, correction.prim, 1);
+            if (ops.empty() || !ops[0].Set(correction.corrections[a]))
+            {
+                return fail();
+            }
+        }
+        // A failure here is an error, which authorScene's mark catches.
+        const auto asset = stage->GetPrimAtPath(root);
+        if (!asset)
+        {
+            return fail();
+        }
+        asset.SetCustomDataByKey(TfToken("gltf:endTimeCode"), VtValue(values.endTimeCode));
+        if (!values.name.empty())
+        {
+            asset.SetCustomDataByKey(TfToken("gltf:name"), VtValue(values.name));
+        }
+    }
+    if (!stage->GetPrimAtPath(root).GetVariantSet(setName).SetVariantSelection(variantName(0)))
+    {
+        TF_RUNTIME_ERROR("Could not select glTF animation 0");
+        return false;
+    }
+    return true;
 }
 
 SdfLayerRefPtr
@@ -128,7 +273,7 @@ authorScene(const fastgltf::Asset& asset, const std::string& sourcePath,
         TF_RUNTIME_ERROR("Could not author glTF layer scopes");
         return {};
     }
-    auto map = MapScene(asset, selectedIndex, scenes.GetPath());
+    const auto map = MapScene(asset, selectedIndex, scenes.GetPath());
     AnimationPlan animation;
     if (!map || !PlanAnimation(asset, loadBuffer, *map, animation))
     {
@@ -150,7 +295,7 @@ authorScene(const fastgltf::Asset& asset, const std::string& sourcePath,
         TF_RUNTIME_ERROR("Could not author glTF stage metrics");
         return {};
     }
-    if (animation.index)
+    if (animation.hasChannels)
     {
         // glTF's timeline starts at 0 seconds.
         stage->SetTimeCodesPerSecond(TimeCodesPerSecond);
@@ -160,6 +305,7 @@ authorScene(const fastgltf::Asset& asset, const std::string& sourcePath,
     }
 
     MaterialAuthor materials(asset, sourcePath, loadBuffer, stage, mtl.GetPath());
+    std::vector<AnimatedCorrection> corrections;
     for (std::size_t position = 0; position < map->nodes.size(); ++position)
     {
         const auto& mapped = map->nodes[position];
@@ -172,9 +318,10 @@ authorScene(const fastgltf::Asset& asset, const std::string& sourcePath,
             TF_RUNTIME_ERROR("Could not author glTF node %zu", index);
             return {};
         }
-        const auto& moved = animation.nodes[position];
-        if (moved ? !authorAnimatedTransform(xform, *moved)
-                  : !xform.AddTransformOp().Set(mapped.local))
+        // A moved node's values are in each animation's variant.
+        if (animation.moved[position]
+                ? !xform.AddTranslateOp() || !xform.AddOrientOp() || !xform.AddScaleOp()
+                : !xform.AddTransformOp().Set(mapped.local))
         {
             TF_RUNTIME_ERROR("Could not author glTF node %zu transform", index);
             return {};
@@ -185,15 +332,22 @@ authorScene(const fastgltf::Asset& asset, const std::string& sourcePath,
             return {};
         }
         if (node.cameraIndex &&
-            !AuthorCamera(asset, index, *node.cameraIndex, xform.GetPrim(), mapped.world))
+            !authorCorrection(AuthorCamera(asset, *node.cameraIndex, xform.GetPrim()), position,
+                              *node.cameraIndex, CameraCorrection, *map, animation, corrections))
         {
             return {};
         }
         if (node.lightIndex &&
-            !AuthorLight(asset, index, *node.lightIndex, xform.GetPrim(), mapped.world))
+            !authorCorrection(AuthorLight(asset, index, *node.lightIndex, xform.GetPrim()),
+                              position, *node.lightIndex, LightCorrection, *map, animation,
+                              corrections))
         {
             return {};
         }
+    }
+    if (!authorAnimations(stage, root.GetPath(), *map, animation, corrections))
+    {
+        return {};
     }
     if (!mark.IsClean())
     {
