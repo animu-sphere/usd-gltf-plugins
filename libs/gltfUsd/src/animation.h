@@ -14,6 +14,7 @@
 #include <fastgltf/types.hpp>
 
 #include <cstddef>
+#include <map>
 #include <optional>
 #include <string>
 #include <utility>
@@ -52,6 +53,8 @@ struct AnimationValues
     // By position in SceneMap::nodes; nullopt for a node that no animation moves. A node that
     // another animation moves has its stated values here, without time samples.
     std::vector<std::optional<NodeAnimation>> nodes;
+    // By position in SceneMap::nodes. Empty or absent for nodes without a weight channel.
+    std::map<std::size_t, TimeSamples<pxr::VtFloatArray>> weights;
     // By position in SceneMap::nodes, the node's transform relative to the asset at time 0.
     std::vector<pxr::GfMatrix4d> world;
 };

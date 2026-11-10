@@ -472,12 +472,30 @@ def color_document(extension, component_type, components, external=False):
     return document, binary
 
 
-def unsupported_document(extension, feature):
-    document, binary = mesh_document("glb")
-    del document["nodes"][0]["mesh"]
-    node = document["nodes"][1]
+def morph_document(static=False):
+    step = {"input": [0, 1], "output": [0, 255, 255, 0], "type": "SCALAR",
+            "componentType": 5121, "normalized": True, "interpolation": "STEP"}
+    cubic = {"input": [0.5, 1.5], "output": [0, 0, 0, 0, 4, 0, -4, 0, 0, 0.5, 0, 0],
+             "type": "SCALAR", "interpolation": "CUBICSPLINE"}
+    linear = {"input": [0, 2], "output": [-1, 0, 0, 0], "type": "SCALAR"}
+    joint = {"input": [0, 2], "output": [0, 0, 0, 4, 0, 0]}
+    nodes = [{"mesh": 0, "skin": 0, "translation": [99, 0, 0]},
+             {"mesh": 0, "weights": [0.75, -0.5], "scale": [2, 1, 1], "translation": [10, 0, 0]},
+             {"translation": [1, 0, 0]},
+             {"mesh": 0}]
+    document, binary = animation_document(
+        "glb", [step, cubic, joint], [(0, 0, "weights"), (1, 1, "weights"), (2, 2, "translation")],
+        more_animations=[([linear], [(0, 1, "weights")]), ([joint], [(0, 2, "translation")])],
+        nodes=nodes)
+    document["scenes"][0]["nodes"] = [0, 1, 2, 3]
+    document["skins"] = [{"joints": [2]}]
+    if static:
+        del document["animations"]
+        nodes[1].pop("scale")
+        nodes[1].pop("translation")
+        nodes[1]["matrix"] = [2, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 10, 0, 0, 1]
 
-    def add_accessor(data, component_type, count, accessor_type, **kwargs):
+    def add_view(data):
         nonlocal binary
         binary += b"\0" * (-len(binary) % 4)
         view = len(document["bufferViews"])
@@ -485,30 +503,41 @@ def unsupported_document(extension, feature):
             "buffer": 0, "byteOffset": len(binary), "byteLength": len(data),
         })
         binary += data
+        return view
+
+    def add_accessor(component_type, count, accessor_type, **kwargs):
         index = len(document["accessors"])
         document["accessors"].append({
-            "bufferView": view, "componentType": component_type, "count": count,
+            "componentType": component_type, "count": count,
             "type": accessor_type, **kwargs,
         })
         return index
 
-    if feature in ("morph target", "mesh weights", "node weights"):
-        delta = add_accessor(struct.pack("<9f", *([0.0] * 9)), 5126, 3, "VEC3",
-                             min=[0, 0, 0], max=[0, 0, 0])
-        for item in document["meshes"][0]["primitives"]:
-            item["targets"] = [{"POSITION": delta}]
-        if feature == "mesh weights":
-            document["meshes"][0]["weights"] = [0.5]
-        elif feature == "node weights":
-            node["weights"] = [0.5]
-    else:
-        raise ValueError(feature)
-
+    if not static:
+        output = document["animations"][1]["samplers"][0]["output"]
+        document["accessors"][output]["sparse"] = {
+            "count": 1, "indices": {"bufferView": add_view(b"\x02"), "componentType": 5121},
+            "values": {"bufferView": add_view(struct.pack("<f", 2))},
+        }
+    first = add_accessor(5126, 3, "VEC3", min=[0, 0, 0], max=[0, 0, 2], sparse={
+        "count": 1, "indices": {"bufferView": add_view(b"\x01"), "componentType": 5121},
+        "values": {"bufferView": add_view(struct.pack("<3f", 0, 0, 2))},
+    })
+    second = add_accessor(5126, 3, "VEC3", min=[0, 1, 0], max=[0, 1, 0],
+                          bufferView=add_view(struct.pack("<9f", *([0, 1, 0] * 3))))
+    normal = add_accessor(5126, 3, "VEC3",
+                          bufferView=add_view(struct.pack("<9f", *([0, 0.5, 0] * 3))))
+    joints = add_accessor(5121, 3, "VEC4", bufferView=add_view(bytes(12)))
+    weights = add_accessor(5121, 3, "VEC4", normalized=True,
+                           bufferView=add_view(bytes([255, 0, 0, 0] * 3)))
+    mesh = document["meshes"][0]
+    mesh["weights"] = [0.25, 0.5]
+    for primitive in mesh["primitives"]:
+        primitive["attributes"].update(JOINTS_0=joints, WEIGHTS_0=weights)
+        primitive["targets"] = [{"POSITION": first}, {"POSITION": second}]
+        if "NORMAL" in primitive["attributes"]:
+            primitive["targets"][1]["NORMAL"] = normal
     document["buffers"][0]["byteLength"] = len(binary)
-    if extension == "gltf":
-        document["buffers"][0]["uri"] = "data:application/octet-stream;base64," + (
-            base64.b64encode(binary).decode())
-        return document, None
     return document, binary
 
 
@@ -5769,12 +5798,12 @@ class FileFormatTest(unittest.TestCase):
             "repeated target": (None, lambda d: d["animations"][0]["channels"].append(dict(channel(d, 1))),
                                 "channel 3: targets the same node and path"),
             "weights": (None, lambda d: channel(d, 0)["target"].update(path="weights"),
-                        "channel 0: morph weight animation is not supported yet"),
+                        "channel 0: morph weight animation requires a mesh with targets"),
             # Every animation is validated, not only the first.
             "later animation": (None, lambda d: d["animations"].append(
                                     {"samplers": [dict(d["animations"][0]["samplers"][0])],
                                      "channels": [{"sampler": 0, "target": {"node": 0, "path": "weights"}}]}),
-                                "glTF animation 1 channel 0: morph weight animation is not supported yet"),
+                                "glTF animation 1 channel 0: morph weight animation requires a mesh with targets"),
             "matrix": (None, lambda d: d["nodes"][1].update(rotation=None) or d["nodes"][1].pop("rotation")
                        or d["nodes"][1].update(matrix=[1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]),
                        "channel 1: animates node 1, which has a matrix"),
@@ -5999,11 +6028,112 @@ class FileFormatTest(unittest.TestCase):
             write_asset(path, document, binary)
             self.assertTrue(layer.Reload(True))
 
-    def test_unsupported_features_fail_without_publishing(self):
+    def test_morph_deformation_and_variants(self):
+        scene = "/Asset/scenes/Scene_0"
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            for static in (False, True):
+                document, blob = morph_document(static)
+                # Exercise external buffers as well as GLB.
+                path = root / ("animated.gltf" if not static else "static.glb")
+                if not static:
+                    (root / "mesh.bin").write_bytes(blob)
+                    document["buffers"][0]["uri"] = "mesh.bin"
+                write_asset(path, document, blob)
+                stage = Usd.Stage.Open(str(path))
+                variants = stage.GetDefaultPrim().GetVariantSet("animation")
+                self.assertEqual(variants.GetVariantSelection(), "" if static else "Animation_0")
+                self.assertEqual(stage.GetEndTimeCode(), 0 if static else 48)
+                for selection in ([None] if static else [0, 1, 2, 0]):
+                    if selection is not None:
+                        with Usd.EditContext(stage, stage.GetSessionLayer()):
+                            self.assertTrue(variants.SetVariantSelection(f"Animation_{selection}"))
+                    cache = UsdSkel.Cache()
+                    self.assertTrue(cache.Populate(UsdSkel.Root.Get(stage, scene), Usd.PrimDefaultPredicate))
+                    self.assertEqual([str(p.GetPath()) for p in stage.Traverse() if p.IsA(UsdSkel.Root)],
+                                     [scene])
+                    for node in (0, 1, 3):
+                        skeleton_path = f"{scene}/" + ("Skeleton_0" if node == 0 else f"Node_{node}/MorphSkeleton")
+                        skeleton = UsdSkel.Skeleton.Get(stage, skeleton_path)
+                        skel = cache.GetSkelQuery(skeleton)
+                        self.assertTrue(skel)
+                        for primitive in (0, 1):
+                            mesh_path = f"{scene}/Node_{node}/Mesh_0/Primitive_{primitive}"
+                            mesh = UsdGeom.Mesh.Get(stage, mesh_path)
+                            binding = UsdSkel.BindingAPI(mesh.GetPrim())
+                            self.assertEqual(binding.GetBlendShapeTargetsRel().GetTargets(),
+                                             [Sdf.Path(f"{mesh_path}/BlendShape_{i}") for i in (0, 1)])
+                            blend = UsdSkel.BlendShapeQuery(binding)
+                            if primitive == 0:
+                                self.assertEqual(blend.GetBlendShape(1).GetNormalOffsetsAttr().Get()[0],
+                                                 Gf.Vec3f(0, 0.5, 0))
+                            else:
+                                self.assertFalse(mesh.GetNormalsAttr().HasAuthoredValue())
+                            skin = cache.GetSkinningQuery(mesh.GetPrim())
+                            self.assertEqual(skin.HasJointInfluences(), node == 0)
+                            for seconds in (None, 0, 0.75, 1 - 1e-9, 1, 1.25, 3):
+                                time = (Usd.TimeCode.Default() if seconds is None else
+                                        Usd.TimeCode(seconds * 24))
+                                a, b = (0.75, -0.5) if node == 1 else (0.25, 0.5)
+                                joint_x = 1
+                                if seconds is not None:
+                                    if selection == 0 and node == 0:
+                                        a = float(seconds >= 1)
+                                        b = 1 - a
+                                    if selection == 0 and node == 1:
+                                        u = min(max(seconds - 0.5, 0), 1)
+                                        a, b = hermite([0, 0], [4, 0], [-4, 0], [0, 0.5], 1, u)
+                                    if selection == 1 and node == 1:
+                                        a, b = -1 + 1.5 * min(seconds, 2), 0
+                                    if selection in (0, 2):
+                                        joint_x = 2 * min(seconds, 2)
+                                weights = skin.GetBlendShapeMapper().Remap(
+                                    skel.GetAnimQuery().ComputeBlendShapeWeights(time))
+                                points = Vt.Vec3fArray(mesh.GetPointsAttr().Get())
+                                self.assertTrue(blend.ComputeDeformedPoints(
+                                    *blend.ComputeSubShapeWeights(weights),
+                                    blend.ComputeBlendShapePointIndices(),
+                                    blend.ComputeSubShapePointOffsets(), points))
+                                lo, hi = mesh.GetExtentAttr().Get()
+                                extent = Gf.Range3f(lo, hi)
+                                self.assertTrue(all(extent.Contains(point) for point in points))
+                                if node == 0:
+                                    self.assertTrue(skin.ComputeSkinnedPoints(
+                                        skel.ComputeSkinningTransforms(time), points, time))
+                                world = UsdGeom.XformCache(time).GetLocalToWorldTransform(
+                                    skeleton.GetPrim() if node == 0 else mesh.GetPrim())
+                                x = joint_x + 1 if node == 0 else (12 if node == 1 else 1)
+                                expected = Gf.Vec3d(x, b, 2 * a)
+                                self.assertTrue(Gf.IsClose(world.Transform(Gf.Vec3d(points[1])), expected, 3e-4),
+                                                (selection, node, seconds, points[1], expected))
+
+            document, blob = morph_document(static=True)
+            del document["nodes"][0]["skin"]
+            path = root / "morph_only.glb"
+            write_asset(path, document, blob)
+            stage = Usd.Stage.Open(str(path))
+            node = stage.GetPrimAtPath(f"{scene}/Node_1")
+            self.assertTrue(node.IsA(UsdSkel.Root))
+            bounds = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_])
+            self.assertTrue(bounds.ComputeWorldBound(node).ComputeAlignedRange().Contains(
+                Gf.Vec3d(12, -0.5, 1.5)))
+
+    def test_morph_failures_preserve_layer(self):
+        def target(d):
+            return d["meshes"][0]["primitives"][0]["targets"][0]
+
         cases = {
-            "morph target": "morph targets are not supported",
-            "mesh weights": "mesh 0: morph weights are not supported",
-            "node weights": "node 1: morph weights are not supported",
+            "unsupported target": (lambda d: target(d).update(TANGENT=0), "morph target attribute TANGENT"),
+            "different counts": (lambda d: d["meshes"][0]["primitives"][1]["targets"].pop(),
+                                 "different morph target counts"),
+            "node weights": (lambda d: d["nodes"][1].update(weights=[1]), "morph weight count"),
+            "mesh weights": (lambda d: d["meshes"][0].update(weights=[1e40, 0]), "has invalid data"),
+            "vertex count": (lambda d: d["accessors"][target(d)["POSITION"]].update(count=4),
+                             "morph target accessor count"),
+            "sparse offset": (lambda d: d["accessors"][target(d)["POSITION"]]["sparse"]["values"]
+                              .update(byteOffset=4), "sparse accessor has an invalid bufferView"),
+            "weight sampler count": (lambda d: d["accessors"][d["animations"][1]["samplers"][0]["output"]]
+                                     .update(count=3), "output count does not match"),
         }
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
@@ -6014,9 +6144,13 @@ class FileFormatTest(unittest.TestCase):
                 stage = Usd.Stage.Open(str(path))
                 layer = stage.GetRootLayer()
                 before = layer_text(layer)
-                for feature, message in cases.items():
+                for feature, (mutate, message) in cases.items():
                     with self.subTest(extension=extension, feature=feature):
-                        invalid, invalid_binary = unsupported_document(extension, feature)
+                        invalid, invalid_binary = morph_document()
+                        mutate(invalid)
+                        if extension == "gltf":
+                            invalid["buffers"][0]["uri"] = ("data:application/octet-stream;base64," +
+                                                             base64.b64encode(invalid_binary).decode())
                         initial_path = root / (feature + "." + extension)
                         write_asset(initial_path, invalid, invalid_binary)
                         with self.assertRaisesRegex(Tf.ErrorException, message):

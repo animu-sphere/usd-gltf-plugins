@@ -206,6 +206,15 @@ sampleAt(const TimeSamples<T>& samples, const T& stated, double code)
     {
         return GfSlerp(fraction, from, to);
     }
+    else if constexpr (std::is_same_v<T, VtFloatArray>)
+    {
+        VtFloatArray weights(from.size());
+        for (std::size_t i = 0; i < weights.size(); ++i)
+        {
+            weights[i] = float(std::lerp(double(from[i]), double(to[i]), fraction));
+        }
+        return weights;
+    }
     else
     {
         return GfLerp(fraction, from, to);
@@ -252,10 +261,6 @@ MapSkins(const fastgltf::Asset& asset, const gltfCore::BufferLoader& loadBuffer,
             entry->second = entry->second.GetCommonPrefix(mapped.mesh);
         }
     }
-    if (users.empty())
-    {
-        return true;
-    }
     std::vector<char> isJoint(map.nodes.size(), 0);
     std::vector<char> keep(map.nodes.size(), 0);
     for (const auto& [index, usersRoot] : users)
@@ -268,6 +273,23 @@ MapSkins(const fastgltf::Asset& asset, const gltfCore::BufferLoader& loadBuffer,
             return false;
         }
         map.skelRoots.push_back(skin.path.GetCommonPrefix(usersRoot));
+    }
+    for (auto& mapped : map.nodes)
+    {
+        if (mapped.blendShapes.empty())
+        {
+            continue;
+        }
+        const auto skin = asset.nodes[mapped.index].skinIndex;
+        if (skin)
+        {
+            mapped.morphSkeleton = map.skins.at(*skin).path;
+        }
+        else
+        {
+            mapped.morphSkeleton = mapped.path.AppendChild(TfToken("MorphSkeleton"));
+            map.skelRoots.push_back(mapped.path);
+        }
     }
     SdfPath::RemoveDescendentPaths(&map.skelRoots);
 
@@ -293,6 +315,24 @@ MapSkins(const fastgltf::Asset& asset, const gltfCore::BufferLoader& loadBuffer,
 bool
 AuthorSkeletons(const fastgltf::Asset& asset, const SceneMap& map, const UsdStagePtr& stage)
 {
+    for (const auto& node : map.nodes)
+    {
+        if (!node.morphSkeleton.IsEmpty() && !asset.nodes[node.index].skinIndex)
+        {
+            // UsdSkelCache resolves blend shape weights through a skeleton and SkelRoot uses
+            // its joints for bounds. Without influences the mesh still uses its own transform.
+            const auto skeleton = UsdSkelSkeleton::Define(stage, node.morphSkeleton);
+            const VtMatrix4dArray identity(1, GfMatrix4d(1.0));
+            if (!skeleton || !skeleton.CreateJointsAttr().Set(VtTokenArray{TfToken("Root")}) ||
+                !skeleton.CreateBindTransformsAttr().Set(identity) ||
+                !skeleton.CreateRestTransformsAttr().Set(identity))
+            {
+                TF_RUNTIME_ERROR("Could not author glTF morph skeleton at %s",
+                                 node.morphSkeleton.GetText());
+                return false;
+            }
+        }
+    }
     for (const auto& [index, skin] : map.skins)
     {
         const auto skeleton = UsdSkelSkeleton::Define(stage, skin.path);
@@ -322,45 +362,13 @@ AuthorSkeletons(const fastgltf::Asset& asset, const SceneMap& map, const UsdStag
     return true;
 }
 
-bool
-AuthorJointAnimation(const SceneMap& map, const AnimationValues& values, const UsdStagePtr& stage,
-                     const SdfPath& root, const TfToken& name)
+namespace
 {
-    if (map.skins.empty())
-    {
-        return true;
-    }
-    std::vector<TfToken> moved(map.nodes.size());
-    std::vector<SdfPath> skeletons;
-    for (const auto& entry : map.skins)
-    {
-        const auto& skin = entry.second;
-        bool animated = false;
-        for (const auto& joint : skin.joints)
-        {
-            const auto& node = values.nodes[joint.position];
-            if (node &&
-                (!node->translation.empty() || !node->rotation.empty() || !node->scale.empty()))
-            {
-                moved[joint.position] = joint.token;
-                animated = true;
-            }
-        }
-        if (animated)
-        {
-            skeletons.push_back(skin.path);
-        }
-    }
-    if (skeletons.empty())
-    {
-        return true;
-    }
-    const auto scope = UsdGeomScope::Define(stage, root.AppendChild(TfToken("animations")));
-    if (!scope)
-    {
-        return false;
-    }
-    const auto animation = UsdSkelAnimation::Define(stage, scope.GetPath().AppendChild(name));
+
+bool
+authorJointValues(const SceneMap& map, const AnimationValues& values,
+                  const UsdSkelAnimation& animation, const std::vector<TfToken>& moved)
+{
     VtTokenArray joints;
     std::vector<std::size_t> positions;
     std::set<double> times;
@@ -376,7 +384,11 @@ AuthorJointAnimation(const SceneMap& map, const AnimationValues& values, const U
             addSampleTimes(node.scale, times);
         }
     }
-    if (!animation || !animation.CreateJointsAttr().Set(joints))
+    if (joints.empty())
+    {
+        return true;
+    }
+    if (!animation.CreateJointsAttr().Set(joints))
     {
         return false;
     }
@@ -417,6 +429,114 @@ AuthorJointAnimation(const SceneMap& map, const AnimationValues& values, const U
         {
             return false;
         }
+    }
+    return true;
+}
+
+bool
+authorMorphValues(const SceneMap& map, const AnimationValues& values,
+                  const UsdSkelAnimation& animation)
+{
+    VtTokenArray shapes;
+    VtFloatArray defaults;
+    std::vector<std::size_t> positions;
+    std::set<double> times;
+    for (std::size_t p = 0; p < map.nodes.size(); ++p)
+    {
+        const auto& node = map.nodes[p];
+        if (node.blendShapes.empty())
+        {
+            continue;
+        }
+        positions.push_back(p);
+        for (std::size_t i = 0; i < node.blendShapes.size(); ++i)
+        {
+            shapes.push_back(node.blendShapes[i]);
+            defaults.push_back(node.morphWeights[i]);
+        }
+        if (const auto channel = values.weights.find(p); channel != values.weights.end())
+        {
+            addSampleTimes(channel->second, times);
+        }
+    }
+    if (shapes.empty())
+    {
+        return true;
+    }
+    const auto attr = animation.CreateBlendShapeWeightsAttr();
+    if (!animation.CreateBlendShapesAttr().Set(shapes) || !attr.Set(defaults))
+    {
+        return false;
+    }
+    for (const auto time : times)
+    {
+        VtFloatArray weights;
+        weights.reserve(shapes.size());
+        for (const auto p : positions)
+        {
+            const auto& stated = map.nodes[p].morphWeights;
+            const auto channel = values.weights.find(p);
+            const auto sample =
+                channel == values.weights.end() ? stated : sampleAt(channel->second, stated, time);
+            for (const auto weight : sample)
+            {
+                weights.push_back(weight);
+            }
+        }
+        if (!attr.Set(weights, UsdTimeCode(time)))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+} // namespace
+
+bool
+AuthorSkelAnimation(const SceneMap& map, const AnimationValues& values, const UsdStagePtr& stage,
+                    const SdfPath& root, const TfToken& name)
+{
+    std::set<SdfPath> skeletons;
+    for (const auto& node : map.nodes)
+    {
+        if (!node.morphSkeleton.IsEmpty())
+        {
+            skeletons.insert(node.morphSkeleton);
+        }
+    }
+    std::vector<TfToken> moved(values.nodes.size());
+    if (!values.nodes.empty())
+    {
+        for (const auto& entry : map.skins)
+        {
+            const auto& skin = entry.second;
+            for (const auto& joint : skin.joints)
+            {
+                const auto& node = values.nodes[joint.position];
+                if (node &&
+                    (!node->translation.empty() || !node->rotation.empty() || !node->scale.empty()))
+                {
+                    moved[joint.position] = joint.token;
+                    skeletons.insert(skin.path);
+                }
+            }
+        }
+    }
+    if (skeletons.empty())
+    {
+        return true;
+    }
+    const auto scope = UsdGeomScope::Define(stage, root.AppendChild(TfToken("animations")));
+    if (!scope)
+    {
+        return false;
+    }
+    const auto animation = UsdSkelAnimation::Define(stage, scope.GetPath().AppendChild(name));
+    if (!animation || !authorJointValues(map, values, animation, moved) ||
+        !authorMorphValues(map, values, animation))
+    {
+        return false;
     }
     for (const auto& path : skeletons)
     {

@@ -13,6 +13,8 @@ namespace gltfUsd
 {
 
 class MaterialAuthor;
+struct AnimationPlan;
+struct MappedNode;
 struct MappedSkin;
 
 // Authors the mesh as an Xform at `path`, with a Mesh child for each primitive, bound to its
@@ -26,5 +28,9 @@ struct MappedSkin;
                                    const pxr::UsdStagePtr& stage, const pxr::SdfPath& path,
                                    const MappedSkin& skin,
                                    const gltfCore::BufferLoader& loadBuffer);
+
+[[nodiscard]] bool BindMorphMesh(const fastgltf::Mesh& source, const pxr::UsdStagePtr& stage,
+                                 const MappedNode& node, const AnimationPlan& animations,
+                                 std::size_t position);
 
 } // namespace gltfUsd

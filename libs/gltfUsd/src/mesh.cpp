@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "mesh.h"
 
+#include "animation.h"
 #include "component.h"
 #include "gltfCore/accessor.h"
 #include "material.h"
@@ -9,6 +10,7 @@
 #include <fastgltf/core.hpp>
 
 #include "pxr/base/gf/vec2f.h"
+#include "pxr/base/gf/range3d.h"
 #include "pxr/base/gf/vec3f.h"
 #include "pxr/base/gf/vec4f.h"
 #include "pxr/base/tf/diagnostic.h"
@@ -20,6 +22,7 @@
 #include "pxr/usd/usdGeom/tokens.h"
 #include "pxr/usd/usdGeom/xform.h"
 #include "pxr/usd/usdSkel/bindingAPI.h"
+#include "pxr/usd/usdSkel/blendShape.h"
 
 #include <algorithm>
 #include <bit>
@@ -27,6 +30,7 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -133,18 +137,30 @@ selectVertexFormat(const fastgltf::Asset& asset, std::size_t index, VertexAttrib
 
 bool
 readVectors(const fastgltf::Asset& asset, std::size_t index, VertexAttribute attribute,
-            VtVec3fArray& values, std::string& error, const gltfCore::BufferLoader& loadBuffer)
+            VtVec3fArray& values, std::string& error, const gltfCore::BufferLoader& loadBuffer,
+            std::optional<std::size_t> morphCount = std::nullopt)
 {
     VertexFormat format;
     if (!selectVertexFormat(asset, index, attribute, format, error))
     {
         return false;
     }
+    if (morphCount && (format.type == fastgltf::ComponentType::UnsignedByte ||
+                       format.type == fastgltf::ComponentType::UnsignedShort))
+    {
+        error = "quantized morph deltas require signed components";
+        return false;
+    }
     gltfCore::AccessorData data;
     if (!gltfCore::GetAccessorData(asset, index, fastgltf::AccessorType::Vec3, format.type,
                                    format.size * 3, true, data, error, loadBuffer,
-                                   format.normalized))
+                                   format.normalized, morphCount.has_value()))
     {
+        return false;
+    }
+    if (morphCount && data.count != *morphCount)
+    {
+        error = "morph target accessor count does not match vertex count";
         return false;
     }
     if (data.count > std::size_t(std::numeric_limits<int>::max()))
@@ -155,11 +171,16 @@ readVectors(const fastgltf::Asset& asset, std::size_t index, VertexAttribute att
     values.resize(data.count);
     for (std::size_t i = 0; i < data.count; ++i)
     {
+        const auto* element = data.Element(i);
+        if (!element)
+        {
+            values[i] = GfVec3f(0);
+            continue;
+        }
         for (std::size_t component = 0; component < 3; ++component)
         {
-            const float value =
-                readRealComponent(data.bytes.data() + i * data.stride + component * format.size,
-                                  format.size, format.type, format.normalized);
+            const float value = readRealComponent(element + component * format.size, format.size,
+                                                  format.type, format.normalized);
             if (!std::isfinite(value))
             {
                 error = "vertex attribute contains a non-finite value";
@@ -418,15 +439,72 @@ unsupportedPrimitiveContent(const fastgltf::Primitive& primitive)
     default:
         break;
     }
-    if (!primitive.targets.empty())
-    {
-        return "morph targets are not supported";
-    }
     if (primitive.dracoCompression)
     {
         return "KHR_draco_mesh_compression is not supported";
     }
     return primitive.mappings.empty() ? "" : "KHR_materials_variants is not supported";
+}
+
+bool
+authorMorphTargets(const fastgltf::Asset& asset, const fastgltf::Primitive& primitive,
+                   const UsdGeomMesh& mesh, std::size_t pointCount, bool hasNormals,
+                   const gltfCore::BufferLoader& loadBuffer, std::string& error)
+{
+    SdfPathVector paths;
+    for (std::size_t i = 0; i < primitive.targets.size(); ++i)
+    {
+        VtVec3fArray offsets, normals;
+        for (const auto& attribute : primitive.targets[i])
+        {
+            const bool position = attribute.name == "POSITION";
+            if (!position && attribute.name != "NORMAL")
+            {
+                error = "unsupported morph target attribute " + attribute.name;
+                return false;
+            }
+            auto& values = position ? offsets : normals;
+            if (!values.empty() || (!position && !hasNormals))
+            {
+                error = "repeated or missing base attribute for morph target " + attribute.name;
+                return false;
+            }
+            if (!readVectors(asset, attribute.accessorIndex,
+                             position ? VertexAttribute::Position : VertexAttribute::Normal, values,
+                             error, loadBuffer, pointCount))
+            {
+                return false;
+            }
+        }
+        if (offsets.empty() && normals.empty())
+        {
+            error = "morph target has no attributes";
+            return false;
+        }
+        const auto path = mesh.GetPath().AppendChild(TfToken("BlendShape_" + std::to_string(i)));
+        const auto shape = UsdSkelBlendShape::Define(mesh.GetPrim().GetStage(), path);
+        if (offsets.empty())
+        {
+            offsets.resize(pointCount, GfVec3f(0));
+        }
+        if (!shape || !shape.CreateOffsetsAttr().Set(offsets) ||
+            (!normals.empty() && !shape.CreateNormalOffsetsAttr().Set(normals)))
+        {
+            error = "could not author USD blend shape";
+            return false;
+        }
+        paths.push_back(path);
+    }
+    if (!paths.empty())
+    {
+        const auto binding = UsdSkelBindingAPI::Apply(mesh.GetPrim());
+        if (!binding || !binding.CreateBlendShapeTargetsRel().SetTargets(paths))
+        {
+            error = "could not author USD blend shape targets";
+            return false;
+        }
+    }
+    return true;
 }
 
 bool
@@ -588,7 +666,8 @@ authorPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& primiti
         }
         indices = std::move(triangles);
     }
-    if (!normal)
+    const bool generateNormals = !normal && primitive.targets.empty();
+    if (generateNormals)
     {
         normals.resize(indices.size() / 3);
         for (std::size_t i = 0; i < normals.size(); ++i)
@@ -629,8 +708,10 @@ authorPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& primiti
     {
         return false;
     }
-    if (!mesh.CreateNormalsAttr().Set(normals) ||
-        !mesh.SetNormalsInterpolation(normal ? UsdGeomTokens->vertex : UsdGeomTokens->uniform))
+    // Leave absent normals on morphing meshes to the consumer so they can follow the deformation.
+    if ((normal || generateNormals) &&
+        (!mesh.CreateNormalsAttr().Set(normals) ||
+         !mesh.SetNormalsInterpolation(normal ? UsdGeomTokens->vertex : UsdGeomTokens->uniform)))
     {
         error = "could not author USD normals";
         return false;
@@ -673,7 +754,8 @@ authorPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& primiti
             return false;
         }
     }
-    return true;
+    return authorMorphTargets(asset, primitive, mesh, points.size(), normal != nullptr, loadBuffer,
+                              error);
 }
 
 // Collects the indices of a vertex attribute's numbered sets in set order.
@@ -856,9 +938,18 @@ ConvertMesh(const fastgltf::Asset& asset, std::size_t meshIndex, const pxr::UsdS
         TF_RUNTIME_ERROR("glTF mesh %zu has no primitives", meshIndex);
         return false;
     }
-    if (!source.weights.empty())
+    const auto targetCount = source.primitives.front().targets.size();
+    if (!source.weights.empty() && (source.weights.size() != targetCount ||
+                                    std::any_of(source.weights.begin(), source.weights.end(),
+                                                [](double weight)
+                                                {
+                                                    return !std::isfinite(weight) ||
+                                                           std::abs(weight) >
+                                                               std::numeric_limits<float>::max();
+                                                })))
     {
-        TF_RUNTIME_ERROR("glTF mesh %zu: morph weights are not supported yet", meshIndex);
+        TF_RUNTIME_ERROR("glTF mesh %zu: morph weights must be finite floats matching target count",
+                         meshIndex);
         return false;
     }
     const auto group = UsdGeomXform::Define(stage, path);
@@ -870,6 +961,12 @@ ConvertMesh(const fastgltf::Asset& asset, std::size_t meshIndex, const pxr::UsdS
     }
     for (std::size_t i = 0; i < source.primitives.size(); ++i)
     {
+        if (source.primitives[i].targets.size() != targetCount)
+        {
+            TF_RUNTIME_ERROR("glTF mesh %zu: primitives have different morph target counts",
+                             meshIndex);
+            return false;
+        }
         std::string error;
         if (!authorPrimitive(asset, source.primitives[i], group.GetPrim(), i, error, loadBuffer,
                              materials))
@@ -896,6 +993,93 @@ BindSkinnedMesh(const fastgltf::Asset& asset, std::size_t meshIndex, const pxr::
         {
             TF_RUNTIME_ERROR("glTF skinned mesh %zu primitive %zu at %s: %s", meshIndex, i,
                              path.GetText(), error.c_str());
+            return false;
+        }
+    }
+    return true;
+}
+
+bool
+BindMorphMesh(const fastgltf::Mesh& source, const pxr::UsdStagePtr& stage, const MappedNode& node,
+              const AnimationPlan& animations, std::size_t position)
+{
+    // UsdSkel uses the primitive's extent to pad joint-based bounds. Include the neutral mesh
+    // and every variant's weight range, since the primitive and its extent are shared by them.
+    std::vector<std::pair<double, double>> ranges;
+    for (const double weight : node.morphWeights)
+    {
+        ranges.emplace_back(std::min(0.0, weight), std::max(0.0, weight));
+    }
+    for (const auto& animation : animations.animations)
+    {
+        const auto channel = animation.weights.find(position);
+        if (channel == animation.weights.end())
+        {
+            continue;
+        }
+        for (const auto& sample : channel->second)
+        {
+            for (std::size_t i = 0; i < ranges.size(); ++i)
+            {
+                const double weight = sample.second[i];
+                ranges[i].first = std::min(ranges[i].first, weight);
+                ranges[i].second = std::max(ranges[i].second, weight);
+            }
+        }
+    }
+    for (std::size_t i = 0; i < source.primitives.size(); ++i)
+    {
+        const auto path = node.mesh.AppendChild(TfToken("Primitive_" + std::to_string(i)));
+        const auto mesh = UsdGeomMesh::Get(stage, path);
+        const auto binding = UsdSkelBindingAPI(mesh.GetPrim());
+        VtVec3fArray extent;
+        SdfPathVector targets;
+        if (!binding || !binding.CreateBlendShapesAttr().Set(node.blendShapes) ||
+            !binding.CreateSkeletonRel().SetTargets({node.morphSkeleton}) ||
+            !binding.GetBlendShapeTargetsRel().GetTargets(&targets) ||
+            targets.size() != ranges.size() || !mesh.GetExtentAttr().Get(&extent) ||
+            extent.size() != 2)
+        {
+            TF_RUNTIME_ERROR("Could not bind glTF morph targets at %s", path.GetText());
+            return false;
+        }
+        GfVec3d lower(extent[0]), upper(extent[1]);
+        for (std::size_t target = 0; target < targets.size(); ++target)
+        {
+            const auto& [lo, hi] = ranges[target];
+            if (lo == 0 && hi == 0)
+            {
+                continue;
+            }
+            VtVec3fArray offsets;
+            const auto shape = UsdSkelBlendShape::Get(stage, targets[target]);
+            if (!shape || !shape.GetOffsetsAttr().Get(&offsets) || offsets.empty())
+            {
+                TF_RUNTIME_ERROR("Could not read blend shape offsets at %s",
+                                 targets[target].GetText());
+                return false;
+            }
+            GfRange3d delta;
+            for (const auto& offset : offsets)
+            {
+                delta.UnionWith(GfVec3d(offset));
+            }
+            for (std::size_t axis = 0; axis < 3; ++axis)
+            {
+                const auto a = delta.GetMin()[axis], b = delta.GetMax()[axis];
+                lower[axis] += std::min({lo * a, lo * b, hi * a, hi * b});
+                upper[axis] += std::max({lo * a, lo * b, hi * a, hi * b});
+            }
+        }
+        const double limit = std::numeric_limits<float>::max();
+        for (std::size_t axis = 0; axis < 3; ++axis)
+        {
+            extent[0][axis] = float(std::max(lower[axis], -limit));
+            extent[1][axis] = float(std::min(upper[axis], limit));
+        }
+        if (!mesh.GetExtentAttr().Set(extent))
+        {
+            TF_RUNTIME_ERROR("Could not author glTF morph extent at %s", path.GetText());
             return false;
         }
     }
