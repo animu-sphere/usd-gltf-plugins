@@ -23,9 +23,9 @@ struct MappedNode
     pxr::SdfPath path;
     // The path of the node's mesh, or empty for a node without one.
     pxr::SdfPath mesh;
-    // At time 0 when an animation moves the node or its ancestors, and otherwise as the node states.
+    // As the node states it, without animation.
     pxr::GfMatrix4d local{1.0};
-    // Relative to the asset, and so to the scene, which has no transform.
+    // Relative to the asset, and so to the scene, which has no transform, without animation.
     pxr::GfMatrix4d world{1.0};
 };
 
