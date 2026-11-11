@@ -33,10 +33,11 @@ read it, and a PNG writer of our own adds no dependency. Hio generates its own m
 | Texture with `KHR_texture_basisu` and a plain `source` | The extension's image is used, and a failure in it fails the import rather than falling back. |
 | `KHR_texture_basisu` naming an image that is not KTX2 | Fails. |
 | Plain `source` naming a KTX2 image | Fails, because glTF allows only PNG and JPEG there. |
-| ETC1S or UASTC LDR 4x4, single 2D image | Accepted. |
+| ETC1S or UASTC LDR 4x4, single 2D image | Accepted when ETC1S uses BasisLZ or UASTC uses optional Zstandard, as specified by [`KHR_texture_basisu`](https://github.com/KhronosGroup/glTF/tree/main/extensions/2.0/Khronos/KHR_texture_basisu#ktx-v2-images-with-basis-universal-supercompression). |
 | Other codecs, cubemaps, arrays and volumes | Fail at import. |
 | `KTXorientation` other than `rd` | Fails at import, because the extension requires `rd`. |
 | Width or height above 16384 | Fails at import, by the transcoder's own limit, with the same message as a damaged file. A small file can declare a large image, and this keeps the decoded allocation near 1 GiB. A build check fails if an upgrade raises the limit. |
+| Zstandard-compressed UASTC with an incorrect uncompressed level length | Fails at import. The [level index](https://registry.khronos.org/KTX/specs/2.0/ktxspec.v2.html#levelIndex) must describe 16 bytes per 4×4 block at each mip level, including blocks along the edges. The check also runs before the transcoder allocates its inflation buffer. |
 
 External KTX2 files are also served through the package, as `images/<index>.png`,
 because the renderer cannot read them directly. They follow the same
@@ -71,5 +72,5 @@ FlightHelmet sample was decoded and rendered through both paths. It has 5 images
 BasisLZ and 10 with Zstandard supercompression, and the one whose writer metadata was read
 came from `ktx create` v4.4.2. That sample is not in this repository.
 
-The transcoder has not been fuzzed by this project. Hostile files rely on its own checks
-and on the limits above.
+See the [capability matrix](../reference/CAPABILITY_MATRIX.md#capabilities) for subsequent
+malformed-input tests and their scope.

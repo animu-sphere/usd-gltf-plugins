@@ -3044,6 +3044,12 @@ class FileFormatTest(unittest.TestCase):
 
     def test_ktx2_failures_preserve_layer(self):
         valid = ktx2_fixture("etc1s")
+        bad_zstd = bytearray(ktx2_fixture("uastc_zstd"))
+        # A 16 by 16 UASTC level uses 256 bytes after inflation. The size claim is checked at
+        # import so the decoder never allocates a buffer based on the 1 GiB in the index.
+        struct.pack_into("<Q", bad_zstd, 96, 2**30)
+        etc1s_zstd = bytearray(patch_ktx2_header(valid, 44, 2))
+        struct.pack_into("<Q", etc1s_zstd, 96, 2**30)
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
             for extension in ("gltf", "glb"):
@@ -3062,6 +3068,8 @@ class FileFormatTest(unittest.TestCase):
                     ("volume", patch_ktx2_header(valid, 28, 2), "KTX2 image is damaged"),
                     ("inconsistent size", patch_ktx2_header(valid, 20, 20000), "KTX2 image is damaged"),
                     ("too wide", oversized_ktx2(), "KTX2 image is damaged"),
+                    ("ETC1S with Zstandard", etc1s_zstd, "invalid supercompression scheme"),
+                    ("oversized Zstandard level", bad_zstd, "invalid uncompressed level size"),
                     ("orientation", ktx2_with_orientation(valid, b"ru"), "orientation is not supported"),
                 ):
                     with self.subTest(extension=extension, case=case):
@@ -6743,21 +6751,30 @@ assert layer.ExportToString() == Path(sys.argv[3]).read_text(encoding="utf-8")
                     self.assertEqual(mesh.GetPointsAttr().Get()[0], Gf.Vec3f(4, 0, 0))
 
     def test_external_buffer_uri_rejections(self):
-        uris = (
-            "../escape.bin", "%2e%2e/escape.bin", "nested/%2e%2e/escape.bin",
+        parent_components = (a + b for a, b in itertools.product((".", "%2e", "%2E"), repeat=2))
+        traversal_uris = [prefix + parent + slash + "escape.bin"
+                          for parent in parent_components
+                          for prefix in ("", "nested/")
+                          for slash in ("/", "%2f", "%2F")]
+        uris = traversal_uris + [
             "/absolute.bin", "%2fabsolute.bin", "//host/file.bin", "C:/file.bin",
             "https://example.invalid/file.bin", "file:///file.bin", "x%5cy.bin",
-            "x%3ay.bin", "x%00.bin", "x%0a.bin", "x%zz.bin", "%ff.bin",
+            "x%3ay.bin", "x%zz.bin", "%ff.bin",
             "%c0%af.bin", "%ed%a0%80.bin", "%f4%90%80%80.bin", "%c3.bin",
             "mesh.bin?query", "mesh.bin#fragment", "mesh.bin?", "mesh.bin#",
-        )
+        ] + [f"mesh%{control:02x}.bin" for control in (*range(32), 127)]
         with tempfile.TemporaryDirectory() as directory:
-            root = pathlib.Path(directory)
+            root = pathlib.Path(directory) / "source"
+            (root / "nested").mkdir(parents=True)
+            (root / "%2e%2e").mkdir()
             for extension in ("gltf", "glb"):
                 path = root / ("invalid." + extension)
                 document, binary = mesh_document("glb")
-                document["buffers"][0]["uri"] = "mesh.bin"
-                (root / "mesh.bin").write_bytes(binary)
+                for target in (root / "mesh.bin", root / "escape.bin", root.parent / "escape.bin",
+                               root / "%2e%2e" / "escape.bin"):
+                    target.write_bytes(binary)
+                # An escaped percent is decoded once, leaving the literal directory name.
+                document["buffers"][0]["uri"] = "%252e%252e/escape.bin"
                 write_asset(path, document)
                 stage = Usd.Stage.Open(str(path))
                 layer = stage.GetRootLayer()
@@ -7101,6 +7118,63 @@ assert layer.ExportToString() == Path(sys.argv[3]).read_text(encoding="utf-8")
                 path.write_bytes(b"{")
                 with self.assertRaisesRegex(Tf.ErrorException, "cannot parse"):
                     Usd.Stage.Open(str(path))
+
+    def test_glb_length_fields_preserve_layer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "mesh.glb"
+            write_asset(path, *mesh_document("glb"))
+            valid = path.read_bytes()
+            stage = Usd.Stage.Open(str(path))
+            layer = stage.GetRootLayer()
+            before = layer_text(layer)
+            bin_header = 20 + struct.unpack_from("<I", valid, 12)[0]
+
+            def replace_length(offset, length):
+                return valid[:offset] + struct.pack("<I", length) + valid[offset + 4:]
+
+            cases = {
+                "truncated container header": valid[:11],
+                "declared file ends early": replace_length(8, len(valid) - 4),
+                "declared file extends past end": replace_length(8, 2**32 - 1),
+                "JSON chunk exceeds file": replace_length(12, 2**32 - 4),
+                "BIN chunk exceeds file": replace_length(bin_header, 2**32 - 4),
+                "truncated final chunk header": replace_length(8, len(valid) + 4) + b"\0" * 4,
+                "unaligned BIN chunk": replace_length(bin_header, len(valid) - bin_header - 9),
+            }
+            for name, data in cases.items():
+                with self.subTest(case=name):
+                    path.write_bytes(data)
+                    with self.assertRaisesRegex(Tf.ErrorException, "invalid GLB file or chunk length"):
+                        layer.Reload(True)
+                    self.assertEqual(layer_text(layer), before)
+
+            unknown_chunk = struct.pack("<II4s", 4, 0, b"data")
+            path.write_bytes(replace_length(8, len(valid) + len(unknown_chunk)) + unknown_chunk)
+            self.assertTrue(layer.Reload(True))
+            self.assertEqual(layer_text(layer), before)
+
+    def test_oversized_buffer_and_accessor_fields_preserve_layer(self):
+        fields = {
+            "buffers": ("byteLength",),
+            "bufferViews": ("byteOffset", "byteLength", "byteStride"),
+            "accessors": ("byteOffset", "count"),
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            for extension in ("gltf", "glb"):
+                path = pathlib.Path(directory) / ("mesh." + extension)
+                write_asset(path, *mesh_document(extension))
+                stage = Usd.Stage.Open(str(path))
+                layer = stage.GetRootLayer()
+                before = layer_text(layer)
+                for collection, names in fields.items():
+                    for name, value in itertools.product(names, (2**32, 2**64 - 4)):
+                        with self.subTest(extension=extension, collection=collection, field=name, value=value):
+                            document, binary = mesh_document(extension)
+                            document[collection][0][name] = value
+                            write_asset(path, document, binary)
+                            with self.assertRaisesRegex(Tf.ErrorException, "cannot parse|bufferView|accessor"):
+                                layer.Reload(True)
+                            self.assertEqual(layer_text(layer), before)
 
     def test_concurrent_opens_and_failures(self):
         with tempfile.TemporaryDirectory() as directory:

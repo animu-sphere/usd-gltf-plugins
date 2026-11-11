@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <initializer_list>
 #include <string>
 #include <string_view>
@@ -15,26 +16,62 @@ namespace gltfCore
 namespace
 {
 
+constexpr std::size_t kGlbHeaderSize = 12;
+constexpr std::size_t kChunkHeaderSize = 8;
+constexpr std::size_t kGlbJsonOffset = kGlbHeaderSize + kChunkHeaderSize;
+
+std::uint32_t
+readUint32LE(const std::byte* bytes)
+{
+    std::uint32_t value = 0;
+    for (std::size_t i = 0; i < 4; ++i)
+    {
+        value |= std::uint32_t(std::to_integer<std::uint8_t>(bytes[i])) << (8 * i);
+    }
+    return value;
+}
+
+// fastgltf can accept chunks that extend past the declared GLB length or leave a partial chunk
+// at the end. Check the framing against the actual size before handing it any chunk data.
+bool
+hasValidGlbLengths(const std::byte* bytes, std::size_t size)
+{
+    if (size < kGlbJsonOffset || readUint32LE(bytes + 8) != size)
+    {
+        return false;
+    }
+    for (std::size_t offset = kGlbHeaderSize; offset < size;)
+    {
+        if (size - offset < kChunkHeaderSize)
+        {
+            return false;
+        }
+        const auto length = readUint32LE(bytes + offset);
+        offset += kChunkHeaderSize;
+        if (length % 4 != 0 || length > size - offset)
+        {
+            return false;
+        }
+        offset += length;
+    }
+    return true;
+}
+
 std::string_view
 jsonOf(const std::byte* bytes, std::size_t size)
 {
-    constexpr std::size_t kHeaderAndChunk = 20;
     const std::string_view text(reinterpret_cast<const char*>(bytes), size);
     if (!text.starts_with("glTF"))
     {
         return text;
     }
-    if (size < kHeaderAndChunk)
+    if (size < kGlbJsonOffset)
     {
         return {};
     }
-    std::uint32_t length = 0;
-    for (std::size_t i = 0; i < 4; ++i)
-    {
-        length |= std::uint32_t(std::to_integer<std::uint8_t>(bytes[12 + i])) << (8 * i);
-    }
-    return length <= size - kHeaderAndChunk ? text.substr(kHeaderAndChunk, length)
-                                            : std::string_view{};
+    const auto length = readUint32LE(bytes + kGlbHeaderSize);
+    return length <= size - kGlbJsonOffset ? text.substr(kGlbJsonOffset, length)
+                                           : std::string_view{};
 }
 
 // fastgltf stops at the first such extension without naming it, so this reads them from the JSON.
@@ -431,6 +468,11 @@ IsImplementedExtension(std::string_view extension)
 fastgltf::Expected<fastgltf::Asset>
 Parse(const std::byte* bytes, std::size_t size, std::string& error)
 {
+    if (size >= 4 && std::memcmp(bytes, "glTF", 4) == 0 && !hasValidGlbLengths(bytes, size))
+    {
+        error = "invalid GLB file or chunk length";
+        return fastgltf::Error::InvalidGLB;
+    }
     auto data = fastgltf::GltfDataBuffer::FromBytes(bytes, size);
     if (data.error() != fastgltf::Error::None)
     {
