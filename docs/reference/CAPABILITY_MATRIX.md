@@ -131,6 +131,29 @@ was sampled before the reads, so it does not include retained conversions.
 Three of the lamp's four conversions fit the 64 MiB payload budget. The remaining
 conversion took 57.03 to 58.15 ms on the second pass.
 
+### Mesh sharing experiment
+
+[ADR 0031](../adr/0031-mesh-sharing.md) describes the two experimental representations.
+The table uses ABeautifulGame's GLB from the same sample commit and the Windows OpenUSD
+26.08 runtime above. Each row covers five serial, fresh-process runs. All three builds
+reported 49 mesh occurrences and eight unique point and topology arrays.
+
+| Representation | Open seconds, min to max | Peak resident MiB, min to max | Meshes in default traversal |
+| --- | --- | --- | --- |
+| Authored copy per placement | 0.149 to 0.158 | 193.14 to 194.46 | 49 |
+| Internal references | 0.149 to 0.156 | 193.33 to 194.18 | 49 |
+| Instanceable internal references | 0.154 to 0.156 | 193.04 to 193.94 | 5 |
+
+Both prototypes passed the ABeautifulGame sample check with Storm in the OpenStrata lookdev
+runtime. The native instancing run included instance proxies when enumerating meshes.
+For the GLB, each prototype's MaterialX and UsdPreviewSurface images differed from the
+corresponding baseline image by at most one of 65,536 pixels, with a maximum channel
+difference of 8 on an 8-bit scale. Referencing the asset's default prim as `/Asset` preserved
+all 49 mesh world transforms and remapped all material targets to `/Asset/Materials` in
+both prototypes. A material override on one placement left the other placement's binding
+intact. With native instancing, the override succeeded after disabling instancing on the
+edited placement.
+
 ## Tested environments
 
 [ADR 0009](../adr/0009-release-targets.md) sets the targets for release packages. These are the
