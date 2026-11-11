@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 import base64
+import concurrent.futures
 import faulthandler
 import itertools
 import json
@@ -845,10 +846,12 @@ class FileFormatTest(unittest.TestCase):
         # the PNG control, and count only actual KTX2 conversions.
         self.assertEqual(result["image_asset_count"], 6)
         self.assertEqual(len(result["image_read_passes"]), 2)
-        for read_pass in result["image_read_passes"]:
-            self.assertEqual(read_pass["ktx2_decode_calls"], 5)
-            self.assertGreater(read_pass["ktx2_decode_seconds"], 0)
-            self.assertLessEqual(read_pass["ktx2_decode_seconds"], read_pass["read_seconds"])
+        first, second = result["image_read_passes"]
+        self.assertEqual(first["ktx2_decode_calls"], 5)
+        self.assertGreater(first["ktx2_decode_seconds"], 0)
+        self.assertLessEqual(first["ktx2_decode_seconds"], first["read_seconds"])
+        self.assertEqual(second["ktx2_decode_calls"], 0)
+        self.assertEqual(second["ktx2_decode_seconds"], 0)
 
     def test_import_measurement_counts_repeated_geometry(self):
         from measure_import import inspect_asset
@@ -2993,11 +2996,48 @@ class FileFormatTest(unittest.TestCase):
             source.rename(moved)
             stage = Usd.Stage.Open(str(moved / "asset.gltf"))
             asset = base_color_file(stage)
-            self.assert_quadrants(asset_bytes(asset.resolvedPath), False)
+            image = moved / "image.ktx2"
+            with Ar.ResolverScopedCache():
+                self.assert_quadrants(asset_bytes(asset.resolvedPath), False)
 
-            # The same request is answered from the file's current content.
-            (moved / "image.ktx2").write_bytes(ktx2_fixture("uastc_alpha"))
+                # A cached conversion must not mask damage or a replacement at the same path.
+                data = ktx2_fixture("uastc_zstd")
+                image.write_bytes(data[:-8] + b"\xff" * 8)
+                self.assertIsNone(Ar.GetResolver().OpenAsset(Ar.ResolvedPath(asset.resolvedPath)))
+                image.write_bytes(ktx2_fixture("uastc_alpha"))
+                self.assert_quadrants(asset_bytes(asset.resolvedPath), True)
             self.assert_quadrants(asset_bytes(asset.resolvedPath), True)
+
+    def test_converted_images_keep_scope_and_asset_lifetimes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            first = root / "first.glb"
+            second = root / "second.glb"
+            opaque = ktx2_document("glb", None, ktx2_fixture("etc1s"))
+            alpha = ktx2_document("glb", None, ktx2_fixture("uastc_alpha"))
+            write_asset(first, *opaque)
+            write_asset(second, *alpha)
+            first_stage = Usd.Stage.Open(str(first))
+            second_stage = Usd.Stage.Open(str(second))
+            first_path = base_color_file(first_stage).resolvedPath
+            second_path = base_color_file(second_stage).resolvedPath
+
+            def read_in_new_scope():
+                with Ar.ResolverScopedCache():
+                    return asset_bytes(first_path)
+
+            with Ar.ResolverScopedCache():
+                original = Ar.GetResolver().OpenAsset(Ar.ResolvedPath(first_path))
+                self.assert_quadrants(bytes(original.GetBuffer()), False)
+                self.assert_quadrants(asset_bytes(second_path), True)
+                write_asset(first, *alpha)
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as workers:
+                    self.assert_quadrants(workers.submit(read_in_new_scope).result(), True)
+                with Ar.ResolverScopedCache():
+                    self.assert_quadrants(asset_bytes(first_path), False)
+
+            self.assert_quadrants(read_in_new_scope(), True)
+            self.assert_quadrants(bytes(original.GetBuffer()), False)
 
     def test_ktx2_failures_preserve_layer(self):
         valid = ktx2_fixture("etc1s")

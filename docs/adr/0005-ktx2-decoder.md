@@ -55,7 +55,8 @@ general.
 ## Evidence and limits
 
 The transcoder and plugin were built and tested locally on Windows with MSVC, and the
-library grew from 1.2 MB to 2.6 MB. Each read decodes again, because nothing is cached.
+library grew from 1.2 MB to 2.6 MB. These measurements preceded the
+[scoped conversion cache](../design/TEXTURES.md#cache-and-asset-lifetime).
 Images of 2048 by 2048 from the sample below took about 60 ms each, on one machine, and
 produced 16 MiB of PNG. This is not a measurement of a full scene or of other hardware.
 

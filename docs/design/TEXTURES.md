@@ -22,8 +22,21 @@ external images use layer-relative paths: see
 images use the same package paths, so results resolve after an asset moves with its
 images.
 
-Any cache added later must key on image content, conversion settings, and the
-decoder/conversion implementation version, avoiding collisions and stale results.
+Within an `ArResolverScopedCache`, successful KTX2 and WebP conversions can be reused
+when the detected format and exact input bytes match. The hash only locates candidates.
+Conversion settings and the decoder version are fixed by the loaded plugin, and the
+cache lives only as long as its scope. An external image file is read again on each
+open, so a changed or damaged file is still checked. Embedded images follow the
+parsed package's lifetime described in [ADR 0001](../adr/0001-image-assets.md#lifetime-cache-and-concurrency).
+
+The cache retains up to 64 MiB of source and PNG payloads per scope. A conversion
+that exceeds the remaining budget is served directly. Returned assets own their
+image bytes and can outlive the scope. Separate scopes keep separate caches, while
+nested scopes or scopes explicitly sharing their OpenUSD cache data reuse the same
+entries. The plugin synchronizes access when cache data is shared across threads.
+
+Any persistent cache must also key on conversion settings and the decoder and
+conversion implementation version.
 A reference to a temporary file alone is not a portable persistent result, so
 avoid an API that only returns a temporary path, and make storage duration and
 ownership explicit. Failure handling for generated files must be designed
