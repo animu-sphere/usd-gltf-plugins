@@ -19,7 +19,7 @@ usd-gltf-plugins/
     gltfUsd/               USD scene translation
   plugins/
     usdGltfFileFormat/     OpenUSD file format and package resolver bundle
-  scripts/                 release and CI tooling
+  scripts/                 packaging, release and CI tooling
   tools/
     gltfConvert/           only if a CLI is needed
   tests/                   workspace tests and checks, and their fixtures

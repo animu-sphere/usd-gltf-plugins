@@ -2,11 +2,14 @@
 import base64
 import concurrent.futures
 import faulthandler
+import hashlib
 import itertools
 import json
 import math
+import os
 import pathlib
 import re
+import shutil
 import struct
 import subprocess
 import sys
@@ -16,7 +19,7 @@ import unittest
 import urllib.parse
 import zlib
 
-from pxr import Ar, Gf, Sdf, Sdr, Tf, Usd, UsdGeom, UsdLux, UsdShade, UsdSkel, Vt
+from pxr import Ar, Gf, Sdf, Sdr, Tf, Usd, UsdGeom, UsdLux, UsdShade, UsdSkel, UsdUtils, Vt
 
 # A crash in native code would otherwise not say which test caused it.
 faulthandler.enable()
@@ -3450,6 +3453,124 @@ class FileFormatTest(unittest.TestCase):
                                "images are not supported in a source inside a package")
                     with self.assertRaisesRegex(Tf.ErrorException, message):
                         Sdf.Layer.FindOrOpen(identifier)
+
+    def test_derived_usdz_opens_after_removing_sources(self):
+        script = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "package_gltf.py"
+        fixtures = pathlib.Path(__file__).resolve().parent / "fixtures"
+        reader = """
+import hashlib
+import sys
+from pathlib import Path
+from pxr import Ar, Sdf, Usd, UsdGeom, UsdUtils
+
+assert not Sdf.FileFormat.FindByExtension("gltf")
+path = Path(sys.argv[1]).resolve()
+stage = Usd.Stage.Open(path.as_posix())
+assert stage.GetDefaultPrim().GetPath() == Sdf.Path("/Root")
+assert any(prim.IsA(UsdGeom.Mesh) for prim in stage.Traverse())
+archive = Sdf.ZipFile.Open(path.as_posix())
+entries = archive.GetFileNames()
+assert entries[0] == "scene.usdc", entries
+images = set()
+for prim in stage.Traverse():
+    for attr in prim.GetAttributes():
+        if attr.GetTypeName() != Sdf.ValueTypeNames.Asset:
+            continue
+        asset = attr.Get()
+        assert asset.path.startswith("./textures/"), asset
+        assert Path(Ar.SplitPackageRelativePathOuter(asset.resolvedPath)[0]) == path, asset
+        image = Ar.GetResolver().OpenAsset(Ar.ResolvedPath(asset.resolvedPath))
+        assert image
+        assert image.GetBuffer() == archive.GetFile(asset.path[2:]), asset
+        images.add(asset.path[2:])
+assert set(entries[1:]) == images, entries
+assert len(images) == int(sys.argv[2]), images
+assert all(Path(name).suffix in {".png", ".jpg", ".jpeg"} for name in images), images
+
+# Compare the authored scene, including unselected variants, after normalizing asset paths.
+layer = Sdf.Layer.CreateAnonymous(".usda")
+layer.TransferContent(stage.GetRootLayer())
+UsdUtils.ModifyAssetPaths(
+    layer, lambda path: "./" + hashlib.sha256(archive.GetFile(path[2:])).hexdigest())
+assert layer.ExportToString() == Path(sys.argv[3]).read_text(encoding="utf-8")
+"""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            output = root / "output"
+            output.mkdir()
+            with tempfile.TemporaryDirectory(dir=root) as input_directory:
+                sources = pathlib.Path(input_directory)
+                shutil.copytree(fixtures / "textures", sources / "textures")
+                assets = [
+                    ("base_color_textures.gltf", 5),
+                    ("ktx2_textures.gltf", 6),
+                    ("webp.glb", 1),
+                    ("animated.glb", 0),
+                ]
+                for name, _ in assets[:2]:
+                    shutil.copyfile(fixtures / name, sources / name)
+                write_asset(sources / "webp.glb", *webp_document("glb", None, webp_fixture("lossy")))
+                translation = [{"input": [0, 1], "output": [0, 0, 0, 1, 0, 0]}]
+                rotation = [{"input": [0, 1], "output": [0, 0, 0, 1, 0, 0, 1, 0],
+                             "type": "VEC4"}]
+                write_asset(sources / "animated.glb", *animation_document(
+                    "glb", translation, [(0, 0, "translation")],
+                    more_animations=[(rotation, [(0, 0, "rotation")])]))
+
+                for name, _ in assets:
+                    source = sources / name
+                    with self.subTest(package=name):
+                        original = Sdf.Layer.FindOrOpen(source.as_posix())
+                        expected = Sdf.Layer.CreateAnonymous(".usda")
+                        expected.TransferContent(original)
+
+                        def image_digest(path):
+                            resolved = Ar.GetResolver().Resolve(original.ComputeAbsolutePath(path))
+                            return "./" + hashlib.sha256(asset_bytes(str(resolved))).hexdigest()
+
+                        with Ar.ResolverScopedCache():
+                            UsdUtils.ModifyAssetPaths(expected, image_digest)
+                        (root / (name + ".usda")).write_text(
+                            expected.ExportToString(), encoding="utf-8")
+                        result = subprocess.run(
+                            [sys.executable, str(script), str(source), str(root / (name + ".usdz"))],
+                            capture_output=True, text=True, encoding="utf-8", errors="replace")
+                        self.assertEqual(result.returncode, 0, result.stderr)
+
+            env = os.environ.copy()
+            env.pop("PXR_PLUGINPATH_NAME", None)
+            for name, image_count in assets:
+                with self.subTest(reopen=name):
+                    filename = name + ".usdz"
+                    (root / filename).rename(output / filename)
+                    result = subprocess.run(
+                        [sys.executable, "-c", reader, filename, str(image_count),
+                         str(root / (name + ".usda"))], cwd=output, env=env,
+                        capture_output=True, text=True, encoding="utf-8", errors="replace")
+                    self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_derived_usdz_image_failure_preserves_output(self):
+        script = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "package_gltf.py"
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            source = root / "damaged.glb"
+            write_asset(source, *webp_document("glb", None, webp_without_tokens()))
+            destination = root / "output.usdz"
+            for existing in (False, True):
+                with self.subTest(existing=existing):
+                    if existing:
+                        destination.write_bytes(b"previous output")
+                    result = subprocess.run(
+                        [sys.executable, str(script), str(source), str(destination)],
+                        capture_output=True, text=True, encoding="utf-8", errors="replace")
+                    self.assertNotEqual(result.returncode, 0, result.stderr)
+                    self.assertIn("cannot read image", result.stderr)
+                    if existing:
+                        self.assertEqual(destination.read_bytes(), b"previous output")
+                    else:
+                        self.assertFalse(destination.exists())
+                    self.assertEqual(set(root.glob(".gltf-*")), set())
 
     def test_material_failures_preserve_layer(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -62,7 +62,7 @@ package is read. Factor-only and default materials, meshes, cameras and lights s
 
 A self-contained USD package is made by converting first, then packaging the USD and its images
 with OpenUSD, as `usd-vrm-plugins` does with `UsdUtilsCreateNewUsdzPackage`. Explicit packaging of
-derived USD and converted images is planned for v0.4.0 in the [backlog](../roadmap/backlog.md).
+derived USD and converted images is specified in [ADR 0032](0032-derived-usdz.md).
 
 ## Verification and limits
 

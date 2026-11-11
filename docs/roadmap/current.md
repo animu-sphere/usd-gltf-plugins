@@ -6,9 +6,6 @@ implementation order, which investigation may change. Each feature follows the
 
 ## v0.4.0: optimization and developer tools
 
-- Define and test a portable package for derived USD and converted images. Verify that it opens
-  independently of the glTF source, and that repeated conversions can reuse cached results safely.
-  Evaluate a CLI that calls the same conversion library if the packaging workflow needs one.
 - Add fuzz and property coverage for malicious URIs, damaged accessors and images, and very large
   inputs. Address serious security findings as they are discovered.
 - Verify ABI and package loading for additional OpenUSD versions and compilers before adding them
