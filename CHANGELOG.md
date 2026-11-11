@@ -12,6 +12,8 @@ here.
 
 - The import measurement tool records KTX2 conversion calls and time in two image read passes.
   The [development guide](docs/DEVELOPMENT.md) gives the command for the fixed sample set.
+- `scripts/package_gltf.py` packages a converted scene and its images as a standalone USDZ.
+  See the [packaging command](docs/DEVELOPMENT.md#package-a-converted-asset).
 
 ### Changed
 

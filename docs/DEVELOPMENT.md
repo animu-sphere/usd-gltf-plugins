@@ -92,3 +92,18 @@ python tests/measure_import.py build/cy2026-windows-x86_64-py313-usd @assets --o
 Other assets can be passed by path. Each of three serial runs opens the asset in a fresh process
 with the OS file caches intact. The JSON report records the hashes of the main source files and
 plugin binary, the runtime, and the individual measurements.
+
+## Package a converted asset
+
+Use the matching OpenUSD Python runtime and [register the built or installed plugin](../README.md#quick-start).
+Run the packaging script with a local source and a destination in an existing directory.
+
+```sh
+python scripts/package_gltf.py /path/to/model.glb /path/to/model.usdz
+```
+
+The resulting USDZ can be moved and opened in a regular OpenUSD environment. For a
+portability check, copy just the USDZ to a separate directory or machine where the
+original asset is unavailable and open it with `Usd.Stage.Open`. The
+[packaging contract](architecture/IMPORT_PIPELINE.md#derived-usdz) describes the
+contents and when an existing destination is replaced.

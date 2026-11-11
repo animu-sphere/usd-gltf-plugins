@@ -72,3 +72,20 @@ resolver, and the directory beside the package is not the source's. See
 Canonicalization and file opening are separate operations: the check is not a
 security sandbox against concurrent changes to the filesystem. Assets must not
 be imported from directories writable by an untrusted concurrent actor.
+
+## Derived USDZ
+
+[The packaging command](../DEVELOPMENT.md#package-a-converted-asset) uses the normal
+file format to read a local `.gltf` or `.glb`. It copies the imported layer specs,
+including animation variants, to a native USD layer. It resolves each authored
+image against the source layer, copies its PNG or JPEG bytes and rewrites the
+asset path to point to the copy. This reads KTX2 and WebP through the same
+[resolver cache scope](../design/TEXTURES.md#cache-and-asset-lifetime) for the entire
+asset. Each resolved image path produces one package entry.
+
+OpenUSD packages the staged `scene.usdc` and its images. Both staging and packaging
+take place in a temporary directory beside the destination. A successful package
+replaces the destination in one rename. If importing, reading an image or
+packaging fails, the existing destination is preserved. The package contains the
+selected glTF scene and opens with OpenUSD after the source and its resources are
+removed. See [ADR 0032](../adr/0032-derived-usdz.md) for the packaging decision.
