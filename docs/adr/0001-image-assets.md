@@ -47,22 +47,19 @@ layer publication. Remote and resolver-managed images are excluded, as for buffe
 
 ### Lifetime, cache and concurrency
 
-- **Storage and disposal:** there is no storage of our own, so there is nothing to
-  dispose of or to go stale. The source file owns the bytes.
+- **Storage and disposal:** the source is the only persistent storage. Returned
+  assets own the bytes they serve or keep the source package alive.
 - **Cache:** the resolver parses the source for each request, unless a caller holds
   an `ArResolverScopedCache`. It then shares the parsed package in that scope, keyed
-  by resolved path. This is unmeasured for large assets; a longer-lived cache needs
-  measurements and an invalidation rule first.
-- **Concurrency:** requests share no mutable state outside that thread-local scope,
-  and each `ArAsset` keeps its own package alive.
-- **Reopening and reload:** the same request is answered from the file's current
-  content. An entry whose index or format no longer matches fails to resolve.
+  by resolved path. The [texture design](../design/TEXTURES.md#cache-and-asset-lifetime)
+  specifies reuse of converted images in the same scope.
+- **Reopening and reload:** a request outside the scope is answered from the file's
+  current content. An entry whose index or format no longer matches fails to resolve.
 
 ### KTX2
 
 KTX2 follows this contract: `KHR_texture_basisu` images get a `.png` entry, and the
-resolver decodes them to PNG on request. This means no decoded image cache is
-needed for correctness. [ADR 0005](0005-ktx2-decoder.md) selects the decoder and
+resolver serves PNG on request. [ADR 0005](0005-ktx2-decoder.md) selects the decoder and
 states which images are accepted.
 
 ## Limits

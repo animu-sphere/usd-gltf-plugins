@@ -4,6 +4,7 @@
 #include "gltfCore/parse.h"
 
 #include "pxr/pxr.h"
+#include "pxr/base/arch/hash.h"
 #include "pxr/base/tf/diagnostic.h"
 #include "pxr/base/tf/registryManager.h"
 #include "pxr/base/tf/type.h"
@@ -16,8 +17,12 @@
 #include "pxr/usd/ar/resolver.h"
 #include "pxr/usd/ar/threadLocalScopedCache.h"
 
+#include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
+#include <mutex>
+#include <new>
 #include <optional>
 #include <span>
 #include <string>
@@ -38,6 +43,7 @@ struct Package
     }
 
     std::string path;
+    std::mutex loaderMutex;
     ExternalBufferLoader loader;
     std::optional<fastgltf::Asset> asset;
 };
@@ -72,18 +78,80 @@ struct PackagedImage
     gltfTexture::ImageFormat format;
 };
 
+struct ConvertedImage
+{
+    gltfTexture::ImageFormat format;
+    std::vector<std::byte> source;
+    std::shared_ptr<ArAsset> asset;
+};
+
+constexpr std::size_t maxCachedImageBytes = 64 * 1024 * 1024;
+
+struct ResolverCache
+{
+    // Cache data can be explicitly shared between threads through a parent scope.
+    std::mutex mutex;
+    std::unordered_map<std::string, std::shared_ptr<Package>> packages;
+    std::unordered_multimap<std::uint64_t, ConvertedImage> images;
+    std::size_t imageBytes = 0;
+
+    // The caller holds mutex for both operations.
+    std::shared_ptr<ArAsset>
+    FindImage(std::uint64_t hash, const PackagedImage& image) const
+    {
+        const auto [first, last] = images.equal_range(hash);
+        for (auto it = first; it != last; ++it)
+        {
+            const auto& cached = it->second;
+            if (cached.format == image.format && std::ranges::equal(cached.source, image.bytes))
+            {
+                return cached.asset;
+            }
+        }
+        return {};
+    }
+
+    void
+    RememberImage(std::uint64_t hash, PackagedImage& image, const std::shared_ptr<ArAsset>& asset)
+    {
+        // Bound the retained source and PNG payloads. Larger images still open normally.
+        const auto sourceSize = image.bytes.size();
+        const auto pngSize = asset->GetSize();
+        const auto remaining = maxCachedImageBytes - imageBytes;
+        if (sourceSize > remaining || pngSize > remaining - sourceSize || FindImage(hash, image))
+        {
+            return;
+        }
+        try
+        {
+            auto source = image.owned.empty()
+                              ? std::vector<std::byte>(image.bytes.begin(), image.bytes.end())
+                              : std::move(image.owned);
+            images.emplace(hash, ConvertedImage{image.format, std::move(source), asset});
+            imageBytes += sourceSize + pngSize;
+        }
+        catch (const std::bad_alloc&)
+        {
+            // The converted asset is already usable without caching it.
+        }
+    }
+};
+
 bool
 findImage(const std::shared_ptr<Package>& package, const std::string& entry, PackagedImage& image)
 {
     std::size_t index;
     gltfTexture::ImageFormat requested;
     std::string error;
-    auto* loader = package ? &package->loader : nullptr;
     return package && gltfTexture::ParsePackageEntry(entry, index, requested) &&
            gltfTexture::GetPackagedImage(
                *package->asset, index, package->path,
-               [loader](const fastgltf::Buffer& buffer, std::span<const std::byte>& data,
-                        std::string& loadError) { return loader->Load(buffer, data, loadError); },
+               [&package](const fastgltf::Buffer& buffer, std::span<const std::byte>& data,
+                          std::string& loadError)
+               {
+                   const std::lock_guard lock(package->loaderMutex);
+                   return package->loader.Load(buffer, data, loadError);
+               },
                image.owned, image.bytes, image.format, error) &&
            requested == gltfTexture::ServedFormat(image.format);
 }
@@ -111,7 +179,8 @@ class UsdGltfPackageResolver final : public ArPackageResolver
     {
         PackagedImage image;
         std::string error;
-        if (!findImage(findPackage(resolvedPackagePath), packagedPath, image) ||
+        if (!findImage(findPackage(_caches.GetCurrentCache(), resolvedPackagePath), packagedPath,
+                       image) ||
             !gltfTexture::CheckImage(image.bytes, image.format, error))
         {
             return {};
@@ -124,19 +193,32 @@ class UsdGltfPackageResolver final : public ArPackageResolver
               const std::string& resolvedPackagedPath) override
     {
         TRACE_SCOPE("UsdGltfFileFormat image open");
-        const auto package = findPackage(resolvedPackagePath);
+        const auto cache = _caches.GetCurrentCache();
+        const auto package = findPackage(cache, resolvedPackagePath);
         PackagedImage image;
         if (!findImage(package, resolvedPackagedPath, image))
         {
             return nullptr;
         }
-        auto png = std::make_shared<std::vector<std::byte>>();
         std::string error;
         const bool converted = gltfTexture::ServedFormat(image.format) != image.format;
+        const bool cacheable = cache && converted && image.bytes.size() < maxCachedImageBytes;
+        std::uint64_t hash = 0;
+        if (cacheable)
+        {
+            hash =
+                ArchHash64(reinterpret_cast<const char*>(image.bytes.data()), image.bytes.size());
+            const std::lock_guard lock(cache->mutex);
+            if (auto asset = cache->FindImage(hash, image))
+            {
+                return asset;
+            }
+        }
         // The source can have changed since import, and the image loader must not see
         // a damaged image. See docs/adr/0006-image-failures.md.
+        std::vector<std::byte> png;
         if (!gltfTexture::CheckImage(image.bytes, image.format, error) ||
-            (converted && !convertToPng(image, *png, error)))
+            (converted && !convertToPng(image, png, error)))
         {
             TF_WARN("Cannot read '%s' in '%s': %s", resolvedPackagedPath.c_str(),
                     resolvedPackagePath.c_str(), error.c_str());
@@ -149,9 +231,17 @@ class UsdGltfPackageResolver final : public ArPackageResolver
                                             reinterpret_cast<const char*>(image.bytes.data())),
                 image.bytes.size());
         }
-        const auto* data = reinterpret_cast<const char*>(png->data());
-        const auto size = png->size();
-        return ArInMemoryAsset::FromBuffer(std::shared_ptr<const char>(std::move(png), data), size);
+        auto bytes = std::make_shared<const std::vector<std::byte>>(std::move(png));
+        const auto* data = reinterpret_cast<const char*>(bytes->data());
+        const auto size = bytes->size();
+        auto asset =
+            ArInMemoryAsset::FromBuffer(std::shared_ptr<const char>(std::move(bytes), data), size);
+        if (cacheable)
+        {
+            const std::lock_guard lock(cache->mutex);
+            cache->RememberImage(hash, image, asset);
+        }
+        return asset;
     }
 
     void
@@ -167,25 +257,28 @@ class UsdGltfPackageResolver final : public ArPackageResolver
     }
 
   private:
-    using PackageCache = std::unordered_map<std::string, std::shared_ptr<Package>>;
-
-    std::shared_ptr<Package>
-    findPackage(const std::string& resolvedPackagePath)
+    static std::shared_ptr<Package>
+    findPackage(const std::shared_ptr<ResolverCache>& cache, const std::string& resolvedPackagePath)
     {
-        const auto cache = _caches.GetCurrentCache();
         if (!cache)
         {
             return openPackage(resolvedPackagePath);
         }
-        const auto found = cache->find(resolvedPackagePath);
-        if (found != cache->end())
         {
-            return found->second;
+            const std::lock_guard lock(cache->mutex);
+            const auto found = cache->packages.find(resolvedPackagePath);
+            if (found != cache->packages.end())
+            {
+                return found->second;
+            }
         }
-        return (*cache)[resolvedPackagePath] = openPackage(resolvedPackagePath);
+        // Opening the source may call this resolver again through a containing package.
+        auto package = openPackage(resolvedPackagePath);
+        const std::lock_guard lock(cache->mutex);
+        return cache->packages.try_emplace(resolvedPackagePath, std::move(package)).first->second;
     }
 
-    ArThreadLocalScopedCache<PackageCache> _caches;
+    ArThreadLocalScopedCache<ResolverCache> _caches;
 };
 
 AR_DEFINE_PACKAGE_RESOLVER(UsdGltfPackageResolver, ArPackageResolver);

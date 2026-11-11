@@ -13,6 +13,11 @@ here.
 - The import measurement tool records KTX2 conversion calls and time in two image read passes.
   The [development guide](docs/DEVELOPMENT.md) gives the command for the fixed sample set.
 
+### Changed
+
+- The package resolver reuses successful KTX2 and WebP conversions within an OpenUSD cache scope
+  when the source image bytes match.
+
 ## [0.3.0] - 2026-11-11
 
 ### Added

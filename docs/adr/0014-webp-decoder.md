@@ -77,8 +77,8 @@ plugin was built.
 The plugin has been built and tested only by CI. Its display has not been checked, and no sample asset
 has been run through it; the sample baseline still records the files that require the extension as
 rejected. Decoding time and memory were not measured: an image at the size limit decodes to 1 GiB of
-RGBA and is then copied into a PNG of the same size, as KTX2 is. Each read decodes again, because
-nothing is cached.
+RGBA and is then copied into a PNG of the same size, as KTX2 is. The current
+[texture design](../design/TEXTURES.md#cache-and-asset-lifetime) specifies scoped conversion reuse.
 
 libwebp has not been fuzzed by this project. Hostile files rely on upstream's own checks and fuzzing,
 and on the limits above.
