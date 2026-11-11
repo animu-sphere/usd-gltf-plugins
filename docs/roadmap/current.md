@@ -6,10 +6,6 @@ implementation order, which investigation may change. Each feature follows the
 
 ## v0.4.0: optimization and developer tools
 
-- Evaluate mesh sharing on ABeautifulGame against the
-  [import baseline](../reference/CAPABILITY_MATRIX.md#import-measurements). Resolve the
-  [mesh sharing decision](backlog.md#decisions-for-later-versions) before introducing shared
-  definitions or native instancing. Verify scene placement and rendering.
 - Define and test a portable package for derived USD and converted images. Verify that it opens
   independently of the glTF source, and that repeated conversions can reuse cached results safely.
   Evaluate a CLI that calls the same conversion library if the packaging workflow needs one.

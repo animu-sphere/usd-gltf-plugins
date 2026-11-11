@@ -61,6 +61,7 @@ available when the decision was made; they are not progress reports:
 - [0028: Skin placement](adr/0028-skin-placement.md)
 - [0029: Node animation](adr/0029-node-animation.md)
 - [0030: Choosing an animation](adr/0030-animation-choice.md)
+- [0031: Mesh sharing](adr/0031-mesh-sharing.md)
 
 New decisions go in `docs/adr/NNNN-title.md`.
 

@@ -36,10 +36,8 @@ Materials are collected under `/Root/Materials` and bound from geometry. See the
 Each node is an `Xform` with the node's local transform. Its mesh, camera and light are children of
 that `Xform`, not substitutes for it. Each mesh is an `Xform` containing one USD Mesh per glTF
 primitive, which retains the primitive boundaries needed for material bindings. Nodes and meshes are
-distinct concepts: a mesh that several nodes use is converted once, at the first of them in
-conversion order, and copied below the others, so that a shared representation can replace the
-copies later.
-No mesh definitions are authored where they would render, such as a visible `/Root/meshes`.
+distinct concepts. A mesh that several nodes use is converted once, at the first of them in
+conversion order, and copied below the others. See the [mesh sharing decision](../adr/0031-mesh-sharing.md).
 
 | Source | Prim name |
 | --- | --- |

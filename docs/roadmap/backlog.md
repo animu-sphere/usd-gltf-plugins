@@ -28,10 +28,6 @@ regression tests and a reproducible release process.
 
 Record the investigation and outcome in an ADR before relying on these:
 
-- Mesh sharing: where shared definitions live and how nodes compose them, without drawing them twice
-  or inheriting `visibility`, `active` or `purpose` through references; then per-instance material
-  bindings, skins, blend shapes, editing restrictions and renderer support for native instancing.
-  See [ADR 0026](../adr/0026-scene-hierarchy.md).
 - Importing several scenes of one file, and how a user chooses between them. Only the selected scene
   is authored until then.
 - Resource resolution through custom asset resolvers and shared parent directories, with its
