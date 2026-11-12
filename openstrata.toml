@@ -1,7 +1,7 @@
 [project]
 name = "usd-gltf-plugins"
 # Mirrors VERSION; scripts/make_release_notes.py checks that they agree.
-version = "0.3.0"
+version = "0.4.0"
 
 [requires]
 platform = "cy2026"

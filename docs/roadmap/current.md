@@ -4,14 +4,17 @@ Unfinished work only; see the [task lifecycle](README.md#task-lifecycle). Tasks 
 implementation order, which investigation may change. Each feature follows the
 [contract for adding a feature](../design/IMPLEMENTATION_POLICY.md#adding-a-gltf-feature).
 
-## v0.4.0: optimization and developer tools
+## v0.5.0: Draco mesh compression
 
-- Verify ABI and package loading for additional OpenUSD versions and compilers before adding them
-  to the supported targets.
+- Evaluate a pinnable Draco decoder for `KHR_draco_mesh_compression`. Measure the package size and
+  document the license, build requirements and decision for the release platforms.
+- If the decoder is adopted, define how Draco attributes and indices map to the existing mesh
+  conversion. Verify required and optional extension handling, including uncompressed fallback and
+  preservation of the existing layer when a compressed payload fails to decode.
 
 ### Release criteria
 
-- Conversion and distribution procedures are reproducible, including opening a derived package
-  independently of its source.
-- Each shipped optimization has a recorded baseline and a measured result on the same sample set.
+- Any shipped Draco support opens the supported compressed Khronos samples and verifies their
+  authored mesh data. Unsupported inputs produce diagnostics and the sample baseline records the
+  observed outcomes.
 - The [release gate](README.md#release-gate) is satisfied.

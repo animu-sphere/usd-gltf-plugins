@@ -5,14 +5,14 @@ schema: openstrata.library/v1alpha1
 library:
   id: gltfTexture
   # Mirrors VERSION; scripts/make_release_notes.py checks that they agree.
-  version: 0.3.0
+  version: 0.4.0
 cmake:
   package: gltfTexture
   target: gltfTexture::gltfTexture
 requires:
   libraries:
     - id: gltfCore
-      version: ">=0.3,<0.4"
+      version: ">=0.4,<0.5"
 runtime:
   # Static: nothing to put on a loader path.
   directories: []
