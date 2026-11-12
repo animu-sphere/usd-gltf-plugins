@@ -4,13 +4,12 @@ Later versions, in planned order. Nothing here has started; see the
 [task lifecycle](README.md#task-lifecycle). The next release is in
 [current.md](current.md).
 
-## v0.5.0 and later
+## Later versions
 
 Prioritize extensions by actual asset demand, the size and license of their dependencies, and the
 cost of distributing them on every platform. Begin USD-to-glTF export only after defining a separate
 specification and quality goals, without complicating the importer's verification or ABI boundary.
 
-- `KHR_draco_mesh_compression`, decided independently of mesh quantization.
 - Further material extensions, one pull request each after investigating renderer representation.
 - Supplied and generated tangent frames for normal maps and anisotropy, including handedness,
   mirrored and nonuniform transforms, and agreement with a glTF reference renderer. Revise

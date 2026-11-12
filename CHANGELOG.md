@@ -8,6 +8,8 @@ here.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-12
+
 ### Added
 
 - The import measurement tool records KTX2 conversion calls and time in two image read passes.
@@ -22,9 +24,9 @@ here.
 
 ### Fixed
 
-- Reject GLB files with inconsistent file or chunk lengths, KTX2 images with incompatible
-  supercompression schemes, and Zstandard-compressed UASTC levels whose declared sizes do not
-  match their dimensions.
+- Reject GLB files with inconsistent file or chunk lengths, buffer and accessor declarations that
+  exceed their data, KTX2 images with incompatible supercompression schemes, and Zstandard-compressed
+  UASTC levels whose declared sizes do not match their dimensions.
 
 ## [0.3.0] - 2026-11-11
 
