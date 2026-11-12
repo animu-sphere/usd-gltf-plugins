@@ -126,6 +126,61 @@ def mesh_document(extension, index_type=5123):
     return document, binary if extension == "glb" else None
 
 
+DRACO = "KHR_draco_mesh_compression"
+
+
+def draco_document(fallback=False, quantized=False):
+    # Generated with Draco 1.5.9's MeshBuilder and MESH_SEQUENTIAL_ENCODING, with two
+    # faces (0,1,2) and (2,1,3). COLOR_0 (unique ID 0) precedes POSITION (unique ID 1).
+    if quantized:
+        compressed = base64.b64decode(
+            "RFJBQ08CAgEAAAACBAEAAQICAQMBAgICBAEAAAMDAQEBAQABAQAJAwEQFwEwAwBQgikQACAIIBAAGBAA8A8AAAAA"
+            "/wAAAAABAQADAwEwARADACiCiBEAAAAA/38AAA=="
+        )
+    else:
+        compressed = base64.b64decode(
+            "RFJBQ08CAgEAAAACBAEAAQICAQMBAgICBAEAAAkDAAEBAAABAQAJAwEQFwEwAwBQgikQACAIIBAAGBAA8A8AAAAA"
+            "/wAAAAAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAIA/AAAAAAAAgD8AAIA/AAAAAA=="
+        )
+    binary = bytearray(compressed)
+    document = {
+        "asset": {"version": "2.0"}, "scene": 0, "scenes": [{"nodes": [0]}],
+        "nodes": [{"mesh": 0}], "extensionsUsed": [DRACO],
+        "meshes": [{"primitives": [{
+            "attributes": {"POSITION": 0, "COLOR_0": 1, "TEXCOORD_0": 2}, "indices": 3,
+            "extensions": {DRACO: {"bufferView": 0, "attributes": {"POSITION": 1, "COLOR_0": 0}}},
+        }]}],
+        "bufferViews": [{"buffer": 0, "byteLength": len(compressed)}],
+        "accessors": [
+            {"componentType": 5126, "count": 4, "type": "VEC3", "min": [0, 0, 0], "max": [1, 1, 0]},
+            {"componentType": 5121, "normalized": True, "count": 4, "type": "VEC4"},
+            {"componentType": 5126, "count": 4, "type": "VEC2"},
+            {"componentType": 5123, "count": 6, "type": "SCALAR"},
+        ],
+    }
+
+    def append_accessor_data(index, data):
+        binary.extend(b"\0" * (-len(binary) % 4))
+        document["accessors"][index]["bufferView"] = len(document["bufferViews"])
+        document["bufferViews"].append({"buffer": 0, "byteOffset": len(binary), "byteLength": len(data)})
+        binary.extend(data)
+
+    append_accessor_data(2, struct.pack("<8f", 0, 0, 1, 0, 0, 1, 1, 1))
+    if fallback:
+        # Different points and colors make the source of the authored data observable.
+        append_accessor_data(0, struct.pack("<12f", 10, 0, 0, 11, 0, 0, 10, 1, 0, 11, 1, 0))
+        append_accessor_data(1, b"\xff" * 16)
+        append_accessor_data(3, struct.pack("<6H", 0, 1, 2, 2, 1, 3))
+    else:
+        document["extensionsRequired"] = [DRACO]
+    if quantized:
+        document["extensionsUsed"].append("KHR_mesh_quantization")
+        document["extensionsRequired"].append("KHR_mesh_quantization")
+        document["accessors"][0].update(componentType=5122, normalized=True, max=[32767, 32767, 0])
+    document["buffers"] = [{"byteLength": len(binary)}]
+    return document, bytes(binary)
+
+
 def uv_document(extension, external=False):
     document, binary = mesh_document("glb")
     binary += b"\0" * (-len(binary) % 4)
@@ -841,6 +896,95 @@ def topology_document(extension, mode, indices, external=False, normal=False, in
 
 
 class FileFormatTest(unittest.TestCase):
+    def test_draco_mesh_data(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            for source in ("glb", "quantized glb", "data URI", "external", "optional with fallback"):
+                with self.subTest(source=source):
+                    document, binary = draco_document(fallback=source == "optional with fallback",
+                                                      quantized=source == "quantized glb")
+                    path = root / (source + (".glb" if source.endswith("glb") else ".gltf"))
+                    if source == "external":
+                        (root / "draco mesh.bin").write_bytes(binary)
+                        document["buffers"][0]["uri"] = "draco%20mesh.bin"
+                    elif source == "data URI" or source == "optional with fallback":
+                        document["buffers"][0]["uri"] = "data:application/octet-stream;base64," + base64.b64encode(binary).decode()
+                    write_asset(path, document, binary)
+                    stage = Usd.Stage.Open(str(path))
+                    mesh = UsdGeom.Mesh.Get(stage, "/Root/Scenes/Scene_0/Node_0/Mesh_0/Primitive_0")
+                    self.assertEqual(list(mesh.GetPointsAttr().Get()),
+                                     [Gf.Vec3f(0, 0, 0), Gf.Vec3f(1, 0, 0),
+                                      Gf.Vec3f(0, 1, 0), Gf.Vec3f(1, 1, 0)])
+                    self.assertEqual(list(mesh.GetFaceVertexCountsAttr().Get()), [3, 3])
+                    self.assertEqual(list(mesh.GetFaceVertexIndicesAttr().Get()), [0, 1, 2, 2, 1, 3])
+                    self.assertEqual(list(mesh.GetNormalsAttr().Get()), [Gf.Vec3f(0, 0, 1)] * 2)
+                    primvars = UsdGeom.PrimvarsAPI(mesh)
+                    self.assertEqual(list(primvars.GetPrimvar("st").Get()),
+                                     [Gf.Vec2f(0, 1), Gf.Vec2f(1, 1), Gf.Vec2f(0, 0), Gf.Vec2f(1, 0)])
+                    self.assertEqual(list(primvars.GetPrimvar("displayColor").Get()),
+                                     [Gf.Vec3f(1, 0, 0), Gf.Vec3f(0, 1, 0),
+                                      Gf.Vec3f(0, 0, 1), Gf.Vec3f(1, 1, 1)])
+                    for alpha, byte in zip(primvars.GetPrimvar("gltf_colorAlpha").Get(), (255, 64, 128, 0),
+                                           strict=True):
+                        self.assertAlmostEqual(alpha, byte / 255)
+
+    def test_optional_draco_triangle_strip_fallback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "strip.glb"
+            document, binary = draco_document(fallback=True)
+            primitive = document["meshes"][0]["primitives"][0]
+            primitive["mode"] = 5
+            # The core fallback is a four-vertex strip with no index accessor.
+            del primitive["indices"]
+            document["accessors"][0].update(min=[10, 0, 0], max=[11, 1, 0])
+            write_asset(path, document, binary)
+            stage = Usd.Stage.Open(str(path))
+            mesh = UsdGeom.Mesh.Get(stage, "/Root/Scenes/Scene_0/Node_0/Mesh_0/Primitive_0")
+            self.assertEqual(mesh.GetPointsAttr().Get()[0], Gf.Vec3f(10, 0, 0))
+            self.assertEqual(list(mesh.GetFaceVertexIndicesAttr().Get()), [0, 1, 2, 2, 1, 3])
+            self.assertEqual(list(UsdGeom.PrimvarsAPI(mesh).GetPrimvar("displayColor").Get()),
+                             [Gf.Vec3f(1, 1, 1)] * 4)
+
+    def test_draco_failures_preserve_layer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "draco.glb"
+            original, binary = draco_document()
+            write_asset(path, original, binary)
+            stage = Usd.Stage.Open(str(path))
+            layer = stage.GetRootLayer()
+            before = layer_text(layer)
+            cases = ("required corruption", "optional corruption", "short bufferView", "invalid bufferView",
+                     "unknown unique ID", "point count", "index count", "required strip", "fallback missing")
+            for case in cases:
+                with self.subTest(case=case):
+                    document, payload = draco_document(fallback=case == "optional corruption")
+                    primitive = document["meshes"][0]["primitives"][0]
+                    compression = primitive["extensions"][DRACO]
+                    if case.endswith("corruption"):
+                        payload = b"!" + payload[1:]
+                    elif case == "short bufferView":
+                        document["bufferViews"][0]["byteLength"] = 14
+                    elif case == "invalid bufferView":
+                        compression["bufferView"] = 100
+                    elif case == "unknown unique ID":
+                        compression["attributes"]["POSITION"] = 100
+                    elif case == "point count":
+                        document["accessors"][0]["count"] = 3
+                    elif case == "index count":
+                        document["accessors"][3]["count"] = 3
+                    else:
+                        primitive["mode"] = 5
+                        if case == "fallback missing":
+                            del document["extensionsRequired"]
+                    write_asset(path, document, payload)
+                    message = "without a bufferView" if case == "fallback missing" else DRACO
+                    with self.assertRaisesRegex(Tf.ErrorException, message):
+                        layer.Reload(True)
+                    self.assertEqual(layer_text(layer), before)
+            write_asset(path, original, binary)
+            self.assertTrue(layer.Reload(True))
+            self.assertEqual(layer_text(layer), before)
+
     def test_import_measurement_counts_ktx2_decodes(self):
         from measure_import import inspect_asset
 
@@ -7096,9 +7240,9 @@ assert layer.ExportToString() == Path(sys.argv[3]).read_text(encoding="utf-8")
                                     "extensionsRequired": ["UNKNOWN_extension"]},
                                    "cannot parse .*unsupported required extensions: UNKNOWN_extension"),
             "disabled required extension": ({"asset": {"version": "2.0"}, "scenes": [{}],
-                                             "extensionsUsed": ["KHR_draco_mesh_compression"],
-                                             "extensionsRequired": ["KHR_draco_mesh_compression"]},
-                                            "unsupported required extensions: KHR_draco_mesh_compression"),
+                                             "extensionsUsed": ["EXT_meshopt_compression"],
+                                             "extensionsRequired": ["EXT_meshopt_compression"]},
+                                            "unsupported required extensions: EXT_meshopt_compression"),
             "several required extensions": ({"asset": {"version": "2.0"}, "scenes": [{}],
                                              "extensionsUsed": ["KHR_texture_basisu", "EXT_texture_avif",
                                                                 "UNKNOWN_extension"],

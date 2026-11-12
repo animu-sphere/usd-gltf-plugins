@@ -34,7 +34,8 @@ import numpy
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 BASELINE = ROOT / "tests" / "sample_baseline.json"
-IMPLEMENTED_EXTENSIONS = {"EXT_texture_webp", "KHR_lights_punctual", "KHR_materials_anisotropy", "KHR_materials_clearcoat", "KHR_materials_ior", "KHR_materials_iridescence",
+DRACO = "KHR_draco_mesh_compression"
+IMPLEMENTED_EXTENSIONS = {"EXT_texture_webp", DRACO, "KHR_lights_punctual", "KHR_materials_anisotropy", "KHR_materials_clearcoat", "KHR_materials_ior", "KHR_materials_iridescence",
                           "KHR_materials_sheen", "KHR_materials_specular", "KHR_materials_transmission", "KHR_materials_unlit", "KHR_materials_volume",
                           "KHR_mesh_quantization", "KHR_texture_basisu", "KHR_texture_transform"}
 PATHS = ("mtlx", "preview")
@@ -98,6 +99,8 @@ class Asset:
         else:
             self.json = json.loads(data.decode("utf-8"))
         self.buffers = {}
+        self.draco_attributes = {}
+        self.draco_indices = {}
 
     def get(self, key):
         return self.json.get(key, [])
@@ -135,6 +138,52 @@ class Asset:
         offset = view.get("byteOffset", 0)
         return self.buffer(view["buffer"])[offset:offset + view["byteLength"]]
 
+    def decode_draco(self):
+        requests = []
+        primitives = []
+        for mesh in self.get("meshes"):
+            for primitive in mesh["primitives"]:
+                compression = primitive.get("extensions", {}).get(DRACO)
+                if not compression or primitive.get("mode", 4) != 4:
+                    continue
+                accessors = {name: self.get("accessors")[primitive["attributes"][name]]
+                             for name in compression["attributes"]}
+                requests.append({"bytes": base64.b64encode(self.buffer_view(compression["bufferView"])).decode(),
+                                 "attributes": [{"id": compression["attributes"][name],
+                                                 "component": accessor["componentType"],
+                                                 "size": numpy.dtype(COMPONENTS[accessor["componentType"]]).itemsize
+                                                 * TYPES[accessor["type"]]}
+                                                for name, accessor in accessors.items()]})
+                primitives.append((primitive, accessors))
+        if not requests:
+            return
+        process = subprocess.run(["node", str(ROOT / "tests" / "decode_sample_draco.cjs")],
+                                 input=json.dumps(requests), capture_output=True, text=True,
+                                 encoding="utf-8", timeout=TIMEOUT_SECONDS)
+        if process.returncode:
+            raise RuntimeError(f"Draco reference decoder failed: {process.stderr.strip()}")
+        for (primitive, accessors), decoded in zip(primitives, json.loads(process.stdout), strict=True):
+            key = id(primitive)
+            self.draco_indices[key] = numpy.frombuffer(base64.b64decode(decoded["indices"]), "<u4").reshape(-1, 3)
+            self.draco_attributes[key] = {}
+            for (name, accessor), data in zip(accessors.items(), decoded["values"], strict=True):
+                dtype = numpy.dtype(COMPONENTS[accessor["componentType"]]).newbyteorder("<")
+                values = numpy.frombuffer(base64.b64decode(data), dtype).reshape(accessor["count"], TYPES[accessor["type"]])
+                self.draco_attributes[key][name] = self.normalize(values, accessor)
+
+    def attribute(self, primitive, name):
+        decoded = self.draco_attributes.get(id(primitive), {})
+        if name in decoded:
+            return decoded[name]
+        return self.accessor(primitive["attributes"][name])
+
+    @staticmethod
+    def normalize(values, accessor):
+        component = accessor["componentType"]
+        if component in NORMALIZED_SCALE and accessor.get("normalized"):
+            return numpy.maximum(values.astype(numpy.float64) / NORMALIZED_SCALE[component], -1.0)
+        return values
+
     def accessor(self, index, normalize=True):
         """Returns an accessor's values as (count, components), as float for normalized integers."""
         accessor = self.json["accessors"][index]
@@ -159,9 +208,7 @@ class Asset:
                                     sparse["count"] * width, replacements.get("byteOffset", 0))
             values = values.copy()
             values[rows] = data.reshape(-1, width)
-        if normalize and component in NORMALIZED_SCALE and accessor.get("normalized"):
-            return numpy.maximum(values.astype(numpy.float64) / NORMALIZED_SCALE[component], -1.0)
-        return values
+        return self.normalize(values, accessor) if normalize else values
 
     def image_bytes(self, index):
         """Returns the bytes of an image, or None when they are not stored as PNG or JPEG."""
@@ -293,6 +340,8 @@ def check_light(check, prim, light, world, label):
 
 def expected_triangles(asset, primitive, vertices):
     """Returns the triangles a primitive means, in a rotation that does not depend on the author."""
+    if id(primitive) in asset.draco_indices:
+        return asset.draco_indices[id(primitive)]
     indices = asset.accessor(primitive["indices"]).reshape(-1).astype(numpy.int64) if "indices" in primitive \
         else numpy.arange(vertices, dtype=numpy.int64)
     mode = primitive.get("mode", 4)
@@ -322,7 +371,7 @@ def check_primitive(check, asset, prim, primitive, label):
 
     mesh = UsdGeom.Mesh(prim)
     attributes = primitive["attributes"]
-    positions = asset.accessor(attributes["POSITION"])
+    positions = asset.attribute(primitive, "POSITION")
     check.close(mesh.GetPointsAttr().Get(), positions, f"{label} points")
 
     counts = numpy.asarray(mesh.GetFaceVertexCountsAttr().Get())
@@ -334,7 +383,7 @@ def check_primitive(check, asset, prim, primitive, label):
 
     normals = mesh.GetNormalsAttr().Get()
     if "NORMAL" in attributes:
-        check.close(normals, asset.accessor(attributes["NORMAL"]), f"{label} normals")
+        check.close(normals, asset.attribute(primitive, "NORMAL"), f"{label} normals")
     elif primitive.get("targets"):
         check.expect(not normals, f"{label} authors normals for a morph target without base normals")
     else:
@@ -343,15 +392,15 @@ def check_primitive(check, asset, prim, primitive, label):
     primvars = UsdGeom.PrimvarsAPI(prim)
     sets = sorted(int(name[9:]) for name in attributes if name.startswith("TEXCOORD_"))
     for number in sets:
-        values = numpy.array(asset.accessor(attributes[f"TEXCOORD_{number}"]), numpy.float64)
+        values = numpy.array(asset.attribute(primitive, f"TEXCOORD_{number}"), numpy.float64)
         values[:, 1] = 1.0 - values[:, 1]
         name = "st" if number == 0 else f"st{number}"
         check.close(primvars.GetPrimvar(name).Get(), values, f"{label} {name}")
     if "TANGENT" in attributes:
-        check.close(primvars.GetPrimvar("gltf_tangent").Get(), asset.accessor(attributes["TANGENT"]),
+        check.close(primvars.GetPrimvar("gltf_tangent").Get(), asset.attribute(primitive, "TANGENT"),
                     f"{label} tangents")
     if "COLOR_0" in attributes:
-        colors = asset.accessor(attributes["COLOR_0"])
+        colors = asset.attribute(primitive, "COLOR_0")
         check.close(primvars.GetPrimvar("displayColor").Get(), colors[:, :3], f"{label} displayColor")
         if colors.shape[1] == 4:
             check.close(primvars.GetPrimvar("gltf_colorAlpha").Get(), colors[:, 3], f"{label} gltf_colorAlpha")
@@ -1217,10 +1266,10 @@ def check_skinning(check, stage, asset, plan, node_paths, placements):
                      f"{prim.GetPath()}: wrong skeleton binding")
         attrs = primitive["attributes"]
         sets = range(sum(name.startswith("JOINTS_") for name in attrs))
-        weights = numpy.concatenate([asset.accessor(attrs[f"WEIGHTS_{i}"]) for i in sets], axis=1)
+        weights = numpy.concatenate([asset.attribute(primitive, f"WEIGHTS_{i}") for i in sets], axis=1)
         meshes.append((mesh, node, index, {
-            "points": asset.accessor(attrs["POSITION"]),
-            "joints": numpy.concatenate([asset.accessor(attrs[f"JOINTS_{i}"]) for i in sets], axis=1),
+            "points": asset.attribute(primitive, "POSITION"),
+            "joints": numpy.concatenate([asset.attribute(primitive, f"JOINTS_{i}") for i in sets], axis=1),
             "weights": weights / weights.sum(axis=1, keepdims=True),
         }))
 
@@ -1422,8 +1471,13 @@ def inspect(path, root, directory):
     result["ignored"] = sorted(set(used) - IMPLEMENTED_EXTENSIONS)
     # Embedded images share a parsed package only inside a resolver cache scope.
     # Bound the scope to this inspection, so another file or reload sees fresh bytes.
-    with Ar.ResolverScopedCache():
-        result["mismatches"], result["meshes"] = check_meaning(stage, asset)
+    try:
+        asset.decode_draco()
+    except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
+        result.update(mismatches=[str(error)], meshes=sum(prim.GetTypeName() == "Mesh" for prim in stage.Traverse()))
+    else:
+        with Ar.ResolverScopedCache():
+            result["mismatches"], result["meshes"] = check_meaning(stage, asset)
 
     for shading in PATHS:
         session = Sdf.Layer.CreateAnonymous(".usda")
@@ -1544,7 +1598,7 @@ def mesh_causes(document, mesh):
         if "indices" in primitive:
             accessors.append(primitive["indices"])
         # Compressed primitives keep their data in the extension, not a bufferView.
-        compressed = primitive.get("extensions", {}).keys() & {"KHR_draco_mesh_compression"}
+        compressed = DRACO in primitive.get("extensions", {})
         for index in accessors:
             accessor = document["accessors"][index]
             if "sparse" in accessor:

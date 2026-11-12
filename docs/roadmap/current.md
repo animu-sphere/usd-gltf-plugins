@@ -6,11 +6,9 @@ implementation order, which investigation may change. Each feature follows the
 
 ## v0.5.0: Draco mesh compression
 
-- Evaluate a pinnable Draco decoder for `KHR_draco_mesh_compression`. Measure the package size and
-  document the license, build requirements and decision for the release platforms.
-- If the decoder is adopted, define how Draco attributes and indices map to the existing mesh
-  conversion. Verify required and optional extension handling, including uncompressed fallback and
-  preservation of the existing layer when a compressed payload fails to decode.
+- Verify the Draco-enabled bundle on macOS arm64 in release CI and measure its package size against
+  a v0.4.0 build with the same toolchain. Add the result to the
+  [decoder decision](../adr/0033-draco-decoder.md#package-size).
 
 ### Release criteria
 

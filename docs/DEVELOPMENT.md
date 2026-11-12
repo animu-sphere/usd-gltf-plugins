@@ -51,11 +51,14 @@ python tests\check_display.py build\cy2026-windows-x86_64-py313-usd
 It exits nonzero if a comparison fails, and keeps images and logs in `display_check` in
 the build directory.
 
-To compare every Khronos sample asset with the committed baseline, in the same environment and with
-a [glTF-Sample-Assets](https://github.com/KhronosGroup/glTF-Sample-Assets) checkout at the baseline's
-commit:
+To compare every Khronos sample asset with the committed baseline, use the same environment and a
+[glTF-Sample-Assets](https://github.com/KhronosGroup/glTF-Sample-Assets) checkout at the baseline's
+commit. Draco comparisons use Node.js and the `draco3dgltf` module in the pinned
+[Draco 1.5.9 source archive](https://github.com/google/draco/releases/tag/1.5.9). With the archive
+extracted under `build/`:
 
 ```powershell
+$env:USD_GLTF_DRACO_REFERENCE = (Resolve-Path build/draco-1.5.9/javascript/npm/draco3dgltf).Path
 python tests\check_samples.py build\cy2026-windows-x86_64-py313-usd <glTF-Sample-Assets> --render
 ```
 

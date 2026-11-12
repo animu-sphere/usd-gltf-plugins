@@ -135,11 +135,33 @@ selectVertexFormat(const fastgltf::Asset& asset, std::size_t index, VertexAttrib
     return true;
 }
 
+struct MeshAccessor
+{
+    const fastgltf::Asset& asset;
+    std::size_t index;
+};
+
+MeshAccessor
+meshAccessor(const fastgltf::Asset& asset, const fastgltf::Attribute& attribute,
+             const gltfCore::DecodedDracoPrimitive* decoded)
+{
+    if (decoded)
+    {
+        const auto mapped = decoded->attributes.find(attribute.name);
+        if (mapped != decoded->attributes.end())
+        {
+            return {decoded->data, mapped->second};
+        }
+    }
+    return {asset, attribute.accessorIndex};
+}
+
 bool
-readVectors(const fastgltf::Asset& asset, std::size_t index, VertexAttribute attribute,
-            VtVec3fArray& values, std::string& error, const gltfCore::BufferLoader& loadBuffer,
+readVectors(MeshAccessor source, VertexAttribute attribute, VtVec3fArray& values,
+            std::string& error, const gltfCore::BufferLoader& loadBuffer,
             std::optional<std::size_t> morphCount = std::nullopt)
 {
+    const auto& [asset, index] = source;
     VertexFormat format;
     if (!selectVertexFormat(asset, index, attribute, format, error))
     {
@@ -193,9 +215,10 @@ readVectors(const fastgltf::Asset& asset, std::size_t index, VertexAttribute att
 }
 
 bool
-readTangents(const fastgltf::Asset& asset, std::size_t index, VtVec4fArray& values,
-             std::string& error, const gltfCore::BufferLoader& loadBuffer)
+readTangents(MeshAccessor source, VtVec4fArray& values, std::string& error,
+             const gltfCore::BufferLoader& loadBuffer)
 {
+    const auto& [asset, index] = source;
     VertexFormat format;
     if (!selectVertexFormat(asset, index, VertexAttribute::Tangent, format, error))
     {
@@ -228,9 +251,10 @@ readTangents(const fastgltf::Asset& asset, std::size_t index, VtVec4fArray& valu
 }
 
 bool
-readTexcoords(const fastgltf::Asset& asset, std::size_t index, VtVec2fArray& values,
-              std::string& error, const gltfCore::BufferLoader& loadBuffer)
+readTexcoords(MeshAccessor source, VtVec2fArray& values, std::string& error,
+              const gltfCore::BufferLoader& loadBuffer)
 {
+    const auto& [asset, index] = source;
     VertexFormat format;
     if (!selectVertexFormat(asset, index, VertexAttribute::Texcoord, format, error))
     {
@@ -268,9 +292,10 @@ readTexcoords(const fastgltf::Asset& asset, std::size_t index, VtVec2fArray& val
 }
 
 bool
-readColors(const fastgltf::Asset& asset, std::size_t index, VtVec3fArray& colors,
-           VtFloatArray& alpha, std::string& error, const gltfCore::BufferLoader& loadBuffer)
+readColors(MeshAccessor source, VtVec3fArray& colors, VtFloatArray& alpha, std::string& error,
+           const gltfCore::BufferLoader& loadBuffer)
 {
+    const auto& [asset, index] = source;
     if (index >= asset.accessors.size())
     {
         error = "vertex color accessor index is out of range";
@@ -439,10 +464,6 @@ unsupportedPrimitiveContent(const fastgltf::Primitive& primitive)
     default:
         break;
     }
-    if (primitive.dracoCompression)
-    {
-        return "KHR_draco_mesh_compression is not supported";
-    }
     return primitive.mappings.empty() ? "" : "KHR_materials_variants is not supported";
 }
 
@@ -469,7 +490,7 @@ authorMorphTargets(const fastgltf::Asset& asset, const fastgltf::Primitive& prim
                 error = "repeated or missing base attribute for morph target " + attribute.name;
                 return false;
             }
-            if (!readVectors(asset, attribute.accessorIndex,
+            if (!readVectors({asset, attribute.accessorIndex},
                              position ? VertexAttribute::Position : VertexAttribute::Normal, values,
                              error, loadBuffer, pointCount))
             {
@@ -510,7 +531,8 @@ authorMorphTargets(const fastgltf::Asset& asset, const fastgltf::Primitive& prim
 bool
 authorPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& primitive,
                 const UsdPrim& parent, std::size_t index, std::string& error,
-                const gltfCore::BufferLoader& loadBuffer, MaterialAuthor& materials)
+                const gltfCore::BufferLoader& loadBuffer, MaterialAuthor& materials,
+                const gltfCore::DecodedDracoPrimitive* decoded)
 {
     error = unsupportedPrimitiveContent(primitive);
     if (!error.empty())
@@ -575,14 +597,14 @@ authorPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& primiti
         }
     }
     VtVec3fArray points;
-    if (!readVectors(asset, position->accessorIndex, VertexAttribute::Position, points, error,
-                     loadBuffer))
+    if (!readVectors(meshAccessor(asset, *position, decoded), VertexAttribute::Position, points,
+                     error, loadBuffer))
     {
         return false;
     }
     VtVec3fArray normals;
-    if (normal && (!readVectors(asset, normal->accessorIndex, VertexAttribute::Normal, normals,
-                                error, loadBuffer) ||
+    if (normal && (!readVectors(meshAccessor(asset, *normal, decoded), VertexAttribute::Normal,
+                                normals, error, loadBuffer) ||
                    normals.size() != points.size()))
     {
         if (error.empty())
@@ -592,7 +614,8 @@ authorPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& primiti
         return false;
     }
     VtVec4fArray tangents;
-    if (tangent && !readTangents(asset, tangent->accessorIndex, tangents, error, loadBuffer))
+    if (tangent &&
+        !readTangents(meshAccessor(asset, *tangent, decoded), tangents, error, loadBuffer))
     {
         return false;
     }
@@ -603,7 +626,8 @@ authorPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& primiti
     }
     VtVec3fArray colors;
     VtFloatArray alpha;
-    if (color && !readColors(asset, color->accessorIndex, colors, alpha, error, loadBuffer))
+    if (color &&
+        !readColors(meshAccessor(asset, *color, decoded), colors, alpha, error, loadBuffer))
     {
         return false;
     }
@@ -615,7 +639,8 @@ authorPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& primiti
     std::vector<VtVec2fArray> uvSets(texcoords.size());
     for (std::size_t i = 0; i < texcoords.size(); ++i)
     {
-        if (!readTexcoords(asset, texcoords[i].second->accessorIndex, uvSets[i], error, loadBuffer))
+        if (!readTexcoords(meshAccessor(asset, *texcoords[i].second, decoded), uvSets[i], error,
+                           loadBuffer))
         {
             return false;
         }
@@ -626,7 +651,11 @@ authorPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& primiti
         }
     }
     VtIntArray indices;
-    if (primitive.indicesAccessor)
+    if (decoded)
+    {
+        indices.assign(decoded->indices.begin(), decoded->indices.end());
+    }
+    else if (primitive.indicesAccessor)
     {
         if (!readIndices(asset, *primitive.indicesAccessor, points.size(), primitive.type, indices,
                          error, loadBuffer))
@@ -761,7 +790,8 @@ authorPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& primiti
 // Collects the indices of a vertex attribute's numbered sets in set order.
 bool
 skinAccessors(const fastgltf::Primitive& primitive, std::string_view prefix,
-              std::vector<std::pair<std::size_t, std::size_t>>& sets, std::string& error)
+              std::vector<std::pair<std::size_t, const fastgltf::Attribute*>>& sets,
+              std::string& error)
 {
     for (const auto& attribute : primitive.attributes)
     {
@@ -778,7 +808,7 @@ skinAccessors(const fastgltf::Primitive& primitive, std::string_view prefix,
             error = "invalid skin attribute: " + attribute.name;
             return false;
         }
-        sets.emplace_back(number, attribute.accessorIndex);
+        sets.emplace_back(number, &attribute);
     }
     std::sort(sets.begin(), sets.end());
     for (std::size_t i = 0; i < sets.size(); ++i)
@@ -793,19 +823,21 @@ skinAccessors(const fastgltf::Primitive& primitive, std::string_view prefix,
 }
 
 bool
-readInfluenceSet(const fastgltf::Asset& asset, std::size_t jointsIndex, std::size_t weightsIndex,
+readInfluenceSet(MeshAccessor jointSource, MeshAccessor weightSource,
                  const gltfCore::BufferLoader& loadBuffer, const std::vector<int>& remap,
                  std::size_t pointCount, std::size_t width, std::size_t offset, VtIntArray& indices,
                  VtFloatArray& weights, std::string& error)
 {
     using fastgltf::ComponentType;
-    if (jointsIndex >= asset.accessors.size() || weightsIndex >= asset.accessors.size())
+    const auto& [jointAsset, jointsIndex] = jointSource;
+    const auto& [weightAsset, weightsIndex] = weightSource;
+    if (jointsIndex >= jointAsset.accessors.size() || weightsIndex >= weightAsset.accessors.size())
     {
         error = "skin attribute accessor index is out of range";
         return false;
     }
-    const auto jointType = asset.accessors[jointsIndex].componentType;
-    const auto weightType = asset.accessors[weightsIndex].componentType;
+    const auto jointType = jointAsset.accessors[jointsIndex].componentType;
+    const auto weightType = weightAsset.accessors[weightsIndex].componentType;
     const bool quantized = weightType != ComponentType::Float;
     if ((jointType != ComponentType::UnsignedByte && jointType != ComponentType::UnsignedShort) ||
         (quantized && weightType != ComponentType::UnsignedByte &&
@@ -817,10 +849,11 @@ readInfluenceSet(const fastgltf::Asset& asset, std::size_t jointsIndex, std::siz
     const auto jointSize = fastgltf::getComponentByteSize(jointType);
     const auto weightSize = fastgltf::getComponentByteSize(weightType);
     gltfCore::AccessorData joints, values;
-    if (!gltfCore::GetAccessorData(asset, jointsIndex, fastgltf::AccessorType::Vec4, jointType,
+    if (!gltfCore::GetAccessorData(jointAsset, jointsIndex, fastgltf::AccessorType::Vec4, jointType,
                                    4 * jointSize, true, joints, error, loadBuffer) ||
-        !gltfCore::GetAccessorData(asset, weightsIndex, fastgltf::AccessorType::Vec4, weightType,
-                                   4 * weightSize, true, values, error, loadBuffer, quantized))
+        !gltfCore::GetAccessorData(weightAsset, weightsIndex, fastgltf::AccessorType::Vec4,
+                                   weightType, 4 * weightSize, true, values, error, loadBuffer,
+                                   quantized))
     {
         return false;
     }
@@ -854,9 +887,9 @@ readInfluenceSet(const fastgltf::Asset& asset, std::size_t jointsIndex, std::siz
 bool
 bindPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& primitive,
               const UsdPrim& prim, const MappedSkin& skin, const gltfCore::BufferLoader& loadBuffer,
-              std::string& error)
+              std::string& error, const gltfCore::DecodedDracoPrimitive* decoded)
 {
-    std::vector<std::pair<std::size_t, std::size_t>> joints, weights;
+    std::vector<std::pair<std::size_t, const fastgltf::Attribute*>> joints, weights;
     if (!skinAccessors(primitive, "JOINTS_", joints, error) ||
         !skinAccessors(primitive, "WEIGHTS_", weights, error))
     {
@@ -881,8 +914,9 @@ bindPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& primitive
     VtFloatArray influences(pointCount * width);
     for (std::size_t i = 0; i < joints.size(); ++i)
     {
-        if (!readInfluenceSet(asset, joints[i].second, weights[i].second, loadBuffer, skin.remap,
-                              pointCount, width, 4 * i, indices, influences, error))
+        if (!readInfluenceSet(meshAccessor(asset, *joints[i].second, decoded),
+                              meshAccessor(asset, *weights[i].second, decoded), loadBuffer,
+                              skin.remap, pointCount, width, 4 * i, indices, influences, error))
         {
             return false;
         }
@@ -924,7 +958,7 @@ bindPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& primitive
 bool
 ConvertMesh(const fastgltf::Asset& asset, std::size_t meshIndex, const pxr::UsdStagePtr& stage,
             const pxr::SdfPath& path, const gltfCore::BufferLoader& loadBuffer,
-            MaterialAuthor& materials)
+            MaterialAuthor& materials, DecodedMeshes& decodedMeshes)
 {
     using namespace pxr;
     if (meshIndex >= asset.meshes.size())
@@ -968,11 +1002,33 @@ ConvertMesh(const fastgltf::Asset& asset, std::size_t meshIndex, const pxr::UsdS
             return false;
         }
         std::string error;
-        if (!authorPrimitive(asset, source.primitives[i], group.GetPrim(), i, error, loadBuffer,
-                             materials))
+        const auto& primitive = source.primitives[i];
+        gltfCore::DecodedDracoPrimitive decoded;
+        if (!gltfCore::DecodeDracoPrimitive(asset, primitive, loadBuffer, decoded, error) ||
+            !authorPrimitive(asset, primitive, group.GetPrim(), i, error, loadBuffer, materials,
+                             decoded.indices.empty() ? nullptr : &decoded))
         {
             TF_RUNTIME_ERROR("glTF mesh %zu primitive %zu: %s", meshIndex, i, error.c_str());
             return false;
+        }
+        if (primitive.dracoCompression && decoded.indices.empty())
+        {
+            TF_WARN("glTF mesh %zu primitive %zu: using uncompressed TRIANGLE_STRIP fallback for "
+                    "KHR_draco_mesh_compression",
+                    meshIndex, i);
+        }
+        // Only primitives with compressed influences need their accessors again for skin binding.
+        if (std::any_of(decoded.attributes.begin(), decoded.attributes.end(),
+                        [](const auto& entry)
+                        {
+                            return entry.first.starts_with("JOINTS_") ||
+                                   entry.first.starts_with("WEIGHTS_");
+                        }))
+        {
+            decodedMeshes.emplace(
+                std::pair{meshIndex, i},
+                gltfCore::DecodedDracoPrimitive{.data = std::move(decoded.data),
+                                                .attributes = std::move(decoded.attributes)});
         }
     }
     return true;
@@ -981,7 +1037,7 @@ ConvertMesh(const fastgltf::Asset& asset, std::size_t meshIndex, const pxr::UsdS
 bool
 BindSkinnedMesh(const fastgltf::Asset& asset, std::size_t meshIndex, const pxr::UsdStagePtr& stage,
                 const pxr::SdfPath& path, const MappedSkin& skin,
-                const gltfCore::BufferLoader& loadBuffer)
+                const gltfCore::BufferLoader& loadBuffer, const DecodedMeshes& decodedMeshes)
 {
     const auto& primitives = asset.meshes[meshIndex].primitives;
     for (std::size_t i = 0; i < primitives.size(); ++i)
@@ -989,7 +1045,9 @@ BindSkinnedMesh(const fastgltf::Asset& asset, std::size_t meshIndex, const pxr::
         const auto prim =
             stage->GetPrimAtPath(path.AppendChild(TfToken("Primitive_" + std::to_string(i))));
         std::string error;
-        if (!bindPrimitive(asset, primitives[i], prim, skin, loadBuffer, error))
+        const auto decoded = decodedMeshes.find({meshIndex, i});
+        if (!bindPrimitive(asset, primitives[i], prim, skin, loadBuffer, error,
+                           decoded == decodedMeshes.end() ? nullptr : &decoded->second))
         {
             TF_RUNTIME_ERROR("glTF skinned mesh %zu primitive %zu at %s: %s", meshIndex, i,
                              path.GetText(), error.c_str());

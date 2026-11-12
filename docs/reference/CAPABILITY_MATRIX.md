@@ -18,6 +18,7 @@ Scopes used below:
   [CI environments](#tested-environments). This says nothing about how a
   renderer displays the result.
 - **Local Windows:** run locally on Windows x86-64 with MSVC and OpenUSD 26.08.
+- **Local Windows and Linux:** also run on Linux x86-64 with GCC and OpenUSD 26.08 under WSL2.
 
 CI success is not evidence of display compatibility.
 
@@ -35,6 +36,7 @@ CI success is not evidence of display compatibility.
 | Cameras | Verified (USD data, CI) | Perspective, finite and infinite, and orthographic, below each node that uses them, with the node's scale cancelled as glTF ignores it. An undefined aspect ratio is authored as 1 and keeps `yfov` only where the renderer matches the viewport's height, and an infinite projection ends at 1,000,000. Degenerate, reflected and sheared nodes and values outside the specification fail. Compared as a renderer combines view and projection, not rendered. See the [decision record](../adr/0012-cameras.md). | `tests/test_file_format.py::test_cameras`, `tests/test_file_format.py::test_cameras_reference_into_a_scaled_stage`, `tests/test_file_format.py::test_camera_failures_preserve_layer`, `tests/test_file_format.py::test_cameras_outside_selected_scene_are_not_checked` |
 | Lights (`KHR_lights_punctual`) | Experimental | Directional, point and spot, optional or required, below each node that uses them, with the node's scale, shear and reflection cancelled. A directional light is a distant light in lux. A point or spot light is a sphere of 1 millimeter whose intensity gives glTF's candela, so a renderer that ignores `treatAsPoint` draws a small sphere. The cone's softness approximates glTF's spot falloff, and Storm ignores the cone. `range` is ignored, with a warning. Degenerate nodes and values outside the specification fail. Tested in CI, with the [display check](#display-checks) on Windows. See the [decision record](../adr/0013-lights.md). | `tests/test_file_format.py::test_lights`, `tests/test_file_format.py::test_lights_reference_into_a_scaled_stage`, `tests/test_file_format.py::test_light_range_is_ignored_with_a_warning`, `tests/test_file_format.py::test_light_failures_preserve_layer`, `tests/test_file_format.py::test_lights_required_and_outside_selected_scene`, `tests/check_display.py` |
 | Triangle-based meshes | Verified (USD data, CI) | Indexed and non-indexed TRIANGLES, TRIANGLE_STRIP and TRIANGLE_FAN with float or quantized POSITION. Interleaved accessors are accepted. | `tests/test_file_format.py::test_triangle_meshes`, `tests/test_file_format.py::test_triangle_strips_and_fans`, `tests/test_file_format.py::test_triangle_strip_and_fan_index_types_and_nonindexed_counts`, `tests/test_file_format.py::test_mesh_schema_attributes` |
+| Draco (`KHR_draco_mesh_compression`) | Verified (Local Windows and Linux) | Draco 2.2 TRIANGLES with bufferViews from GLB, data URIs and restricted external buffers. Mapped attributes and faces feed normal mesh authoring, including skin influences. Optional TRIANGLE_STRIP uses its uncompressed fallback with a warning. Required strips and corrupt triangle payloads fail. The [Khronos sample checks](#sample-assets) ran on Windows. See the [decision record](../adr/0033-draco-decoder.md). | `tests/test_file_format.py::test_draco_mesh_data`, `tests/test_file_format.py::test_optional_draco_triangle_strip_fallback`, `tests/test_file_format.py::test_draco_failures_preserve_layer`, [`tests/check_samples.py`](../../tests/check_samples.py) |
 | Normals | Verified (USD data, CI) | Supplied float or quantized NORMAL, or generated per face when absent. | `tests/test_file_format.py::test_flat_normals_and_negative_scale` |
 | Mesh quantization (`KHR_mesh_quantization`) | Verified (USD data, CI) | Every format the extension adds to base POSITION, NORMAL, TANGENT and TEXCOORD_n, authored as floats, when the file lists it in `extensionsRequired`. Without that, quantized data fails. Normals are not renormalized, so a renderer must normalize them, which Storm was [seen to do](#display-checks) on two samples only. See the morph target row for quantized deltas. | `tests/test_file_format.py::test_quantized_attribute_formats`, `tests/test_file_format.py::test_quantized_values_keep_their_range_and_precision`, `tests/test_file_format.py::test_quantized_attributes_interleaved_with_node_transform`, `tests/test_file_format.py::test_quantization_declared_without_quantized_data`, `tests/test_file_format.py::test_quantized_failures_preserve_layer` |
 | Texture coordinate sets | Verified (USD data, CI) | Consecutive TEXCOORD_n. Authored values; sampling through them is covered by the texture rows. | `tests/test_file_format.py::test_texture_coordinates`, `tests/test_file_format.py::test_texture_coordinate_failures_preserve_layer` |
@@ -404,26 +406,26 @@ with these checks. The two CommercialRefrigerator files show the
 [documented near-identity rotation limit](../adr/0029-node-animation.md#limits) at 3.5 seconds,
 where world matrix elements differ by up to 2.16e-4.
 
-Seven files previously rejected for morph targets draw at default time through both shader paths
-in Storm with the OpenStrata lookdev runtime and an NVIDIA RTX A5000. The other render results
-are from previous runs in the same environment. NodePerformanceTest's GLB timed out through both
-shader paths. The sample check runs outside CI.
+All 18 compressed Draco files opened and their meshes agreed with an independent Draco Wasm
+reference path. CarConcept also uses two ignored optional material extensions. All 18 drew at
+default time through both shader paths in Storm with the OpenStrata lookdev runtime and an NVIDIA
+RTX A5000. The other render results are from previous runs in the same environment.
+NodePerformanceTest's GLB timed out through both shader paths. The sample check runs outside CI.
 
 | Result | Files | What it means |
 | --- | --- | --- |
-| Opened | 301 | The stage opens. No file crashed or timed out while opening. |
-| Rejected | 38 | Each has a diagnostic naming a cause the file really has. |
-| Meaning verified | 242 | USD agrees with values decoded from the file, in all that is compared, and the file uses no ignored extension. |
-| Meaning partial | 59 | The same, but the file uses an optional extension that is ignored, with a warning. What it changes is not compared. |
+| Opened | 319 | The stage opens. No file crashed or timed out while opening. |
+| Rejected | 20 | Each has a diagnostic naming a cause the file really has. |
+| Meaning verified | 259 | USD agrees with values decoded from the file, in all that is compared, and the file uses no ignored extension. |
+| Meaning partial | 60 | The same, but the file uses an optional extension that is ignored, with a warning. What it changes is not compared. |
 | Meaning differs | 0 | |
-| Rendered | 300 | Storm drew through both shader paths, measured by coverage in a static frame. One more file timed out through both. |
+| Rendered | 318 | Storm drew through both shader paths, measured by coverage in a static frame. One more file timed out through both. |
 
 Why files are rejected, read from each file. Most files have several causes, so a count of files that
 have a cause is not what supporting it would open:
 
 | Cause | Files with it | Files with only it |
 | --- | --- | --- |
-| Requires `KHR_draco_mesh_compression` | 18 | 18 |
 | Morph target TANGENT deltas | 2 | 2 |
 | Requires a material extension | 4 | 4 |
 | Requires `KHR_node_visibility` | 4 | 4 |

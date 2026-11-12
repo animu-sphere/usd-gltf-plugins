@@ -61,6 +61,25 @@ function(usd_gltf_add_fastgltf)
     add_subdirectory("${third_party_dir}/fastgltf" "${CMAKE_BINARY_DIR}/third_party/fastgltf")
 endfunction()
 
+# Draco's glTF bitstream decoder. Owned by gltfCore.
+function(usd_gltf_add_draco)
+    if(TARGET usd_gltf_draco)
+        return()
+    endif()
+    _usd_gltf_hide_symbols()
+    set(draco_src "${USD_GLTF_THIRD_PARTY_DIR}/draco/src")
+    file(GLOB_RECURSE draco_sources CONFIGURE_DEPENDS "${draco_src}/draco/*.cc")
+    add_library(usd_gltf_draco STATIC ${draco_sources})
+    target_include_directories(usd_gltf_draco SYSTEM PUBLIC
+        "$<BUILD_INTERFACE:${draco_src}>"
+        "$<BUILD_INTERFACE:${USD_GLTF_REPOSITORY_ROOT}/cmake/draco>")
+    target_compile_features(usd_gltf_draco PUBLIC cxx_std_20)
+    if(MSVC)
+        target_compile_options(usd_gltf_draco PRIVATE /utf-8)
+    endif()
+    set_target_properties(usd_gltf_draco PROPERTIES EXPORT_NAME draco)
+endfunction()
+
 # The Basis Universal transcoder, for KTX2, with its Zstandard decoder. Owned by gltfTexture.
 function(usd_gltf_add_basisu)
     if(TARGET usd_gltf_basisu)

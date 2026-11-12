@@ -473,3 +473,9 @@ constitute direct or contributory patent infringement, or inducement of
 patent infringement, then any patent rights granted to you under this License
 for these implementations of WebM shall terminate as of the date such
 litigation is filed.
+
+Draco mesh decoder 1.5.9
+https://github.com/google/draco
+
+Copyright The Draco Authors (Google Inc. and other contributors).
+Licensed under the Apache License, Version 2.0. See the accompanying LICENSE.
