@@ -50,13 +50,14 @@ and optional paths.
 ## Package size
 
 Compare v0.4.0 (`31585d8`) with the Draco build, using Release builds against the same OpenUSD 26.08
-runtime and compiler on each host. The archive measurement uses `tar --zstd` on each CMake install
-tree, including plugin registration and notices. Sizes are in bytes.
+runtime and compiler on each host. Windows and Linux use `tar --zstd` on each CMake install tree,
+including plugin registration and notices. macOS uses the OpenStrata release bundle archives from
+`31585d8` and `f7c36a7`, built on the same `macos-15-arm64` runner image. The
+[capability matrix](../reference/CAPABILITY_MATRIX.md#tested-environments) links the release
+verification. Sizes are in bytes.
 
-| Environment | Plugin library, v0.4.0 → Draco | Install archive, v0.4.0 → Draco | Archive increase |
+| Environment | Plugin library, v0.4.0 → Draco | Compressed archive, v0.4.0 → Draco | Archive increase |
 | --- | ---: | ---: | ---: |
 | Windows x86-64, MSVC 19.51 | 3,054,592 → 3,243,520 | 1,308,421 → 1,390,410 | 81,989 (6.3%) |
 | Linux x86-64, GCC 15.2 in Ubuntu under WSL2 | 4,267,544 → 4,811,872 | 1,924,007 → 2,101,192 | 177,185 (9.2%) |
-
-The [current roadmap](../roadmap/current.md) tracks the remaining macOS arm64 measurement and
-release checks.
+| macOS arm64, Apple Clang 17.0.0.17000013 | 2,846,776 → 3,205,192 | 1,123,560 → 1,209,529 | 85,969 (7.7%) |
