@@ -20,6 +20,12 @@ here.
 - The package resolver reuses successful KTX2 and WebP conversions within an OpenUSD cache scope
   when the source image bytes match.
 
+### Fixed
+
+- Reject GLB files with inconsistent file or chunk lengths, KTX2 images with incompatible
+  supercompression schemes, and Zstandard-compressed UASTC levels whose declared sizes do not
+  match their dimensions.
+
 ## [0.3.0] - 2026-11-11
 
 ### Added

@@ -44,6 +44,34 @@ openKtx2(basist::ktx2_transcoder& transcoder, std::span<const std::byte> bytes, 
         error = "KTX2 image is not a single 2D image";
         return false;
     }
+    const auto scheme = std::uint32_t(transcoder.get_header().m_supercompression_scheme);
+    const bool supportedScheme = transcoder.is_etc1s() ? scheme == basist::KTX2_SS_BASISLZ
+                                                       : scheme == basist::KTX2_SS_NONE ||
+                                                             scheme == basist::KTX2_SS_ZSTANDARD;
+    if (!supportedScheme)
+    {
+        error = "KTX2 image has an invalid supercompression scheme";
+        return false;
+    }
+    if (scheme == basist::KTX2_SS_ZSTANDARD)
+    {
+        // The transcoder allocates the declared length before inflating it. Each 4x4 UASTC
+        // block occupies 16 bytes after inflation, even at the edge of a mip level.
+        auto width = transcoder.get_width();
+        auto height = transcoder.get_height();
+        for (const auto& level : transcoder.get_level_index())
+        {
+            const auto blocksWide = (width + 3) / 4;
+            const auto blocksHigh = (height + 3) / 4;
+            if (level.m_uncompressed_byte_length.get_uint64() != 16ull * blocksWide * blocksHigh)
+            {
+                error = "KTX2 image has an invalid uncompressed level size";
+                return false;
+            }
+            width = std::max(width / 2, 1u);
+            height = std::max(height / 2, 1u);
+        }
+    }
     // KHR_texture_basisu requires this orientation, which matches PNG's row order.
     if (const auto* orientation = transcoder.find_key("KTXorientation"))
     {

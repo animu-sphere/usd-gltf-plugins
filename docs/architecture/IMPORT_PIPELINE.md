@@ -40,6 +40,10 @@ than a success result containing an unintentionally incomplete stage. Scene
 selection is defined in
 [SCENE_CONVENTIONS](../design/SCENE_CONVENTIONS.md#scene-selection).
 
+The GLB header's total length must match the input size. Chunk lengths must be
+multiples of four, fit within the file, and account for all bytes after the header
+together with their chunk headers.
+
 ## External resource policy
 
 For buffers and images used by the selected scene, `.gltf` and `.glb` imports

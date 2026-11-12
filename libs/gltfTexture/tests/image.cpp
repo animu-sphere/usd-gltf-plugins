@@ -7,7 +7,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <iterator>
 #include <limits>
 #include <span>
 #include <string>
@@ -269,11 +272,73 @@ checkPng()
     return ok;
 }
 
+bool
+checkDecode(std::span<const std::byte> bytes, ImageFormat format, bool requireSuccess)
+{
+    std::vector<std::byte> png;
+    std::string error;
+    if (!gltfTexture::ConvertToPng(bytes, format, png, error))
+    {
+        return !requireSuccess && !error.empty() && png.empty();
+    }
+    return gltfTexture::DetectImageFormat(png, format) && format == ImageFormat::Png &&
+           gltfTexture::CheckImage(png, format, error);
+}
+
+bool
+checkMutations(const std::filesystem::path& fixture, ImageFormat format, std::size_t payload = 0)
+{
+    std::ifstream input(fixture, std::ios::binary);
+    std::vector<char> data(std::istreambuf_iterator<char>{input}, {});
+    const auto bytes = std::as_writable_bytes(std::span(data));
+    ImageFormat detected;
+    std::string error;
+    if (!gltfTexture::DetectImageFormat(bytes, detected) || detected != format ||
+        !gltfTexture::CheckImage(bytes, format, error) ||
+        (payload && (payload >= bytes.size() || !checkDecode(bytes, format, true))))
+    {
+        std::cerr << fixture << ": invalid fuzz seed: " << error << '\n';
+        return false;
+    }
+
+    // Flip each bit once. Only mutate the known payload for decode tests so that dimensions
+    // and the amount of memory needed for a successful decode stay fixed.
+    for (std::size_t offset = 0; offset < bytes.size(); ++offset)
+    {
+        for (unsigned bit = 0; bit < 8; ++bit)
+        {
+            const auto mask = std::byte(1u << bit);
+            bytes[offset] ^= mask;
+            if (gltfTexture::DetectImageFormat(bytes, detected))
+            {
+                error.clear();
+                const bool accepted = gltfTexture::CheckImage(bytes, format, error);
+                if (detected != format || (!accepted && error.empty()) ||
+                    (accepted && format == ImageFormat::Png) ||
+                    (payload && offset >= payload && !checkDecode(bytes, format, false)))
+                {
+                    std::cerr << fixture << ": unexpected result at byte " << offset << ", bit "
+                              << bit << ": " << error << '\n';
+                    return false;
+                }
+            }
+            bytes[offset] ^= mask;
+        }
+    }
+    return true;
+}
+
 } // namespace
 
 int
-main()
+main(int argc, char** argv)
 {
+    if (argc != 2)
+    {
+        std::cerr << "usage: image_test <texture fixture directory>\n";
+        return 1;
+    }
+    const auto fixtures = std::filesystem::u8path(argv[1]);
     bool ok =
         checkDetect({0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n'}, true, ImageFormat::Png, "PNG");
     ok = checkDetect({0xFF, 0xD8, 0xFF}, true, ImageFormat::Jpeg, "JPEG") && ok;
@@ -331,5 +396,11 @@ main()
     ok = checkStructure() && ok;
     ok = checkWebp() && ok;
     ok = checkWebpStructure() && ok;
+    ok = checkMutations(fixtures / "orientation.png", ImageFormat::Png) && ok;
+    ok = checkMutations(fixtures / "flat.jpg", ImageFormat::Jpeg) && ok;
+    // Payload offsets in these seeds follow their VP8L header or come from the KTX2 level index.
+    ok = checkMutations(fixtures / "lossless_alpha.webp", ImageFormat::Webp, 25) && ok;
+    ok = checkMutations(fixtures / "etc1s_alpha.ktx2", ImageFormat::Ktx2, 344) && ok;
+    ok = checkMutations(fixtures / "uastc_zstd.ktx2", ImageFormat::Ktx2, 184) && ok;
     return ok ? 0 : 1;
 }

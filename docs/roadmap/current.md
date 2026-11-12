@@ -6,8 +6,6 @@ implementation order, which investigation may change. Each feature follows the
 
 ## v0.4.0: optimization and developer tools
 
-- Add fuzz and property coverage for malicious URIs, damaged accessors and images, and very large
-  inputs. Address serious security findings as they are discovered.
 - Verify ABI and package loading for additional OpenUSD versions and compilers before adding them
   to the supported targets.
 
