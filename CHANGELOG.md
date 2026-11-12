@@ -8,6 +8,11 @@ here.
 
 ## [Unreleased]
 
+### Added
+
+- Import `KHR_draco_mesh_compression` triangle meshes with a pinned Draco decoder, including
+  vertex attributes and skin influences. See the [Draco decision](docs/adr/0033-draco-decoder.md).
+
 ## [0.4.0] - 2026-11-12
 
 ### Added

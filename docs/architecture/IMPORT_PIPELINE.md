@@ -40,6 +40,12 @@ than a success result containing an unintentionally incomplete stage. Scene
 selection is defined in
 [SCENE_CONVENTIONS](../design/SCENE_CONVENTIONS.md#scene-selection).
 
+For a compressed mesh in the selected scene, the importer reads Draco from its bufferView and
+validates the decoded faces and attributes before publishing the layer. Mapped attributes supply
+the existing USD mesh and skin authoring paths. Other attributes and morph targets still use
+their glTF accessors. A failed decode leaves the previous layer intact on reload. See the
+[Draco decision](../adr/0033-draco-decoder.md) for topology and fallback behavior.
+
 The GLB header's total length must match the input size. Chunk lengths must be
 multiples of four, fit within the file, and account for all bytes after the header
 together with their chunk headers.

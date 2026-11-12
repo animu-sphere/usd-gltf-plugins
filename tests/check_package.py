@@ -6,8 +6,8 @@ the repository, and opens fixtures in a session whose only plugin is the extract
 
     python tests/check_package.py plugins/usdGltfFileFormat/dist/plugins/usdGltfFileFormat/<version>/<target>
 
-`ost plugin test --from-package` confirms discovery. This adds an import, images resolved through
-the packaged resolver, a KTX2 image decoded by the packaged transcoder, and the licenses.
+`ost plugin test --from-package` confirms discovery. This checks glTF and Draco mesh import,
+KTX2 images served through the packaged resolver, and the licenses.
 """
 
 import argparse
@@ -30,7 +30,8 @@ def run(*command):
 
 def check_inside_session(package):
     """Runs in the session, where the extracted package is the only source of the plugin."""
-    from pxr import Ar, Plug, Usd, UsdShade
+    from pxr import Ar, Plug, Usd, UsdGeom, UsdShade
+    from test_file_format import draco_document, write_asset
 
     plugin = Plug.Registry().GetPluginWithName("UsdGltfFileFormat")
     assert plugin is not None, "the plugin is not registered"
@@ -39,10 +40,18 @@ def check_inside_session(package):
     resources = package / "plugin" / "resources" / "usdGltfFileFormat"
     for name in ("LICENSE", "NOTICES.txt"):
         assert (resources / name).is_file(), f"{name} is not in the package"
+    assert "Draco mesh decoder" in (resources / "NOTICES.txt").read_text(encoding="utf-8")
 
     stage = Usd.Stage.Open(str(FIXTURES / "reflections.gltf"))
     assert stage and stage.GetDefaultPrim().GetPath() == "/Root", "a .gltf file did not open"
     assert any(prim.GetTypeName() == "Mesh" for prim in stage.Traverse()), "no mesh was imported"
+
+    with tempfile.TemporaryDirectory(prefix="gltf-package-draco-") as directory:
+        path = pathlib.Path(directory) / "mesh.glb"
+        write_asset(path, *draco_document())
+        stage = Usd.Stage.Open(str(path))
+        mesh = UsdGeom.Mesh.Get(stage, "/Root/Scenes/Scene_0/Node_0/Mesh_0/Primitive_0")
+        assert list(mesh.GetFaceVertexIndicesAttr().Get()) == [0, 1, 2, 2, 1, 3], "Draco faces differ"
 
     stage = Usd.Stage.Open(str(FIXTURES / "ktx2_textures.gltf"))
     assert stage, "a .gltf file with KTX2 images did not open"
@@ -57,7 +66,7 @@ def check_inside_session(package):
             # The fixture's first image is a plain PNG file, and the rest are KTX2 in the resolver.
             decoded += "[images/" in resolved
     assert decoded == 5, f"expected 5 KTX2 images through the resolver, found {decoded}"
-    print(f"The package at {package} opened fixtures and served {decoded} KTX2 images.")
+    print(f"The package at {package} opened a Draco mesh and served {decoded} KTX2 images.")
 
 
 def main():

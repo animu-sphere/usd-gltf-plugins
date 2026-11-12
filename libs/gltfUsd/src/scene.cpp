@@ -67,12 +67,13 @@ defineNode(const UsdStageRefPtr& stage, const SceneMap& map, const SdfPath& path
 bool
 placeMesh(const fastgltf::Asset& asset, const SceneMap& map, std::size_t meshIndex,
           const SdfPath& path, const UsdStageRefPtr& stage,
-          const gltfCore::BufferLoader& loadBuffer, MaterialAuthor& materials)
+          const gltfCore::BufferLoader& loadBuffer, MaterialAuthor& materials,
+          DecodedMeshes& decodedMeshes)
 {
     const auto& first = map.meshes[meshIndex].front();
     if (path == first)
     {
-        return ConvertMesh(asset, meshIndex, stage, path, loadBuffer, materials);
+        return ConvertMesh(asset, meshIndex, stage, path, loadBuffer, materials, decodedMeshes);
     }
     // Material bindings target a scope outside the copied subtree, so they are copied unchanged.
     const auto layer = stage->GetRootLayer();
@@ -328,6 +329,7 @@ authorScene(const fastgltf::Asset& asset, const std::string& sourcePath,
     }
 
     MaterialAuthor materials(asset, sourcePath, loadBuffer, stage, materialScope.GetPath());
+    DecodedMeshes decodedMeshes;
     std::vector<AnimatedCorrection> corrections;
     for (std::size_t position = 0; position < map->nodes.size(); ++position)
     {
@@ -354,7 +356,8 @@ authorScene(const fastgltf::Asset& asset, const std::string& sourcePath,
             return {};
         }
         if (node.meshIndex &&
-            !placeMesh(asset, *map, *node.meshIndex, mapped.mesh, stage, loadBuffer, materials))
+            !placeMesh(asset, *map, *node.meshIndex, mapped.mesh, stage, loadBuffer, materials,
+                       decodedMeshes))
         {
             return {};
         }
@@ -382,7 +385,8 @@ authorScene(const fastgltf::Asset& asset, const std::string& sourcePath,
         const auto& mapped = map->nodes[position];
         const auto& node = asset.nodes[mapped.index];
         if (node.skinIndex && !BindSkinnedMesh(asset, *node.meshIndex, stage, mapped.mesh,
-                                               map->skins.at(*node.skinIndex), loadBuffer))
+                                               map->skins.at(*node.skinIndex), loadBuffer,
+                                               decodedMeshes))
         {
             return {};
         }

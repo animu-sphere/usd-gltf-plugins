@@ -1,6 +1,6 @@
 # The OpenStrata descriptor of gltfCore: parsing with fastgltf, and checked access to glTF data,
 # URIs and buffers (docs/architecture/WORKSPACE.md). A static library with no OpenUSD dependency.
-# Its installed package carries the vendored fastgltf, simdjson and simdutf archives it links.
+# Its installed package carries the vendored fastgltf, simdjson, simdutf and Draco archives it links.
 schema: openstrata.library/v1alpha1
 library:
   id: gltfCore
