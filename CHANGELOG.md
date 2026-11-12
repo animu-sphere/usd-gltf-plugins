@@ -8,6 +8,8 @@ here.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-13
+
 ### Added
 
 - Import `KHR_draco_mesh_compression` triangle meshes with a pinned Draco decoder, including

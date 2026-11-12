@@ -4,15 +4,15 @@ Unfinished work only; see the [task lifecycle](README.md#task-lifecycle). Tasks 
 implementation order, which investigation may change. Each feature follows the
 [contract for adding a feature](../design/IMPLEMENTATION_POLICY.md#adding-a-gltf-feature).
 
-## v0.5.0: Draco mesh compression
+## v0.6.0: Tangent frames
 
-- Verify the Draco-enabled bundle on macOS arm64 in release CI and measure its package size against
-  a v0.4.0 build with the same toolchain. Add the result to the
-  [decoder decision](../adr/0033-draco-decoder.md#package-size).
+- Evaluate supplied and generated tangent frames for normal maps and anisotropy in MaterialX and
+  UsdPreviewSurface. Revise [ADR 0004](../adr/0004-normal-textures-and-tangents.md#tangents) with the
+  supported shading paths and the frame contract before changing authoring.
+- Implement the adopted frame contract and cover handedness, mirrored UVs and nonuniform transforms.
 
 ### Release criteria
 
-- Any shipped Draco support opens the supported compressed Khronos samples and verifies their
-  authored mesh data. Unsupported inputs produce diagnostics and the sample baseline records the
-  observed outcomes.
+- Compare the shipped frame behavior with a glTF reference renderer for supplied and generated
+  tangents. Record agreement and renderer limitations in the capability matrix.
 - The [release gate](README.md#release-gate) is satisfied.
