@@ -326,6 +326,15 @@ which the parser would otherwise read as 1 or as absent, and an intensity beyond
 by the area. A light that no
 selected node uses is not checked.
 
+## Node visibility
+
+For `KHR_node_visibility`, `visible: false` authors `visibility = "invisible"` on the node's
+Xform or SkelRoot. A missing property and `visible: true` leave the USD fallback of `inherited`.
+The authored opinion applies to the node's meshes and punctual lights and those of its descendants.
+Cameras stay active at their existing paths with their original transforms and projection.
+Each placement of a shared mesh inherits from its own node.
+See the [visibility decision](../adr/0036-node-visibility.md).
+
 ## Scene selection
 
 Select the declared default scene. If no default is declared, select the first

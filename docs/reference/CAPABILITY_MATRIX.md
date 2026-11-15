@@ -33,7 +33,8 @@ CI success is not evidence of display compatibility.
 | Import measurements | Experimental | Fresh-process stage-open time, peak resident memory, repeated point/topology arrays, and KTX2 conversion count and time. See [measurements](#import-measurements) and [ADR 0024](../adr/0024-import-measurements.md). | `tests/measure_import.py`, `tests/test_file_format.py::test_import_measurement_counts_repeated_geometry`, `tests/test_file_format.py::test_import_measurement_counts_ktx2_decodes` |
 | Converted image reuse | Verified (Local Windows) | Successful KTX2 and WebP conversions can be reused within an OpenUSD resolver cache scope. Checked with distinct stages and thread-local scopes, external file replacement and damage, and a retained asset read after scope exit. See the [texture design](../design/TEXTURES.md#cache-and-asset-lifetime) and [measurements](#scoped-image-reuse). | `tests/test_file_format.py::test_import_measurement_counts_ktx2_decodes`, `tests/test_file_format.py::test_converted_images_keep_scope_and_asset_lifetimes`, `tests/test_file_format.py::test_ktx2_file_resolves_after_moving_and_on_reload`, `tests/test_file_format.py::test_webp_images_are_served_as_png` |
 | Derived USDZ | Verified (Local Windows) | Verified the authored scene, animation variants and image bytes for local glTF and GLB sources after moving the USDZ, deleting the inputs and reopening without the glTF plugin. Tested with embedded and external PNG, external JPEG and PNG output from KTX2 and WebP. A decode failure leaves any existing output intact. See the [packaging contract](../architecture/IMPORT_PIPELINE.md#derived-usdz). | `tests/test_file_format.py::test_derived_usdz_opens_after_removing_sources`, `tests/test_file_format.py::test_derived_usdz_image_failure_preserves_output` |
-| Cameras | Verified (USD data, CI) | Perspective, finite and infinite, and orthographic, below each node that uses them, with the node's scale cancelled as glTF ignores it. An undefined aspect ratio is authored as 1 and keeps `yfov` only where the renderer matches the viewport's height, and an infinite projection ends at 1,000,000. Degenerate, reflected and sheared nodes and values outside the specification fail. Compared as a renderer combines view and projection, not rendered. See the [decision record](../adr/0012-cameras.md). | `tests/test_file_format.py::test_cameras`, `tests/test_file_format.py::test_cameras_reference_into_a_scaled_stage`, `tests/test_file_format.py::test_camera_failures_preserve_layer`, `tests/test_file_format.py::test_cameras_outside_selected_scene_are_not_checked` |
+| Cameras | Verified (USD data, CI) | Perspective, finite and infinite, and orthographic, below each node that uses them, with the node's scale cancelled as glTF ignores it. An undefined aspect ratio is authored as 1 and keeps `yfov` only where the renderer matches the viewport's height, and an infinite projection ends at 1,000,000. Degenerate, reflected and sheared nodes and values outside the specification fail. Compared as a renderer combines view and projection. The visibility display check also renders through an orthographic camera. See the [decision record](../adr/0012-cameras.md). | `tests/test_file_format.py::test_cameras`, `tests/test_file_format.py::test_cameras_reference_into_a_scaled_stage`, `tests/test_file_format.py::test_camera_failures_preserve_layer`, `tests/test_file_format.py::test_cameras_outside_selected_scene_are_not_checked` |
+| Node visibility (`KHR_node_visibility`) | Experimental | Static visibility, optional or required in glTF and GLB. Hidden nodes hide their meshes and punctual lights and those of their descendants. Cameras under hidden nodes stay usable in Storm. Malformed values fail and preserve the layer on reload. Optional `KHR_animation_pointer` channels are ignored with a warning. USD data, [Storm display](#display-checks) and [Khronos samples](#sample-assets) checked on Windows with OpenUSD 26.08. See [ADR 0036](../adr/0036-node-visibility.md). | `tests/test_file_format.py::test_node_visibility`, `tests/test_file_format.py::test_node_visibility_failures_preserve_layer`, `tests/check_display.py::check_node_visibility`, `tests/check_samples.py::check_meaning` |
 | Lights (`KHR_lights_punctual`) | Experimental | Directional, point and spot, optional or required, below each node that uses them, with the node's scale, shear and reflection cancelled. A directional light is a distant light in lux. A point or spot light is a sphere of 1 millimeter whose intensity gives glTF's candela, so a renderer that ignores `treatAsPoint` draws a small sphere. The cone's softness approximates glTF's spot falloff, and Storm ignores the cone. `range` is ignored, with a warning. Degenerate nodes and values outside the specification fail. Tested in CI, with the [display check](#display-checks) on Windows. See the [decision record](../adr/0013-lights.md). | `tests/test_file_format.py::test_lights`, `tests/test_file_format.py::test_lights_reference_into_a_scaled_stage`, `tests/test_file_format.py::test_light_range_is_ignored_with_a_warning`, `tests/test_file_format.py::test_light_failures_preserve_layer`, `tests/test_file_format.py::test_lights_required_and_outside_selected_scene`, `tests/check_display.py` |
 | Triangle-based meshes | Verified (USD data, CI) | Indexed and non-indexed TRIANGLES, TRIANGLE_STRIP and TRIANGLE_FAN with float or quantized POSITION. Interleaved accessors are accepted. | `tests/test_file_format.py::test_triangle_meshes`, `tests/test_file_format.py::test_triangle_strips_and_fans`, `tests/test_file_format.py::test_triangle_strip_and_fan_index_types_and_nonindexed_counts`, `tests/test_file_format.py::test_mesh_schema_attributes` |
 | Draco (`KHR_draco_mesh_compression`) | Verified (Windows x86-64, Linux x86-64, macOS arm64; OpenUSD 26.08) | Draco 2.2 TRIANGLES with bufferViews from GLB, data URIs and restricted external buffers. Mapped attributes and faces feed normal mesh authoring, including skin influences. Optional TRIANGLE_STRIP uses its uncompressed fallback with a warning. Required strips and corrupt triangle payloads fail. The [Khronos sample checks](#sample-assets) ran on Windows. See the [decision record](../adr/0033-draco-decoder.md). | `tests/test_file_format.py::test_draco_mesh_data`, `tests/test_file_format.py::test_optional_draco_triangle_strip_fallback`, `tests/test_file_format.py::test_draco_failures_preserve_layer`, [`tests/check_samples.py`](../../tests/check_samples.py), [workspace CI 43244411123](https://github.com/animu-sphere/usd-gltf-plugins/actions/runs/43244411123) |
@@ -237,6 +238,11 @@ of 1, as UsdLux defines. In each path, a point light of four times the candela a
 directional light of 1.5 lux and a spot light whose cone covers the quad all match it within 3, and a
 point light of the same candela at twice the height gives 24. A spot light turned away from the quad
 lights it the same, because Storm reads no shaping on a sphere light. A red light gives a red quad.
+
+The node visibility check renders through an imported orthographic camera below a hidden node.
+The visible placement of a shared mesh draws in both shader paths. The other two placements are
+black while their parent is hidden and appear when it is shown, including the explicitly visible child.
+Directional, point and spot lights under the parent contribute only while the parent is visible.
 
 The [alpha fixture](../../tests/fixtures/alpha_modes.gltf) has vertex alpha falling from 1
 at the left of each quad to 0 at the right, in front of a red backdrop. Both paths show,
@@ -460,14 +466,19 @@ both Storm shader paths. Their authored emission agrees with the glTF, including
 material with strength 1500. The checker also compares authored emission in the 13 files listing
 the extension as optional.
 
+All six CubeVisibility, LightVisibility and NodeVisibilityTest files opened and drew through
+both Storm shader paths. Their authored static mesh and light visibility agrees with the glTF.
+CubeVisibility and LightVisibility use optional `KHR_animation_pointer` channels, which the
+importer ignores with a warning.
+
 | Result | Files | What it means |
 | --- | --- | --- |
-| Opened | 323 | The stage opens. No file crashed or timed out while opening. |
-| Rejected | 16 | Each has a diagnostic naming a cause the file really has. |
-| Meaning verified | 269 | USD agrees with values decoded from the file, in all that is compared, and the file uses no ignored extension. |
-| Meaning partial | 54 | The same, but the file uses an optional extension that is ignored, with a warning. What it changes is not compared. |
+| Opened | 327 | The stage opens. No file crashed or timed out while opening. |
+| Rejected | 12 | Each has a diagnostic naming a cause the file really has. |
+| Meaning verified | 271 | USD agrees with values decoded from the file, in all that is compared, and the file uses no ignored extension. |
+| Meaning partial | 56 | The same, but the file uses an optional extension that is ignored, with a warning. What it changes is not compared. |
 | Meaning differs | 0 | |
-| Rendered | 322 | Storm drew through both shader paths, measured by coverage in a static frame. One more file timed out through both. |
+| Rendered | 326 | Storm drew through both shader paths, measured by coverage in a static frame. One more file timed out through both. |
 
 Why files are rejected, read from each file. Most files have several causes, so a count of files that
 have a cause is not what supporting it would open:
@@ -476,7 +487,6 @@ have a cause is not what supporting it would open:
 | --- | --- | --- |
 | Morph target TANGENT deltas | 2 | 2 |
 | Requires `KHR_materials_pbrSpecularGlossiness` | 2 | 2 |
-| Requires `KHR_node_visibility` | 4 | 4 |
 | Requires `KHR_meshopt_compression` | 3 | 3 |
 | Points or lines | 3 | 3 |
 | Sparse accessor | 2 | 2 |

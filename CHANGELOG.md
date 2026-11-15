@@ -8,6 +8,11 @@ here.
 
 ## [Unreleased]
 
+### Added
+
+- Import static node visibility (`KHR_node_visibility`) in glTF and GLB.
+  See the [node visibility decision](docs/adr/0036-node-visibility.md).
+
 ## [0.8.0] - 2026-11-15
 
 ### Added

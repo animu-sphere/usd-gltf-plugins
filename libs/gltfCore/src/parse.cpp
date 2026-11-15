@@ -201,6 +201,42 @@ hasMalformedLight(const std::byte* bytes, std::size_t size)
     return false;
 }
 
+// fastgltf rejects malformed visibility values without naming the extension or node.
+std::string
+describeMalformedNodeVisibility(const std::byte* bytes, std::size_t size)
+{
+    const auto json = jsonOf(bytes, size);
+    simdjson::dom::parser parser;
+    simdjson::dom::element root;
+    simdjson::dom::array nodes;
+    if (parser.parse(json.data(), json.size()).get(root) != simdjson::SUCCESS ||
+        root["nodes"].get_array().get(nodes) != simdjson::SUCCESS)
+    {
+        return {};
+    }
+    std::size_t index = 0;
+    for (const auto node : nodes)
+    {
+        simdjson::dom::element extension;
+        if (node["extensions"][fastgltf::extensions::KHR_node_visibility].get(extension) ==
+            simdjson::SUCCESS)
+        {
+            const auto prefix = "glTF node " + std::to_string(index) + ": KHR_node_visibility";
+            if (!extension.is_object())
+            {
+                return prefix + " must be an object";
+            }
+            simdjson::dom::element visible;
+            if (extension["visible"].get(visible) == simdjson::SUCCESS && !visible.is_bool())
+            {
+                return prefix + " visible must be a boolean";
+            }
+        }
+        ++index;
+    }
+    return {};
+}
+
 // Whether a number fastgltf reads as a float would overflow it.
 bool
 overflowsFloat(double number)
@@ -590,6 +626,7 @@ IsImplementedExtension(std::string_view extension)
            extension == fastgltf::extensions::KHR_materials_unlit ||
            extension == fastgltf::extensions::KHR_materials_volume ||
            extension == fastgltf::extensions::KHR_mesh_quantization ||
+           extension == fastgltf::extensions::KHR_node_visibility ||
            extension == fastgltf::extensions::KHR_texture_basisu ||
            extension == fastgltf::extensions::KHR_texture_transform;
 }
@@ -618,8 +655,8 @@ Parse(const std::byte* bytes, std::size_t size, std::string& error)
         fastgltf::Extensions::KHR_materials_sheen | fastgltf::Extensions::KHR_materials_specular |
         fastgltf::Extensions::KHR_materials_transmission |
         fastgltf::Extensions::KHR_materials_unlit | fastgltf::Extensions::KHR_materials_volume |
-        fastgltf::Extensions::KHR_mesh_quantization | fastgltf::Extensions::KHR_texture_basisu |
-        fastgltf::Extensions::KHR_texture_transform);
+        fastgltf::Extensions::KHR_mesh_quantization | fastgltf::Extensions::KHR_node_visibility |
+        fastgltf::Extensions::KHR_texture_basisu | fastgltf::Extensions::KHR_texture_transform);
     auto asset = parser.loadGltf(data.get(), {}, fastgltf::Options::None);
     auto result = asset.error();
     if (result == fastgltf::Error::None &&
@@ -656,7 +693,11 @@ Parse(const std::byte* bytes, std::size_t size, std::string& error)
     }
     if (result == fastgltf::Error::InvalidGltf || result == fastgltf::Error::InvalidJson)
     {
-        error = describeMalformedCheckedExtensions(bytes, size);
+        error = describeMalformedNodeVisibility(bytes, size);
+        if (error.empty())
+        {
+            error = describeMalformedCheckedExtensions(bytes, size);
+        }
         if (error.empty())
         {
             error = describeMalformedMaterial(bytes, size);
