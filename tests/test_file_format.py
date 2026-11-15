@@ -4147,6 +4147,92 @@ assert layer.ExportToString() == Path(sys.argv[3]).read_text(encoding="utf-8")
                             layer.Reload(True)
                         self.assertEqual(layer_text(layer), before)
 
+    def test_emissive_strength_materials(self):
+        name = "KHR_materials_emissive_strength"
+        emission = Gf.Vec3f(0.5, 0.25, 1)
+        cases = (("core", None, False, 1), ("default", {}, False, 1),
+                 ("one", {"emissiveStrength": 1}, True, 1), ("zero", {"emissiveStrength": 0}, False, 0),
+                 ("dim", {"emissiveStrength": 0.5}, False, 0.5), ("hdr", {"emissiveStrength": 4}, True, 4))
+        with tempfile.TemporaryDirectory() as directory:
+            for extension, textured, (label, value, required, strength) in itertools.product(
+                    ("gltf", "glb"), (False, True), cases):
+                with self.subTest(extension=extension, textured=textured, case=label):
+                    path = pathlib.Path(directory) / f"emission-{textured}-{label}.{extension}"
+                    material = {"emissiveFactor": list(emission)}
+                    if textured:
+                        document, binary = textured_document(extension, None, PNG)
+                        material["emissiveTexture"] = {"index": 0}
+                    else:
+                        document, binary = mesh_document(extension)
+                    document["materials"] = [material]
+                    document["meshes"][0]["primitives"][0]["material"] = 0
+                    if value is not None:
+                        document["extensionsUsed"] = [name]
+                        material["extensions"] = {name: value}
+                    if required:
+                        document["extensionsRequired"] = [name]
+                    write_asset(path, document, binary)
+                    stage = Usd.Stage.Open(str(path))
+                    base = "/Root/Materials/Material_0"
+                    preview = UsdShade.Shader.Get(stage, f"{base}/preview/surface")
+                    mtlx = UsdShade.Shader.Get(stage, f"{base}/mtlx/surface")
+                    scaled = emission * strength
+                    self.assertEqual(preview.GetInput("emissiveColor").Get(), scaled)
+                    self.assertEqual(mtlx.GetInput("emissive").Get(), emission)
+                    mtlx_strength = mtlx.GetInput("emissive_strength")
+                    if strength == 1:
+                        self.assertFalse(mtlx_strength)
+                    else:
+                        self.assertEqual(mtlx_strength.Get(), strength)
+                        self.assertEqual(mtlx_strength.GetAttr().GetVariability(), Sdf.VariabilityUniform)
+                    if textured:
+                        source, output, _ = preview.GetInput("emissiveColor").GetConnectedSource()
+                        texture = UsdShade.Shader(source.GetPrim())
+                        self.assertEqual(output, "rgb")
+                        self.assertEqual(texture.GetInput("sourceColorSpace").Get(), "sRGB")
+                        self.assertEqual(texture.GetInput("scale").Get(), Gf.Vec4f(*scaled, 1))
+                        source = mtlx.GetInput("emissive").GetConnectedSource()[0]
+                        factor = UsdShade.Shader(source.GetPrim())
+                        self.assertEqual(factor.GetIdAttr().Get(), "ND_multiply_color3")
+                        self.assertEqual(factor.GetInput("in2").Get(), emission)
+                    else:
+                        self.assertFalse(preview.GetInput("emissiveColor").HasConnectedSource())
+                        self.assertFalse(mtlx.GetInput("emissive").HasConnectedSource())
+
+    def test_emissive_strength_failures_preserve_layer(self):
+        name = "KHR_materials_emissive_strength"
+        unlit = "KHR_materials_unlit"
+        cases = ((False, False, "is not an object"),
+                 ({"emissiveStrength": "4"}, False, "has a field of the wrong type"),
+                 ({"emissiveStrength": None}, False, "has a field of the wrong type"),
+                 ({"emissiveStrength": 1e39}, False, "is out of range"),
+                 ({"emissiveStrength": -0.01}, False, "must be non-negative"),
+                 ({"emissiveStrength": -1e-100}, False, "must be non-negative"),
+                 ({}, True, f"cannot be combined with {unlit}"))
+        with tempfile.TemporaryDirectory() as directory:
+            for extension in ("gltf", "glb"):
+                path = pathlib.Path(directory) / f"emission.{extension}"
+                document, binary = mesh_document(extension)
+                material = {"emissiveFactor": [0.5, 0, 0], "extensions": {name: {"emissiveStrength": 4}}}
+                document["extensionsUsed"] = [name]
+                document["extensionsRequired"] = [name]
+                document["materials"] = [material]
+                document["meshes"][0]["primitives"][0]["material"] = 0
+                write_asset(path, document, binary)
+                stage = Usd.Stage.Open(str(path))
+                layer = stage.GetRootLayer()
+                before = layer_text(layer)
+                for value, is_unlit, message in cases:
+                    with self.subTest(extension=extension, value=value, unlit=is_unlit):
+                        material["extensions"] = {name: value}
+                        if is_unlit:
+                            document["extensionsUsed"].append(unlit)
+                            material["extensions"][unlit] = {}
+                        write_asset(path, document, binary)
+                        with self.assertRaisesRegex(Tf.ErrorException, f"{name} {message}"):
+                            layer.Reload(True)
+                        self.assertEqual(layer_text(layer), before)
+
     def test_ior_materials(self):
         def open_with_stderr(path):
             return subprocess.run(

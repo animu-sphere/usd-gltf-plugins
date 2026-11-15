@@ -280,6 +280,30 @@ describeMalformedMaterialExtension(std::string_view name, const simdjson::dom::e
 std::string
 describeMalformedCheckedExtension(const simdjson::dom::element& material)
 {
+    const auto extensions = material["extensions"];
+    constexpr auto emissiveStrengthExtension =
+        fastgltf::extensions::KHR_materials_emissive_strength;
+    simdjson::dom::element emissive;
+    if (extensions[emissiveStrengthExtension].get(emissive) == simdjson::SUCCESS)
+    {
+        if (auto description = describeMalformedMaterialExtension(
+                emissiveStrengthExtension, emissive, {"emissiveStrength"}, {});
+            !description.empty())
+        {
+            return description;
+        }
+        // fastgltf can round tiny negative values to zero, so check the JSON number.
+        double value = 1.0;
+        if (emissive["emissiveStrength"].get_double().get(value) == simdjson::SUCCESS && value < 0)
+        {
+            return "KHR_materials_emissive_strength must be non-negative";
+        }
+        simdjson::dom::element unlit;
+        if (extensions[fastgltf::extensions::KHR_materials_unlit].get(unlit) == simdjson::SUCCESS)
+        {
+            return "KHR_materials_emissive_strength cannot be combined with KHR_materials_unlit";
+        }
+    }
     simdjson::dom::element anisotropy;
     if (material["extensions"][fastgltf::extensions::KHR_materials_anisotropy].get(anisotropy) ==
         simdjson::SUCCESS)
@@ -557,6 +581,7 @@ IsImplementedExtension(std::string_view extension)
            extension == fastgltf::extensions::KHR_lights_punctual ||
            extension == fastgltf::extensions::KHR_materials_anisotropy ||
            extension == fastgltf::extensions::KHR_materials_clearcoat ||
+           extension == fastgltf::extensions::KHR_materials_emissive_strength ||
            extension == fastgltf::extensions::KHR_materials_ior ||
            extension == fastgltf::extensions::KHR_materials_iridescence ||
            extension == fastgltf::extensions::KHR_materials_sheen ||
@@ -587,8 +612,9 @@ Parse(const std::byte* bytes, std::size_t size, std::string& error)
         fastgltf::Extensions::EXT_meshopt_compression | fastgltf::Extensions::EXT_texture_webp |
         fastgltf::Extensions::KHR_draco_mesh_compression |
         fastgltf::Extensions::KHR_lights_punctual | fastgltf::Extensions::KHR_materials_anisotropy |
-        fastgltf::Extensions::KHR_materials_clearcoat | fastgltf::Extensions::KHR_materials_ior |
-        fastgltf::Extensions::KHR_materials_iridescence |
+        fastgltf::Extensions::KHR_materials_clearcoat |
+        fastgltf::Extensions::KHR_materials_emissive_strength |
+        fastgltf::Extensions::KHR_materials_ior | fastgltf::Extensions::KHR_materials_iridescence |
         fastgltf::Extensions::KHR_materials_sheen | fastgltf::Extensions::KHR_materials_specular |
         fastgltf::Extensions::KHR_materials_transmission |
         fastgltf::Extensions::KHR_materials_unlit | fastgltf::Extensions::KHR_materials_volume |

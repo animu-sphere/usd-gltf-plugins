@@ -36,9 +36,13 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 BASELINE = ROOT / "tests" / "sample_baseline.json"
 DRACO = "KHR_draco_mesh_compression"
 MESHOPT = "EXT_meshopt_compression"
-IMPLEMENTED_EXTENSIONS = {"EXT_texture_webp", DRACO, MESHOPT, "KHR_lights_punctual", "KHR_materials_anisotropy", "KHR_materials_clearcoat", "KHR_materials_ior", "KHR_materials_iridescence",
-                          "KHR_materials_sheen", "KHR_materials_specular", "KHR_materials_transmission", "KHR_materials_unlit", "KHR_materials_volume",
-                          "KHR_mesh_quantization", "KHR_texture_basisu", "KHR_texture_transform"}
+EMISSIVE_STRENGTH = "KHR_materials_emissive_strength"
+IMPLEMENTED_EXTENSIONS = {
+    "EXT_texture_webp", DRACO, MESHOPT, "KHR_lights_punctual", "KHR_materials_anisotropy",
+    "KHR_materials_clearcoat", EMISSIVE_STRENGTH, "KHR_materials_ior", "KHR_materials_iridescence",
+    "KHR_materials_sheen", "KHR_materials_specular", "KHR_materials_transmission", "KHR_materials_unlit",
+    "KHR_materials_volume", "KHR_mesh_quantization", "KHR_texture_basisu", "KHR_texture_transform",
+}
 PATHS = ("mtlx", "preview")
 CAMERA = "/SampleCheckCamera"
 RESULT_MARKER = "SAMPLE_RESULT "
@@ -765,6 +769,7 @@ def check_material(check, asset, stage, path, material, has_colors, images):
     base = pbr.get("baseColorFactor", (1, 1, 1, 1))
     metallic, roughness = pbr.get("metallicFactor", 1), pbr.get("roughnessFactor", 1)
     emissive = material.get("emissiveFactor", (0, 0, 0))
+    emissive_strength = material.get("extensions", {}).get(EMISSIVE_STRENGTH, {}).get("emissiveStrength", 1)
 
     def factor(name, expected, description):
         value = surface.GetInput(name).Get() if surface.GetInput(name) else None
@@ -805,16 +810,43 @@ def check_material(check, asset, stage, path, material, has_colors, images):
         else:
             factor("metallic", metallic, "metallic")
             factor("roughness", roughness, "roughness")
+        preview_emission = [channel * emissive_strength for channel in emissive]
+        preview_input = surface.GetInput("emissiveColor")
+        factor("emissiveColor", preview_emission, "emissive")
+        mtlx_image = None
         if infos["emissiveTexture"]:
-            scale("emissiveTexture", (0, 1, 2), emissive, "emissive scale")
-        elif any(emissive):
-            factor("emissiveColor", emissive, "emissive")
+            scale("emissiveTexture", (0, 1, 2), preview_emission, "emissive scale")
+            preview_image = textures.get("emissiveTexture")
+            source = connected_shader(preview_input)
+            check.expect(source and preview_image and source.GetPath() == preview_image.GetPath()
+                         and preview_input.GetConnectedSource()[1] == "rgb",
+                         f"{label} Preview emissive input does not read its texture RGB")
+            image = UsdShade.Shader.Get(stage, f"{path}/mtlx/emissiveImage")
+            if check.expect(image and image.GetShaderId() == "ND_image_color4"
+                            and image.GetInput("file").GetAttr().GetColorSpace() == "srgb_texture",
+                            f"{label} MaterialX emissive texture is not sRGB"):
+                mtlx_image = image
+        else:
+            check.expect(not preview_input or not preview_input.HasConnectedSource(),
+                         f"{label} Preview emissive input has an unexpected connection")
+        mtlx_emission = pbr_surface.GetInput("emissive")
+        if check.expect(mtlx_emission, f"{label} MaterialX emissive input is not authored"):
+            check_mtlx_color(check, mtlx_emission, emissive, mtlx_image, f"{label} MaterialX emissive")
+            if not infos["emissiveTexture"]:
+                check.expect(not mtlx_emission.HasConnectedSource(),
+                             f"{label} MaterialX emissive input has an unexpected connection")
         if infos["normalTexture"]:
             amount = infos["normalTexture"].get("scale", 1)
             scale("normalTexture", (0, 1, 2), (2 * amount, 2 * amount, 2), "normal scale")
         if infos["occlusionTexture"]:
             strength = infos["occlusionTexture"].get("strength", 1)
             check_occlusion(check, textures.get("occlusionTexture"), strength, label)
+
+    strength_input = pbr_surface.GetInput("emissive_strength")
+    if numpy.float32(emissive_strength) == 1:
+        check.expect(not strength_input, f"{label} MaterialX authors the default emissive strength")
+    elif check.expect(strength_input, f"{label} MaterialX emissive strength is not authored"):
+        check.close(strength_input.Get(), emissive_strength, f"{label} MaterialX emissive strength")
 
     check_clearcoat(check, surface, pbr_surface, clearcoat if coated else None, textures, names, label)
     check_transmission(check, surface, pbr_surface, transmission if transmits else None, textures, label)

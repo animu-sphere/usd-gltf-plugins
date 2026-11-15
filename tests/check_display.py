@@ -653,6 +653,47 @@ def check_unlit(renderer, report):
     qt[2].doneCurrent()
 
 
+def check_emissive_strength(renderer, report):
+    """Compare factor and texture emission against linear, factor-only controls in darkness."""
+    qt = offscreen_context(report, "emissive strength")
+    if not qt:
+        return
+    extension = "KHR_materials_emissive_strength"
+    base = pbr(baseColorFactor=[0, 0, 0, 1], metallicFactor=0)
+    factor = [0.125, 0.0625, 0.25]
+
+    def render(path, name, color, strength=None, textured=False):
+        material = {**base, "emissiveFactor": color}
+        images = [(188, 188, 188, 32)] if textured else []
+        if textured:
+            material["emissiveTexture"] = {"index": 0}
+        if strength is not None:
+            material["extensions"] = {extension: strength}
+        document = quad_document([material], images)
+        if strength is not None:
+            document["extensionsUsed"] = [extension]
+        asset = renderer.output / f"emission_{name}.gltf"
+        asset.write_text(json.dumps(document), encoding="utf-8")
+        _, stage = renderer.session(f"emission_{name}", asset, path, None)
+        image = engine_image(stage, [], Gf.Vec4f(0, 0, 0, 1))
+        image.save(str(renderer.output / f"emission_{name}_{path}.png"))
+        return Render(f"emission_{name} {path}", image, stage).sample(0)
+
+    for path in PATHS:
+        default = render(path, "default", factor)
+        report.same(f"{path} missing emissive strength defaults to 1", render(path, "missing", factor, {}), default)
+        strong = render(path, "strong", factor, {"emissiveStrength": 3})
+        report.same(f"{path} emissive strength scales the factor", strong,
+                    render(path, "strong_control", [3 * channel for channel in factor]))
+        report.different(f"{path} emissive strength changes the pixels", strong, default)
+        report.same(f"{path} emissive strength scales linearized texture RGB",
+                    render(path, "textured", factor, {"emissiveStrength": 3}, textured=True),
+                    render(path, "textured_control", [3 * SRGB * channel for channel in factor]))
+        report.same(f"{path} zero emissive strength is black",
+                    render(path, "zero", factor, {"emissiveStrength": 0}, textured=True), (0, 0, 0, 255))
+    qt[2].doneCurrent()
+
+
 def check_ior(renderer, report):
     """Renders a black dielectric quad under a point light between it and the camera, where the
     light, view and normal agree at the quad's center, so that its reflection there is F0 times the
@@ -1135,10 +1176,11 @@ def main():
 
     report = Report(arguments.verbose)
     renderer = Renderer(output, plugin, report)
-    for check in (check_reflections, check_lights, check_unlit, check_ior, check_specular, check_anisotropy, check_iridescence, check_sheen, check_clearcoat,
-                  check_transmission,
-                  check_volume, check_alpha_modes, check_base_color_textures, check_pbr_textures,
-                  check_normal_textures, check_texture_transforms, check_ktx2_textures, check_measurements):
+    for check in (check_reflections, check_lights, check_unlit, check_emissive_strength, check_ior,
+                  check_specular, check_anisotropy, check_iridescence, check_sheen, check_clearcoat,
+                  check_transmission, check_volume, check_alpha_modes, check_base_color_textures,
+                  check_pbr_textures, check_normal_textures, check_texture_transforms,
+                  check_ktx2_textures, check_measurements):
         print(check.__name__.removeprefix("check_"), flush=True)
         check(renderer, report)
 
