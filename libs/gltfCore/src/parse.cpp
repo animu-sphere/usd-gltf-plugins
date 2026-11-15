@@ -10,6 +10,7 @@
 #include <initializer_list>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 
 namespace gltfCore
 {
@@ -340,9 +341,103 @@ describeMalformedCheckedExtension(const simdjson::dom::element& material)
                                               {"thicknessTexture"}, {"attenuationColor"});
 }
 
-// fastgltf reads a sheenColorFactor, specularColorFactor or attenuationColor of fewer than three
-// numbers, keeping the default for the rest. Also check the iridescence fields. Returns an
-// empty string if every such extension is well formed.
+// Fastgltf does not retain the fallback tag and can skip a non-object extension.
+std::string
+describeMalformedMeshopt(const simdjson::dom::element& root)
+{
+    using namespace simdjson;
+    constexpr auto name = fastgltf::extensions::EXT_meshopt_compression;
+    std::unordered_set<std::uint64_t> fallbackBuffers;
+    dom::array buffers;
+    if (root["buffers"].get_array().get(buffers) == SUCCESS)
+    {
+        std::uint64_t index = 0;
+        for (const auto buffer : buffers)
+        {
+            dom::element extension;
+            if (buffer["extensions"][name].get(extension) == SUCCESS)
+            {
+                bool fallback = false;
+                const auto field = extension["fallback"].get_bool().get(fallback);
+                if (!extension.is_object() || (field != SUCCESS && field != NO_SUCH_FIELD))
+                {
+                    return "EXT_meshopt_compression has an invalid buffer fallback tag";
+                }
+                if (fallback)
+                {
+                    fallbackBuffers.insert(index);
+                }
+            }
+            ++index;
+        }
+    }
+
+    bool declared = false;
+    dom::array used;
+    if (root["extensionsUsed"].get_array().get(used) == SUCCESS)
+    {
+        for (const auto extension : used)
+        {
+            std::string_view value;
+            declared |= extension.get_string().get(value) == SUCCESS && value == name;
+        }
+    }
+    dom::array views;
+    if (root["bufferViews"].get_array().get(views) != SUCCESS)
+    {
+        return {};
+    }
+    std::size_t index = 0;
+    for (const auto view : views)
+    {
+        const auto fail = [&](std::string_view reason)
+        {
+            return "EXT_meshopt_compression bufferView " + std::to_string(index) + ": " +
+                   std::string(reason);
+        };
+        dom::element extension;
+        if (view["extensions"][name].get(extension) == SUCCESS)
+        {
+            if (!extension.is_object() || !declared)
+            {
+                return fail("must be an object declared in extensionsUsed");
+            }
+            std::uint64_t compressedBuffer;
+            std::string_view mode, filter;
+            const auto filterResult = extension["filter"].get_string().get(filter);
+            if (extension["buffer"].get_uint64().get(compressedBuffer) != SUCCESS ||
+                !extension["byteLength"].is_uint64() || !extension["byteStride"].is_uint64() ||
+                !extension["count"].is_uint64() ||
+                (extension["byteOffset"].error() != NO_SUCH_FIELD &&
+                 !extension["byteOffset"].is_uint64()) ||
+                extension["mode"].get_string().get(mode) != SUCCESS ||
+                (mode != "ATTRIBUTES" && mode != "TRIANGLES" && mode != "INDICES") ||
+                (filterResult != NO_SUCH_FIELD &&
+                 (filterResult != SUCCESS || (filter != "NONE" && filter != "OCTAHEDRAL" &&
+                                              filter != "QUATERNION" && filter != "EXPONENTIAL"))))
+            {
+                return fail("invalid extension fields");
+            }
+            if (fallbackBuffers.contains(compressedBuffer))
+            {
+                return fail("compressed data cannot come from a tagged fallback buffer");
+            }
+        }
+        else
+        {
+            std::uint64_t parentBuffer;
+            if (view["buffer"].get_uint64().get(parentBuffer) == SUCCESS &&
+                fallbackBuffers.contains(parentBuffer))
+            {
+                return fail("uncompressed view references a tagged fallback buffer");
+            }
+        }
+        ++index;
+    }
+    return {};
+}
+
+// Fastgltf keeps defaults for some missing material components and skips some invalid fields.
 std::string
 describeMalformedCheckedExtensions(const std::byte* bytes, std::size_t size)
 {
@@ -350,8 +445,15 @@ describeMalformedCheckedExtensions(const std::byte* bytes, std::size_t size)
     simdjson::dom::parser parser;
     simdjson::dom::element root;
     simdjson::dom::array materials;
-    if (parser.parse(json.data(), json.size()).get(root) != simdjson::SUCCESS ||
-        root["materials"].get_array().get(materials) != simdjson::SUCCESS)
+    if (parser.parse(json.data(), json.size()).get(root) != simdjson::SUCCESS)
+    {
+        return {};
+    }
+    if (auto description = describeMalformedMeshopt(root); !description.empty())
+    {
+        return description;
+    }
+    if (root["materials"].get_array().get(materials) != simdjson::SUCCESS)
     {
         return {};
     }
@@ -449,7 +551,8 @@ describeMalformedMaterial(const std::byte* bytes, std::size_t size)
 bool
 IsImplementedExtension(std::string_view extension)
 {
-    return extension == fastgltf::extensions::EXT_texture_webp ||
+    return extension == fastgltf::extensions::EXT_meshopt_compression ||
+           extension == fastgltf::extensions::EXT_texture_webp ||
            extension == fastgltf::extensions::KHR_draco_mesh_compression ||
            extension == fastgltf::extensions::KHR_lights_punctual ||
            extension == fastgltf::extensions::KHR_materials_anisotropy ||
@@ -481,9 +584,9 @@ Parse(const std::byte* bytes, std::size_t size, std::string& error)
         return data.error();
     }
     fastgltf::Parser parser(
-        fastgltf::Extensions::EXT_texture_webp | fastgltf::Extensions::KHR_draco_mesh_compression |
-        fastgltf::Extensions::KHR_lights_punctual |
-        fastgltf::Extensions::KHR_materials_anisotropy |
+        fastgltf::Extensions::EXT_meshopt_compression | fastgltf::Extensions::EXT_texture_webp |
+        fastgltf::Extensions::KHR_draco_mesh_compression |
+        fastgltf::Extensions::KHR_lights_punctual | fastgltf::Extensions::KHR_materials_anisotropy |
         fastgltf::Extensions::KHR_materials_clearcoat | fastgltf::Extensions::KHR_materials_ior |
         fastgltf::Extensions::KHR_materials_iridescence |
         fastgltf::Extensions::KHR_materials_sheen | fastgltf::Extensions::KHR_materials_specular |
@@ -527,7 +630,11 @@ Parse(const std::byte* bytes, std::size_t size, std::string& error)
     }
     if (result == fastgltf::Error::InvalidGltf || result == fastgltf::Error::InvalidJson)
     {
-        error = describeMalformedMaterial(bytes, size);
+        error = describeMalformedCheckedExtensions(bytes, size);
+        if (error.empty())
+        {
+            error = describeMalformedMaterial(bytes, size);
+        }
     }
     if (error.empty())
     {

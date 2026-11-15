@@ -90,13 +90,12 @@ norm(const T& value, std::size_t width)
 }
 
 bool
-readTimes(const fastgltf::Asset& asset, std::size_t index, const gltfCore::BufferLoader& loadBuffer,
+readTimes(const fastgltf::Asset& asset, std::size_t index, const gltfCore::BufferReader& buffers,
           std::vector<double>& times, std::string& error)
 {
     gltfCore::AccessorData data;
     if (!gltfCore::GetAccessorData(asset, index, fastgltf::AccessorType::Scalar,
-                                   fastgltf::ComponentType::Float, 4, false, data, error,
-                                   loadBuffer))
+                                   fastgltf::ComponentType::Float, 4, false, data, error, buffers))
     {
         error = "input " + error;
         return false;
@@ -117,14 +116,14 @@ readTimes(const fastgltf::Asset& asset, std::size_t index, const gltfCore::Buffe
 
 template <class T>
 bool
-readKeyframes(const fastgltf::Asset& asset, const gltfCore::BufferLoader& loadBuffer,
+readKeyframes(const fastgltf::Asset& asset, const gltfCore::BufferReader& buffers,
               const fastgltf::AnimationSampler& sampler, fastgltf::AnimationPath path, T initial,
               std::size_t width, Keyframes<T>& result, std::string& error)
 {
     result.path = path;
     result.interpolation = sampler.interpolation;
     const bool cubic = sampler.interpolation == fastgltf::AnimationInterpolation::CubicSpline;
-    if (!readTimes(asset, sampler.inputAccessor, loadBuffer, result.times, error))
+    if (!readTimes(asset, sampler.inputAccessor, buffers, result.times, error))
     {
         return false;
     }
@@ -161,7 +160,7 @@ readKeyframes(const fastgltf::Asset& asset, const gltfCore::BufferLoader& loadBu
     const auto elementsPerValue = weights ? width : 1;
     if (!gltfCore::GetAccessorData(asset, sampler.outputAccessor, type, componentType,
                                    (weights ? 1 : width) * componentSize, false, data, error,
-                                   loadBuffer, quantized, weights))
+                                   buffers, quantized, weights))
     {
         error = "output " + error;
         return false;
@@ -502,7 +501,7 @@ placeAtTimeZero(const fastgltf::Asset& asset, const SceneMap& map, std::size_t a
 // Reads one animation's channels on the selected scene into `values`, whose nodes have an entry per
 // node of the scene. Returns false after reporting an error.
 bool
-readAnimation(const fastgltf::Asset& asset, const gltfCore::BufferLoader& loadBuffer,
+readAnimation(const fastgltf::Asset& asset, const gltfCore::BufferReader& buffers,
               const SceneMap& map, std::size_t animationIndex, AnimationValues& values)
 {
     const auto& animation = asset.animations[animationIndex];
@@ -563,7 +562,7 @@ readAnimation(const fastgltf::Asset& asset, const gltfCore::BufferLoader& loadBu
             Keyframes<std::vector<double>> keyframes;
             TimeSamples<std::vector<double>> samples;
             std::string error;
-            if (!readKeyframes(asset, loadBuffer, animation.samplers[channel.samplerIndex], path,
+            if (!readKeyframes(asset, buffers, animation.samplers[channel.samplerIndex], path,
                                std::vector<double>(count), count, keyframes, error) ||
                 !expand(keyframes, samples, capped, error))
             {
@@ -591,9 +590,8 @@ readAnimation(const fastgltf::Asset& asset, const gltfCore::BufferLoader& loadBu
         Keyframes<Value> keyframes;
         std::vector<std::pair<double, Value>> samples;
         std::string error;
-        if (!readKeyframes(asset, loadBuffer, animation.samplers[channel.samplerIndex], path,
-                           Value{}, path == fastgltf::AnimationPath::Rotation ? 4 : 3, keyframes,
-                           error) ||
+        if (!readKeyframes(asset, buffers, animation.samplers[channel.samplerIndex], path, Value{},
+                           path == fastgltf::AnimationPath::Rotation ? 4 : 3, keyframes, error) ||
             !expand(keyframes, samples, capped, error))
         {
             return fail(error);
@@ -635,7 +633,7 @@ readAnimation(const fastgltf::Asset& asset, const gltfCore::BufferLoader& loadBu
 } // namespace
 
 bool
-PlanAnimation(const fastgltf::Asset& asset, const gltfCore::BufferLoader& loadBuffer,
+PlanAnimation(const fastgltf::Asset& asset, const gltfCore::BufferReader& buffers,
               const SceneMap& map, AnimationPlan& plan)
 {
     plan = {};
@@ -645,7 +643,7 @@ PlanAnimation(const fastgltf::Asset& asset, const gltfCore::BufferLoader& loadBu
     {
         auto& values = plan.animations[a];
         values.nodes.resize(map.nodes.size());
-        if (!readAnimation(asset, loadBuffer, map, a, values))
+        if (!readAnimation(asset, buffers, map, a, values))
         {
             return false;
         }

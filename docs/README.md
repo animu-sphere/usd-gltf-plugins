@@ -64,6 +64,7 @@ available when the decision was made; they are not progress reports:
 - [0031: Mesh sharing](adr/0031-mesh-sharing.md)
 - [0032: Derived USDZ](adr/0032-derived-usdz.md)
 - [0033: Draco mesh decoder](adr/0033-draco-decoder.md)
+- [0034: Meshopt buffer views](adr/0034-meshopt-buffer-views.md)
 
 New decisions go in `docs/adr/NNNN-title.md`.
 

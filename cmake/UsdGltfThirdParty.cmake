@@ -80,6 +80,19 @@ function(usd_gltf_add_draco)
     set_target_properties(usd_gltf_draco PROPERTIES EXPORT_NAME draco)
 endfunction()
 
+# The meshoptimizer buffer view codecs. Owned by gltfCore.
+function(usd_gltf_add_meshoptimizer)
+    if(TARGET usd_gltf_meshoptimizer)
+        return()
+    endif()
+    _usd_gltf_hide_symbols()
+    set(src "${USD_GLTF_THIRD_PARTY_DIR}/meshoptimizer/src")
+    add_library(usd_gltf_meshoptimizer STATIC
+        "${src}/indexcodec.cpp" "${src}/vertexcodec.cpp" "${src}/vertexfilter.cpp")
+    target_include_directories(usd_gltf_meshoptimizer SYSTEM PUBLIC "$<BUILD_INTERFACE:${src}>")
+    set_target_properties(usd_gltf_meshoptimizer PROPERTIES EXPORT_NAME meshoptimizer)
+endfunction()
+
 # The Basis Universal transcoder, for KTX2, with its Zstandard decoder. Owned by gltfTexture.
 function(usd_gltf_add_basisu)
     if(TARGET usd_gltf_basisu)

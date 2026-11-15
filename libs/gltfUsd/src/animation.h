@@ -80,7 +80,7 @@ struct AnimationPlan
 // invalid channel or sampler in any animation, for content that cannot be converted yet, and for a
 // camera or light whose correction for its node's scale would have to change during an animation.
 [[nodiscard]] bool PlanAnimation(const fastgltf::Asset& asset,
-                                 const gltfCore::BufferLoader& loadBuffer, const SceneMap& map,
+                                 const gltfCore::BufferReader& buffers, const SceneMap& map,
                                  AnimationPlan& plan);
 
 } // namespace gltfUsd

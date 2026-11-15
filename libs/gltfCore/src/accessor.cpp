@@ -2,72 +2,19 @@
 #include "gltfCore/accessor.h"
 
 #include <algorithm>
-#include <variant>
 
 namespace gltfCore
 {
-
-bool
-GetBufferViewBytes(const fastgltf::Asset& asset, std::size_t index,
-                   std::span<const std::byte>& result, std::string& error,
-                   const BufferLoader& loadBuffer)
-{
-    if (index >= asset.bufferViews.size())
-    {
-        error = "bufferView index is out of range";
-        return false;
-    }
-    const auto& view = asset.bufferViews[index];
-    if (view.bufferIndex >= asset.buffers.size())
-    {
-        error = "buffer index is out of range";
-        return false;
-    }
-    const auto& buffer = asset.buffers[view.bufferIndex];
-    std::span<const std::byte> bytes;
-    if (const auto* array = std::get_if<fastgltf::sources::Array>(&buffer.data))
-    {
-        bytes = {array->bytes.data(), array->bytes.size()};
-    }
-    else if (const auto* vector = std::get_if<fastgltf::sources::Vector>(&buffer.data))
-    {
-        bytes = {vector->bytes.data(), vector->bytes.size()};
-    }
-    else if (const auto* byteView = std::get_if<fastgltf::sources::ByteView>(&buffer.data))
-    {
-        bytes = byteView->bytes;
-    }
-    else if (std::holds_alternative<fastgltf::sources::URI>(buffer.data) && loadBuffer)
-    {
-        if (!loadBuffer(buffer, bytes, error))
-        {
-            return false;
-        }
-    }
-    else
-    {
-        error = "external or unsupported buffer data is not supported";
-        return false;
-    }
-    if (buffer.byteLength > bytes.size() || view.byteOffset > buffer.byteLength ||
-        view.byteLength > buffer.byteLength - view.byteOffset)
-    {
-        error = "bufferView exceeds its buffer";
-        return false;
-    }
-    result = bytes.subspan(view.byteOffset, view.byteLength);
-    return true;
-}
 
 namespace
 {
 
 bool
 readBase(const fastgltf::Asset& asset, const fastgltf::Accessor& accessor, std::size_t elementSize,
-         bool vertex, AccessorData& result, std::string& error, const BufferLoader& loadBuffer)
+         bool vertex, AccessorData& result, std::string& error, const BufferReader& buffers)
 {
     std::span<const std::byte> bytes;
-    if (!GetBufferViewBytes(asset, *accessor.bufferViewIndex, bytes, error, loadBuffer))
+    if (!buffers.GetView(asset, *accessor.bufferViewIndex, bytes, error))
     {
         return false;
     }
@@ -100,10 +47,9 @@ readBase(const fastgltf::Asset& asset, const fastgltf::Accessor& accessor, std::
 bool
 readSparseView(const fastgltf::Asset& asset, std::size_t viewIndex, std::size_t offset,
                std::size_t count, std::size_t elementSize, std::size_t alignment,
-               std::span<const std::byte>& bytes, std::string& error,
-               const BufferLoader& loadBuffer)
+               std::span<const std::byte>& bytes, std::string& error, const BufferReader& buffers)
 {
-    if (!GetBufferViewBytes(asset, viewIndex, bytes, error, loadBuffer))
+    if (!buffers.GetView(asset, viewIndex, bytes, error))
     {
         return false;
     }
@@ -134,7 +80,7 @@ AccessorData::Element(std::size_t index) const
 bool
 GetAccessorData(const fastgltf::Asset& asset, std::size_t index, fastgltf::AccessorType type,
                 fastgltf::ComponentType componentType, std::size_t elementSize, bool vertex,
-                AccessorData& result, std::string& error, const BufferLoader& loadBuffer,
+                AccessorData& result, std::string& error, const BufferReader& buffers,
                 bool normalized, bool allowSparse)
 {
     if (index >= asset.accessors.size())
@@ -160,7 +106,7 @@ GetAccessorData(const fastgltf::Asset& asset, std::size_t index, fastgltf::Acces
     result.elementSize = elementSize;
     if (accessor.bufferViewIndex)
     {
-        if (!readBase(asset, accessor, elementSize, vertex, result, error, loadBuffer))
+        if (!readBase(asset, accessor, elementSize, vertex, result, error, buffers))
         {
             return false;
         }
@@ -193,9 +139,9 @@ GetAccessorData(const fastgltf::Asset& asset, std::size_t index, fastgltf::Acces
     const auto indexSize = fastgltf::getComponentByteSize(indexType);
     std::span<const std::byte> indices;
     if (!readSparseView(asset, sparse.indicesBufferView, sparse.indicesByteOffset, sparse.count,
-                        indexSize, indexSize, indices, error, loadBuffer) ||
+                        indexSize, indexSize, indices, error, buffers) ||
         !readSparseView(asset, sparse.valuesBufferView, sparse.valuesByteOffset, sparse.count,
-                        elementSize, componentSize, result.sparseValues, error, loadBuffer))
+                        elementSize, componentSize, result.sparseValues, error, buffers))
     {
         return false;
     }

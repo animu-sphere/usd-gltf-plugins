@@ -159,7 +159,7 @@ meshAccessor(const fastgltf::Asset& asset, const fastgltf::Attribute& attribute,
 
 bool
 readVectors(MeshAccessor source, VertexAttribute attribute, VtVec3fArray& values,
-            std::string& error, const gltfCore::BufferLoader& loadBuffer,
+            std::string& error, const gltfCore::BufferReader& buffers,
             std::optional<std::size_t> morphCount = std::nullopt)
 {
     const auto& [asset, index] = source;
@@ -176,8 +176,8 @@ readVectors(MeshAccessor source, VertexAttribute attribute, VtVec3fArray& values
     }
     gltfCore::AccessorData data;
     if (!gltfCore::GetAccessorData(asset, index, fastgltf::AccessorType::Vec3, format.type,
-                                   format.size * 3, true, data, error, loadBuffer,
-                                   format.normalized, morphCount.has_value()))
+                                   format.size * 3, true, data, error, buffers, format.normalized,
+                                   morphCount.has_value()))
     {
         return false;
     }
@@ -217,7 +217,7 @@ readVectors(MeshAccessor source, VertexAttribute attribute, VtVec3fArray& values
 
 bool
 readTangents(MeshAccessor source, VtVec4fArray& values, std::string& error,
-             const gltfCore::BufferLoader& loadBuffer)
+             const gltfCore::BufferReader& buffers)
 {
     const auto& [asset, index] = source;
     VertexFormat format;
@@ -227,8 +227,7 @@ readTangents(MeshAccessor source, VtVec4fArray& values, std::string& error,
     }
     gltfCore::AccessorData data;
     if (!gltfCore::GetAccessorData(asset, index, fastgltf::AccessorType::Vec4, format.type,
-                                   format.size * 4, true, data, error, loadBuffer,
-                                   format.normalized))
+                                   format.size * 4, true, data, error, buffers, format.normalized))
     {
         return false;
     }
@@ -253,7 +252,7 @@ readTangents(MeshAccessor source, VtVec4fArray& values, std::string& error,
 
 bool
 readTexcoords(MeshAccessor source, VtVec2fArray& values, std::string& error,
-              const gltfCore::BufferLoader& loadBuffer)
+              const gltfCore::BufferReader& buffers)
 {
     const auto& [asset, index] = source;
     VertexFormat format;
@@ -263,8 +262,7 @@ readTexcoords(MeshAccessor source, VtVec2fArray& values, std::string& error,
     }
     gltfCore::AccessorData data;
     if (!gltfCore::GetAccessorData(asset, index, fastgltf::AccessorType::Vec2, format.type,
-                                   format.size * 2, true, data, error, loadBuffer,
-                                   format.normalized))
+                                   format.size * 2, true, data, error, buffers, format.normalized))
     {
         return false;
     }
@@ -294,7 +292,7 @@ readTexcoords(MeshAccessor source, VtVec2fArray& values, std::string& error,
 
 bool
 readColors(MeshAccessor source, VtVec3fArray& colors, VtFloatArray& alpha, std::string& error,
-           const gltfCore::BufferLoader& loadBuffer)
+           const gltfCore::BufferReader& buffers)
 {
     const auto& [asset, index] = source;
     if (index >= asset.accessors.size())
@@ -336,7 +334,7 @@ readColors(MeshAccessor source, VtVec3fArray& colors, VtFloatArray& alpha, std::
     }
     gltfCore::AccessorData data;
     if (!gltfCore::GetAccessorData(asset, index, accessor.type, type, size * components, true, data,
-                                   error, loadBuffer, type != fastgltf::ComponentType::Float))
+                                   error, buffers, type != fastgltf::ComponentType::Float))
     {
         return false;
     }
@@ -398,7 +396,7 @@ validateIndexCount(std::size_t count, fastgltf::PrimitiveType type, std::string&
 bool
 readIndices(const fastgltf::Asset& asset, std::size_t index, std::size_t pointCount,
             fastgltf::PrimitiveType type, VtIntArray& values, std::string& error,
-            const gltfCore::BufferLoader& loadBuffer)
+            const gltfCore::BufferReader& buffers)
 {
     if (index >= asset.accessors.size())
     {
@@ -424,7 +422,7 @@ readIndices(const fastgltf::Asset& asset, std::size_t index, std::size_t pointCo
     }
     gltfCore::AccessorData data;
     if (!gltfCore::GetAccessorData(asset, index, fastgltf::AccessorType::Scalar, componentType,
-                                   size, false, data, error, loadBuffer))
+                                   size, false, data, error, buffers))
     {
         return false;
     }
@@ -471,7 +469,7 @@ unsupportedPrimitiveContent(const fastgltf::Primitive& primitive)
 bool
 authorMorphTargets(const fastgltf::Asset& asset, const fastgltf::Primitive& primitive,
                    const UsdGeomMesh& mesh, std::size_t pointCount, bool hasNormals,
-                   const gltfCore::BufferLoader& loadBuffer, std::string& error)
+                   const gltfCore::BufferReader& buffers, std::string& error)
 {
     SdfPathVector paths;
     for (std::size_t i = 0; i < primitive.targets.size(); ++i)
@@ -493,7 +491,7 @@ authorMorphTargets(const fastgltf::Asset& asset, const fastgltf::Primitive& prim
             }
             if (!readVectors({asset, attribute.accessorIndex},
                              position ? VertexAttribute::Position : VertexAttribute::Normal, values,
-                             error, loadBuffer, pointCount))
+                             error, buffers, pointCount))
             {
                 return false;
             }
@@ -532,7 +530,7 @@ authorMorphTargets(const fastgltf::Asset& asset, const fastgltf::Primitive& prim
 bool
 authorPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& primitive,
                 const UsdPrim& parent, std::size_t index, std::string& error,
-                const gltfCore::BufferLoader& loadBuffer, MaterialAuthor& materials,
+                const gltfCore::BufferReader& buffers, MaterialAuthor& materials,
                 const gltfCore::DecodedDracoPrimitive* decoded)
 {
     error = unsupportedPrimitiveContent(primitive);
@@ -599,13 +597,13 @@ authorPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& primiti
     }
     VtVec3fArray points;
     if (!readVectors(meshAccessor(asset, *position, decoded), VertexAttribute::Position, points,
-                     error, loadBuffer))
+                     error, buffers))
     {
         return false;
     }
     VtVec3fArray normals;
     if (normal && (!readVectors(meshAccessor(asset, *normal, decoded), VertexAttribute::Normal,
-                                normals, error, loadBuffer) ||
+                                normals, error, buffers) ||
                    normals.size() != points.size()))
     {
         if (error.empty())
@@ -615,8 +613,7 @@ authorPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& primiti
         return false;
     }
     VtVec4fArray tangents;
-    if (tangent &&
-        !readTangents(meshAccessor(asset, *tangent, decoded), tangents, error, loadBuffer))
+    if (tangent && !readTangents(meshAccessor(asset, *tangent, decoded), tangents, error, buffers))
     {
         return false;
     }
@@ -627,8 +624,7 @@ authorPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& primiti
     }
     VtVec3fArray colors;
     VtFloatArray alpha;
-    if (color &&
-        !readColors(meshAccessor(asset, *color, decoded), colors, alpha, error, loadBuffer))
+    if (color && !readColors(meshAccessor(asset, *color, decoded), colors, alpha, error, buffers))
     {
         return false;
     }
@@ -641,7 +637,7 @@ authorPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& primiti
     for (std::size_t i = 0; i < texcoords.size(); ++i)
     {
         if (!readTexcoords(meshAccessor(asset, *texcoords[i].second, decoded), uvSets[i], error,
-                           loadBuffer))
+                           buffers))
         {
             return false;
         }
@@ -659,7 +655,7 @@ authorPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& primiti
     else if (primitive.indicesAccessor)
     {
         if (!readIndices(asset, *primitive.indicesAccessor, points.size(), primitive.type, indices,
-                         error, loadBuffer))
+                         error, buffers))
         {
             return false;
         }
@@ -764,8 +760,8 @@ authorPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& primiti
                 GenerateTangents(points, normals, uvSets[*uvSet], indices, generateNormals);
             if (!generated.empty() &&
                 !primvars
-                     .CreatePrimvar(TfToken("gltf_generatedTangent"), SdfValueTypeNames->Float4Array,
-                                    UsdGeomTokens->faceVarying)
+                     .CreatePrimvar(TfToken("gltf_generatedTangent"),
+                                    SdfValueTypeNames->Float4Array, UsdGeomTokens->faceVarying)
                      .Set(generated))
             {
                 error = "could not author generated USD tangents";
@@ -806,7 +802,7 @@ authorPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& primiti
             return false;
         }
     }
-    return authorMorphTargets(asset, primitive, mesh, points.size(), normal != nullptr, loadBuffer,
+    return authorMorphTargets(asset, primitive, mesh, points.size(), normal != nullptr, buffers,
                               error);
 }
 
@@ -847,7 +843,7 @@ skinAccessors(const fastgltf::Primitive& primitive, std::string_view prefix,
 
 bool
 readInfluenceSet(MeshAccessor jointSource, MeshAccessor weightSource,
-                 const gltfCore::BufferLoader& loadBuffer, const std::vector<int>& remap,
+                 const gltfCore::BufferReader& buffers, const std::vector<int>& remap,
                  std::size_t pointCount, std::size_t width, std::size_t offset, VtIntArray& indices,
                  VtFloatArray& weights, std::string& error)
 {
@@ -873,9 +869,9 @@ readInfluenceSet(MeshAccessor jointSource, MeshAccessor weightSource,
     const auto weightSize = fastgltf::getComponentByteSize(weightType);
     gltfCore::AccessorData joints, values;
     if (!gltfCore::GetAccessorData(jointAsset, jointsIndex, fastgltf::AccessorType::Vec4, jointType,
-                                   4 * jointSize, true, joints, error, loadBuffer) ||
+                                   4 * jointSize, true, joints, error, buffers) ||
         !gltfCore::GetAccessorData(weightAsset, weightsIndex, fastgltf::AccessorType::Vec4,
-                                   weightType, 4 * weightSize, true, values, error, loadBuffer,
+                                   weightType, 4 * weightSize, true, values, error, buffers,
                                    quantized))
     {
         return false;
@@ -909,7 +905,7 @@ readInfluenceSet(MeshAccessor jointSource, MeshAccessor weightSource,
 
 bool
 bindPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& primitive,
-              const UsdPrim& prim, const MappedSkin& skin, const gltfCore::BufferLoader& loadBuffer,
+              const UsdPrim& prim, const MappedSkin& skin, const gltfCore::BufferReader& buffers,
               std::string& error, const gltfCore::DecodedDracoPrimitive* decoded)
 {
     std::vector<std::pair<std::size_t, const fastgltf::Attribute*>> joints, weights;
@@ -938,8 +934,8 @@ bindPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& primitive
     for (std::size_t i = 0; i < joints.size(); ++i)
     {
         if (!readInfluenceSet(meshAccessor(asset, *joints[i].second, decoded),
-                              meshAccessor(asset, *weights[i].second, decoded), loadBuffer,
-                              skin.remap, pointCount, width, 4 * i, indices, influences, error))
+                              meshAccessor(asset, *weights[i].second, decoded), buffers, skin.remap,
+                              pointCount, width, 4 * i, indices, influences, error))
         {
             return false;
         }
@@ -980,7 +976,7 @@ bindPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& primitive
 
 bool
 ConvertMesh(const fastgltf::Asset& asset, std::size_t meshIndex, const pxr::UsdStagePtr& stage,
-            const pxr::SdfPath& path, const gltfCore::BufferLoader& loadBuffer,
+            const pxr::SdfPath& path, const gltfCore::BufferReader& buffers,
             MaterialAuthor& materials, DecodedMeshes& decodedMeshes)
 {
     using namespace pxr;
@@ -1027,8 +1023,8 @@ ConvertMesh(const fastgltf::Asset& asset, std::size_t meshIndex, const pxr::UsdS
         std::string error;
         const auto& primitive = source.primitives[i];
         gltfCore::DecodedDracoPrimitive decoded;
-        if (!gltfCore::DecodeDracoPrimitive(asset, primitive, loadBuffer, decoded, error) ||
-            !authorPrimitive(asset, primitive, group.GetPrim(), i, error, loadBuffer, materials,
+        if (!gltfCore::DecodeDracoPrimitive(asset, primitive, buffers, decoded, error) ||
+            !authorPrimitive(asset, primitive, group.GetPrim(), i, error, buffers, materials,
                              decoded.indices.empty() ? nullptr : &decoded))
         {
             TF_RUNTIME_ERROR("glTF mesh %zu primitive %zu: %s", meshIndex, i, error.c_str());
@@ -1060,7 +1056,7 @@ ConvertMesh(const fastgltf::Asset& asset, std::size_t meshIndex, const pxr::UsdS
 bool
 BindSkinnedMesh(const fastgltf::Asset& asset, std::size_t meshIndex, const pxr::UsdStagePtr& stage,
                 const pxr::SdfPath& path, const MappedSkin& skin,
-                const gltfCore::BufferLoader& loadBuffer, const DecodedMeshes& decodedMeshes)
+                const gltfCore::BufferReader& buffers, const DecodedMeshes& decodedMeshes)
 {
     const auto& primitives = asset.meshes[meshIndex].primitives;
     for (std::size_t i = 0; i < primitives.size(); ++i)
@@ -1069,7 +1065,7 @@ BindSkinnedMesh(const fastgltf::Asset& asset, std::size_t meshIndex, const pxr::
             stage->GetPrimAtPath(path.AppendChild(TfToken("Primitive_" + std::to_string(i))));
         std::string error;
         const auto decoded = decodedMeshes.find({meshIndex, i});
-        if (!bindPrimitive(asset, primitives[i], prim, skin, loadBuffer, error,
+        if (!bindPrimitive(asset, primitives[i], prim, skin, buffers, error,
                            decoded == decodedMeshes.end() ? nullptr : &decoded->second))
         {
             TF_RUNTIME_ERROR("glTF skinned mesh %zu primitive %zu at %s: %s", meshIndex, i,

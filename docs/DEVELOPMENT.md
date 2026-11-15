@@ -66,12 +66,14 @@ the reference shaders.
 
 To compare every Khronos sample asset with the committed baseline, use the same environment and a
 [glTF-Sample-Assets](https://github.com/KhronosGroup/glTF-Sample-Assets) checkout at the baseline's
-commit. Draco comparisons use Node.js and the `draco3dgltf` module in the pinned
-[Draco 1.5.9 source archive](https://github.com/google/draco/releases/tag/1.5.9). With the archive
-extracted under `build/`:
+commit. Compressed samples use Node.js. The Draco comparison uses the `draco3dgltf` module from
+[Draco 1.5.9](https://github.com/google/draco/releases/tag/1.5.9). The meshopt comparison uses the
+JavaScript reference decoder from [meshoptimizer 0.25](https://github.com/zeux/meshoptimizer/releases/tag/v0.25).
+With the two source archives extracted under `build/`:
 
 ```powershell
 $env:USD_GLTF_DRACO_REFERENCE = (Resolve-Path build/draco-1.5.9/javascript/npm/draco3dgltf).Path
+$env:USD_GLTF_MESHOPT_REFERENCE = (Resolve-Path build/meshoptimizer-0.25/js/meshopt_decoder_reference.js).Path
 python tests\check_samples.py build\cy2026-windows-x86_64-py313-usd <glTF-Sample-Assets> --render
 ```
 

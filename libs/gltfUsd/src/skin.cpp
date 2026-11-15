@@ -31,7 +31,7 @@ using namespace pxr;
 
 bool
 readBindTransforms(const fastgltf::Asset& asset, const fastgltf::Skin& skin,
-                   const gltfCore::BufferLoader& loadBuffer, VtMatrix4dArray& binds,
+                   const gltfCore::BufferReader& buffers, VtMatrix4dArray& binds,
                    std::string& error)
 {
     binds.assign(skin.joints.size(), GfMatrix4d(1.0));
@@ -41,8 +41,7 @@ readBindTransforms(const fastgltf::Asset& asset, const fastgltf::Skin& skin,
     }
     gltfCore::AccessorData data;
     if (!gltfCore::GetAccessorData(asset, *skin.inverseBindMatrices, fastgltf::AccessorType::Mat4,
-                                   fastgltf::ComponentType::Float, 64, false, data, error,
-                                   loadBuffer))
+                                   fastgltf::ComponentType::Float, 64, false, data, error, buffers))
     {
         return false;
     }
@@ -88,7 +87,7 @@ readBindTransforms(const fastgltf::Asset& asset, const fastgltf::Skin& skin,
 
 bool
 mapSkin(const fastgltf::Asset& asset, std::size_t skinIndex, const SceneMap& map,
-        const gltfCore::BufferLoader& loadBuffer, MappedSkin& mapped, std::vector<char>& isJoint,
+        const gltfCore::BufferReader& buffers, MappedSkin& mapped, std::vector<char>& isJoint,
         std::vector<char>& keep, std::string& error)
 {
     const auto& skin = asset.skins[skinIndex];
@@ -145,7 +144,7 @@ mapSkin(const fastgltf::Asset& asset, std::size_t skinIndex, const SceneMap& map
         return false;
     }
     VtMatrix4dArray binds;
-    if (!readBindTransforms(asset, skin, loadBuffer, binds, error))
+    if (!readBindTransforms(asset, skin, buffers, binds, error))
     {
         return false;
     }
@@ -234,7 +233,7 @@ addSampleTimes(const TimeSamples<T>& samples, std::set<double>& times)
 } // namespace
 
 bool
-MapSkins(const fastgltf::Asset& asset, const gltfCore::BufferLoader& loadBuffer, SceneMap& map)
+MapSkins(const fastgltf::Asset& asset, const gltfCore::BufferReader& buffers, SceneMap& map)
 {
     std::map<std::size_t, SdfPath> users;
     for (const auto& mapped : map.nodes)
@@ -267,7 +266,7 @@ MapSkins(const fastgltf::Asset& asset, const gltfCore::BufferLoader& loadBuffer,
     {
         auto& skin = map.skins[index];
         std::string error;
-        if (!mapSkin(asset, index, map, loadBuffer, skin, isJoint, keep, error))
+        if (!mapSkin(asset, index, map, buffers, skin, isJoint, keep, error))
         {
             TF_RUNTIME_ERROR("glTF skin %zu: %s", index, error.c_str());
             return false;

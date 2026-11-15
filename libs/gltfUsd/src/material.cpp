@@ -1183,7 +1183,7 @@ uvTransform(const fastgltf::TextureTransform& source)
 
 bool
 resolveTexture(const fastgltf::Asset& asset, const fastgltf::TextureInfo& info,
-               const std::string& sourcePath, const gltfCore::BufferLoader& loadBuffer,
+               const std::string& sourcePath, const gltfCore::BufferReader& buffers,
                TextureInput& result, std::string& error)
 {
     if (info.textureIndex >= asset.textures.size())
@@ -1223,7 +1223,7 @@ resolveTexture(const fastgltf::Asset& asset, const fastgltf::TextureInfo& info,
         return false;
     }
     gltfTexture::ImageLocation location;
-    if (!gltfTexture::LocateImage(asset, *imageIndex, sourcePath, loadBuffer, location, error))
+    if (!gltfTexture::LocateImage(asset, *imageIndex, sourcePath, buffers, location, error))
     {
         return false;
     }
@@ -1307,9 +1307,9 @@ authorPreviewPrimvars(const PbrFactors& factors, const VtVec3fArray& colors,
 } // namespace
 
 MaterialAuthor::MaterialAuthor(const fastgltf::Asset& asset, const std::string& sourcePath,
-                               const gltfCore::BufferLoader& loadBuffer,
+                               const gltfCore::BufferReader& buffers,
                                const pxr::UsdStageRefPtr& stage, const pxr::SdfPath& scope)
-    : _asset(asset), _sourcePath(sourcePath), _loadBuffer(loadBuffer), _stage(stage), _scope(scope),
+    : _asset(asset), _sourcePath(sourcePath), _buffers(buffers), _stage(stage), _scope(scope),
       _materials(asset.materials.size()), _vertexColorMaterials(asset.materials.size())
 {
 }
@@ -1514,8 +1514,8 @@ MaterialAuthor::Bind(std::size_t index, std::size_t uvSetCount, const pxr::VtVec
     {
         const auto resolve = [&](const auto& info, std::optional<TextureInput>& texture)
         {
-            return !info || resolveTexture(_asset, *info, _sourcePath, _loadBuffer,
-                                           texture.emplace(), error);
+            return !info ||
+                   resolveTexture(_asset, *info, _sourcePath, _buffers, texture.emplace(), error);
         };
         // KHR_materials_unlit defines every other texture as a fallback for clients without it.
         // A clearcoat or transmission of factor 0 is disabled, and so is a volume without

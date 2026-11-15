@@ -35,7 +35,8 @@ import numpy
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 BASELINE = ROOT / "tests" / "sample_baseline.json"
 DRACO = "KHR_draco_mesh_compression"
-IMPLEMENTED_EXTENSIONS = {"EXT_texture_webp", DRACO, "KHR_lights_punctual", "KHR_materials_anisotropy", "KHR_materials_clearcoat", "KHR_materials_ior", "KHR_materials_iridescence",
+MESHOPT = "EXT_meshopt_compression"
+IMPLEMENTED_EXTENSIONS = {"EXT_texture_webp", DRACO, MESHOPT, "KHR_lights_punctual", "KHR_materials_anisotropy", "KHR_materials_clearcoat", "KHR_materials_ior", "KHR_materials_iridescence",
                           "KHR_materials_sheen", "KHR_materials_specular", "KHR_materials_transmission", "KHR_materials_unlit", "KHR_materials_volume",
                           "KHR_mesh_quantization", "KHR_texture_basisu", "KHR_texture_transform"}
 PATHS = ("mtlx", "preview")
@@ -99,6 +100,7 @@ class Asset:
         else:
             self.json = json.loads(data.decode("utf-8"))
         self.buffers = {}
+        self.meshopt_views = {}
         self.draco_attributes = {}
         self.draco_indices = {}
 
@@ -134,9 +136,30 @@ class Asset:
         return self.buffers[index]
 
     def buffer_view(self, index):
+        if index in self.meshopt_views:
+            return self.meshopt_views[index]
         view = self.json["bufferViews"][index]
         offset = view.get("byteOffset", 0)
         return self.buffer(view["buffer"])[offset:offset + view["byteLength"]]
+
+    def decode_meshopt(self):
+        requests = {}
+        for index, view in enumerate(self.get("bufferViews")):
+            compression = view.get("extensions", {}).get(MESHOPT)
+            if not compression:
+                continue
+            offset = compression.get("byteOffset", 0)
+            source = self.buffer(compression["buffer"])[offset:offset + compression["byteLength"]]
+            requests[index] = {**compression, "bytes": base64.b64encode(source).decode()}
+        if not requests:
+            return
+        process = subprocess.run(["node", str(ROOT / "tests" / "decode_sample_meshopt.mjs")],
+                                 input=json.dumps(list(requests.values())), capture_output=True, text=True,
+                                 encoding="utf-8", timeout=TIMEOUT_SECONDS)
+        if process.returncode:
+            raise RuntimeError(f"Meshopt reference decoder failed: {process.stderr.strip()}")
+        self.meshopt_views = {index: base64.b64decode(data)
+                              for index, data in zip(requests, json.loads(process.stdout), strict=True)}
 
     def decode_draco(self):
         requests = []
@@ -177,6 +200,17 @@ class Asset:
             return decoded[name]
         return self.accessor(primitive["attributes"][name])
 
+    def octahedral_normal_step(self, primitive):
+        accessor = self.get("accessors")[primitive["attributes"]["NORMAL"]]
+        index = accessor.get("bufferView")
+        if index not in self.meshopt_views:
+            return 0.0
+        compression = self.get("bufferViews")[index]["extensions"][MESHOPT]
+        if compression.get("filter") != "OCTAHEDRAL":
+            return 0.0
+        # Appendix B allows one integer step between filtered results.
+        return 1.0 / NORMALIZED_SCALE[accessor["componentType"]]
+
     @staticmethod
     def normalize(values, accessor):
         component = accessor["componentType"]
@@ -192,10 +226,11 @@ class Asset:
         width = TYPES[accessor["type"]]
         count = accessor["count"]
         if "bufferView" in accessor:
-            view = self.json["bufferViews"][accessor["bufferView"]]
+            view_index = accessor["bufferView"]
+            view = self.json["bufferViews"][view_index]
             stride = view.get("byteStride") or dtype.itemsize * width
-            offset = view.get("byteOffset", 0) + accessor.get("byteOffset", 0)
-            values = numpy.ndarray((count, width), dtype, self.buffer(view["buffer"]),
+            offset = accessor.get("byteOffset", 0)
+            values = numpy.ndarray((count, width), dtype, self.buffer_view(view_index),
                                    offset, (stride, dtype.itemsize))
         else:
             values = numpy.zeros((count, width), dtype)
@@ -233,7 +268,7 @@ class Check:
             self.mismatches.append(message)
         return passed
 
-    def close(self, actual, expected, message, magnitude=None):
+    def close(self, actual, expected, message, magnitude=None, *, absolute=0.0):
         """Compares within TOLERANCE of the magnitude, which defaults to the expected values. A product's
         rounding scales with its terms, which can be far larger than a result they cancel to."""
         actual = numpy.asarray(actual, numpy.float64)
@@ -243,7 +278,8 @@ class Check:
         if actual.shape != expected.shape:
             return self.expect(False, f"{message}: shape {actual.shape}, expected {expected.shape}")
         limit = TOLERANCE * numpy.maximum(1.0, numpy.abs(expected) if magnitude is None else magnitude)
-        return self.expect(bool(numpy.all(numpy.abs(actual - expected) <= limit)), f"{message}: values differ")
+        return self.expect(bool(numpy.all(numpy.abs(actual - expected) <= limit + absolute)),
+                           f"{message}: values differ")
 
 
 def node_matrix(node):
@@ -383,7 +419,8 @@ def check_primitive(check, asset, prim, primitive, label):
 
     normals = mesh.GetNormalsAttr().Get()
     if "NORMAL" in attributes:
-        check.close(normals, asset.attribute(primitive, "NORMAL"), f"{label} normals")
+        check.close(normals, asset.attribute(primitive, "NORMAL"), f"{label} normals",
+                    absolute=asset.octahedral_normal_step(primitive))
     elif primitive.get("targets"):
         check.expect(not normals, f"{label} authors normals for a morph target without base normals")
     else:
@@ -1472,6 +1509,7 @@ def inspect(path, root, directory):
     # Embedded images share a parsed package only inside a resolver cache scope.
     # Bound the scope to this inspection, so another file or reload sees fresh bytes.
     try:
+        asset.decode_meshopt()
         asset.decode_draco()
     except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
         result.update(mismatches=[str(error)], meshes=sum(prim.GetTypeName() == "Mesh" for prim in stage.Traverse()))

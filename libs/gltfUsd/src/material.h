@@ -21,7 +21,7 @@ class MaterialAuthor
 {
   public:
     MaterialAuthor(const fastgltf::Asset& asset, const std::string& sourcePath,
-                   const gltfCore::BufferLoader& loadBuffer, const pxr::UsdStageRefPtr& stage,
+                   const gltfCore::BufferReader& buffers, const pxr::UsdStageRefPtr& stage,
                    const pxr::SdfPath& scope);
 
     [[nodiscard]] std::optional<std::size_t> TangentTexCoord(std::size_t index) const;
@@ -40,7 +40,7 @@ class MaterialAuthor
 
     const fastgltf::Asset& _asset;
     const std::string& _sourcePath;
-    const gltfCore::BufferLoader& _loadBuffer;
+    const gltfCore::BufferReader& _buffers;
     pxr::UsdStageRefPtr _stage;
     pxr::SdfPath _scope;
     std::vector<pxr::UsdShadeMaterial> _materials;

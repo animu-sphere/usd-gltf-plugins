@@ -66,14 +66,13 @@ defineNode(const UsdStageRefPtr& stage, const SceneMap& map, const SdfPath& path
 // read once and every node that uses it has the same prims.
 bool
 placeMesh(const fastgltf::Asset& asset, const SceneMap& map, std::size_t meshIndex,
-          const SdfPath& path, const UsdStageRefPtr& stage,
-          const gltfCore::BufferLoader& loadBuffer, MaterialAuthor& materials,
-          DecodedMeshes& decodedMeshes)
+          const SdfPath& path, const UsdStageRefPtr& stage, const gltfCore::BufferReader& buffers,
+          MaterialAuthor& materials, DecodedMeshes& decodedMeshes)
 {
     const auto& first = map.meshes[meshIndex].front();
     if (path == first)
     {
-        return ConvertMesh(asset, meshIndex, stage, path, loadBuffer, materials, decodedMeshes);
+        return ConvertMesh(asset, meshIndex, stage, path, buffers, materials, decodedMeshes);
     }
     // Material bindings target a scope outside the copied subtree, so they are copied unchanged.
     const auto layer = stage->GetRootLayer();
@@ -267,7 +266,7 @@ authorAnimations(const UsdStageRefPtr& stage, const SdfPath& root, const SceneMa
 
 SdfLayerRefPtr
 authorScene(const fastgltf::Asset& asset, const std::string& sourcePath,
-            const gltfCore::BufferLoader& loadBuffer, std::size_t selectedIndex)
+            const gltfCore::BufferReader& buffers, std::size_t selectedIndex)
 {
     TfErrorMark mark;
     auto layer = SdfLayer::CreateAnonymous("gltf-conversion.usda");
@@ -298,8 +297,7 @@ authorScene(const fastgltf::Asset& asset, const std::string& sourcePath,
     }
     auto map = MapScene(asset, selectedIndex, scenes.GetPath());
     AnimationPlan animation;
-    if (!map || !MapSkins(asset, loadBuffer, *map) ||
-        !PlanAnimation(asset, loadBuffer, *map, animation))
+    if (!map || !MapSkins(asset, buffers, *map) || !PlanAnimation(asset, buffers, *map, animation))
     {
         return {};
     }
@@ -328,7 +326,7 @@ authorScene(const fastgltf::Asset& asset, const std::string& sourcePath,
         stage->SetEndTimeCode(animation.endTimeCode);
     }
 
-    MaterialAuthor materials(asset, sourcePath, loadBuffer, stage, materialScope.GetPath());
+    MaterialAuthor materials(asset, sourcePath, buffers, stage, materialScope.GetPath());
     DecodedMeshes decodedMeshes;
     std::vector<AnimatedCorrection> corrections;
     for (std::size_t position = 0; position < map->nodes.size(); ++position)
@@ -355,9 +353,8 @@ authorScene(const fastgltf::Asset& asset, const std::string& sourcePath,
             TF_RUNTIME_ERROR("Could not author glTF node %zu transform", index);
             return {};
         }
-        if (node.meshIndex &&
-            !placeMesh(asset, *map, *node.meshIndex, mapped.mesh, stage, loadBuffer, materials,
-                       decodedMeshes))
+        if (node.meshIndex && !placeMesh(asset, *map, *node.meshIndex, mapped.mesh, stage, buffers,
+                                         materials, decodedMeshes))
         {
             return {};
         }
@@ -384,9 +381,9 @@ authorScene(const fastgltf::Asset& asset, const std::string& sourcePath,
     {
         const auto& mapped = map->nodes[position];
         const auto& node = asset.nodes[mapped.index];
-        if (node.skinIndex && !BindSkinnedMesh(asset, *node.meshIndex, stage, mapped.mesh,
-                                               map->skins.at(*node.skinIndex), loadBuffer,
-                                               decodedMeshes))
+        if (node.skinIndex &&
+            !BindSkinnedMesh(asset, *node.meshIndex, stage, mapped.mesh,
+                             map->skins.at(*node.skinIndex), buffers, decodedMeshes))
         {
             return {};
         }
@@ -509,7 +506,8 @@ ConvertScene(const fastgltf::Asset& asset, const std::string& sourcePath,
                 SdfLayerRefPtr staged;
                 try
                 {
-                    staged = authorScene(asset, sourcePath, loadBuffer, selected->index);
+                    const gltfCore::BufferReader buffers(asset, loadBuffer);
+                    staged = authorScene(asset, sourcePath, buffers, selected->index);
                 }
                 catch (const std::exception& e)
                 {
