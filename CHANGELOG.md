@@ -8,6 +8,8 @@ here.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-15
+
 ### Added
 
 - Import `KHR_materials_emissive_strength` in MaterialX and UsdPreviewSurface.
