@@ -6,6 +6,7 @@
 #include "gltfCore/accessor.h"
 #include "material.h"
 #include "sceneMap.h"
+#include "tangents.h"
 
 #include <fastgltf/core.hpp>
 
@@ -285,7 +286,7 @@ readTexcoords(MeshAccessor source, VtVec2fArray& values, std::string& error,
                 error = "texture coordinate contains a non-finite value";
                 return false;
             }
-            values[i][component] = component == 0 ? value : 1.0f - value;
+            values[i][component] = value;
         }
     }
     return true;
@@ -754,6 +755,24 @@ authorPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& primiti
         error = "could not author USD tangents";
         return false;
     }
+    if (primitive.materialIndex && (!tangent || !normal) && !normals.empty())
+    {
+        const auto uvSet = materials.TangentTexCoord(*primitive.materialIndex);
+        if (uvSet && *uvSet < uvSets.size())
+        {
+            const auto generated =
+                GenerateTangents(points, normals, uvSets[*uvSet], indices, generateNormals);
+            if (!generated.empty() &&
+                !primvars
+                     .CreatePrimvar(TfToken("gltf_generatedTangent"), SdfValueTypeNames->Float4Array,
+                                    UsdGeomTokens->faceVarying)
+                     .Set(generated))
+            {
+                error = "could not author generated USD tangents";
+                return false;
+            }
+        }
+    }
     if (color)
     {
         if (!mesh.CreateDisplayColorPrimvar(UsdGeomTokens->vertex).Set(colors))
@@ -774,6 +793,10 @@ authorPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& primiti
     for (std::size_t i = 0; i < uvSets.size(); ++i)
     {
         const auto name = i == 0 ? std::string("st") : "st" + std::to_string(i);
+        for (auto& uv : uvSets[i])
+        {
+            uv[1] = 1.0f - uv[1];
+        }
         if (!primvars
                  .CreatePrimvar(TfToken(name), SdfValueTypeNames->TexCoord2fArray,
                                 UsdGeomTokens->vertex)

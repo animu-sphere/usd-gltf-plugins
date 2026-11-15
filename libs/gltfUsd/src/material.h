@@ -10,6 +10,7 @@
 #include "pxr/usd/usdShade/material.h"
 
 #include <cstddef>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -22,6 +23,8 @@ class MaterialAuthor
     MaterialAuthor(const fastgltf::Asset& asset, const std::string& sourcePath,
                    const gltfCore::BufferLoader& loadBuffer, const pxr::UsdStageRefPtr& stage,
                    const pxr::SdfPath& scope);
+
+    [[nodiscard]] std::optional<std::size_t> TangentTexCoord(std::size_t index) const;
 
     // `uvSetCount` is the primitive's number of TEXCOORD_n sets; `colors` is null
     // for a primitive without COLOR_0; `alpha` is empty without vertex alpha.

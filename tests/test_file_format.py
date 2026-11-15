@@ -2995,6 +2995,48 @@ class FileFormatTest(unittest.TestCase):
                     self.assertTrue(stage.GetRootLayer().Reload(True))
                     self.assertEqual([tuple(v) for v in primvar.Get()], list(values))
 
+    def test_generated_tangents_use_the_normal_uv_set_per_corner(self):
+        positions = ((0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0))
+        # Across the shared edge, the second triangle folds the UVs back over the first.
+        mirrored = ((0, 1), (1, 1), (1, 0), (1, 1))
+        for extension, supplied_normal, supplied_tangent, degenerate in itertools.product(
+                ("gltf", "glb"), (False, True), (False, True), (False, True)):
+            with self.subTest(extension=extension, normal=supplied_normal, tangent=supplied_tangent,
+                              degenerate=degenerate), tempfile.TemporaryDirectory() as directory:
+                path = pathlib.Path(directory) / f"frame.{extension}"
+                attrs = {"POSITION": (5126, False, positions),
+                         "TEXCOORD_0": (5126, False, ((0, 0),) * 4),
+                         "TEXCOORD_1": (5126, False, ((0, 0),) * 4 if degenerate else mirrored)}
+                if supplied_normal:
+                    attrs["NORMAL"] = (5126, False, ((0, 0, 1),) * 4)
+                if supplied_tangent:
+                    attrs["TANGENT"] = (5126, False, ((0, 1, 0, 1),) * 4)
+                document, binary = quantized_document("glb", attrs)
+                document["extensionsUsed"] = ["KHR_texture_transform"]
+                document.pop("extensionsRequired")
+                binary = append_view(document, binary, extension, struct.pack("<6H", 0, 1, 2, 0, 2, 3))
+                document["accessors"].append({"bufferView": len(document["bufferViews"]) - 1,
+                                              "componentType": 5123, "count": 6, "type": "SCALAR"})
+                primitive = document["meshes"][0]["primitives"][0]
+                primitive.update(indices=len(document["accessors"]) - 1, material=0)
+                document["images"] = [{"uri": "data:image/png;base64," + base64.b64encode(PNG).decode()}]
+                document["textures"] = [{"source": 0}]
+                document["materials"] = [{"normalTexture": {"index": 0, "extensions": {
+                    "KHR_texture_transform": {"texCoord": 1, "rotation": 0.7}}}}]
+                write_asset(path, document, binary)
+                stage = Usd.Stage.Open(str(path))
+                mesh = stage.GetPrimAtPath("/Root/Scenes/Scene_0/Node_0/Mesh_0/Primitive_0")
+                primvars = UsdGeom.PrimvarsAPI(mesh)
+                self.assertEqual(bool(primvars.GetPrimvar("gltf_tangent")), supplied_tangent)
+                generated = primvars.GetPrimvar("gltf_generatedTangent")
+                if degenerate or (supplied_normal and supplied_tangent):
+                    self.assertFalse(generated)
+                else:
+                    self.assertEqual(generated.GetTypeName(), Sdf.ValueTypeNames.Float4Array)
+                    self.assertEqual(generated.GetInterpolation(), UsdGeom.Tokens.faceVarying)
+                    self.assertEqual([tuple(v) for v in generated.Get()],
+                                     [(1, 0, 0, 1)] * 3 + [(0, 1, 0, -1)] * 3)
+
     def test_tangent_failures_preserve_layer(self):
         good = struct.pack("<12f", *((1, 0, 0, 1) * 3))
         with tempfile.TemporaryDirectory() as directory:

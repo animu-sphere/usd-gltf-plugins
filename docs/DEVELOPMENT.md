@@ -51,6 +51,19 @@ python tests\check_display.py build\cy2026-windows-x86_64-py313-usd
 It exits nonzero if a comparison fails, and keeps images and logs in `display_check` in
 the build directory.
 
+Run the tangent frame comparison with the same lookdev environment, PyOpenGL, NumPy and
+Node.js. Use a [Khronos Sample Renderer checkout](https://github.com/KhronosGroup/glTF-Sample-Renderer/tree/cc3d5ff52217a63161c5c876677292546c01564a)
+at commit `cc3d5ff52217a63161c5c876677292546c01564a`. The probe uses its shaders and
+MikkTSpace Wasm directly.
+
+```powershell
+python tests\probe_tangent_frames.py build\cy2026-windows-x86_64-py313-usd <glTF-Sample-Renderer>
+```
+
+The probe saves images and a JSON report in `tangent_frame_probe` in the build directory.
+It checks the USD corner tangents and compares Storm shading with controls derived from
+the reference shaders.
+
 To compare every Khronos sample asset with the committed baseline, use the same environment and a
 [glTF-Sample-Assets](https://github.com/KhronosGroup/glTF-Sample-Assets) checkout at the baseline's
 commit. Draco comparisons use Node.js and the `draco3dgltf` module in the pinned

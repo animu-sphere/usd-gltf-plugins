@@ -8,6 +8,12 @@ here.
 
 ## [Unreleased]
 
+### Added
+
+- Generate mesh-local MikkTSpace tangent frames for materials that need them. USD
+  stores generated tangents per face corner, including the handedness of mirrored UVs.
+  See the [tangent frame decision](docs/adr/0004-normal-textures-and-tangents.md#tangents).
+
 ## [0.5.0] - 2026-11-13
 
 ### Added

@@ -231,7 +231,10 @@ another flip.
 TANGENT must use VEC4 floats or a [quantized format](#quantized-attributes), with the same count as
 POSITION, and finite values. It is authored as the vertex-interpolated `float4[]` primvar `gltf_tangent`:
 XYZ is the tangent and W the bitangent sign, as glTF defines them. Flipping V does
-not change these values. Material graphs [do not read this primvar](../adr/0004-normal-textures-and-tangents.md#tangents).
+not change these values. When a material needs a frame and the mesh has no supplied frame,
+the importer can author a mesh-local, face-varying `float4[]` primvar `gltf_generatedTangent`.
+Both primvars use `B = cross(N, T) * W`. See the
+[frame contract](../adr/0004-normal-textures-and-tangents.md#tangents) for selection and shading.
 
 ## Vertex colors
 

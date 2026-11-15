@@ -12,6 +12,7 @@ sources, upstream README and license; its examples, tests and docs are omitted.
 | [Basis Universal](https://github.com/BinomialLLC/basis_universal) | v2_50 | [Release](https://github.com/BinomialLLC/basis_universal/releases/tag/v2_50), commit `4d6fc70eaf62ad0558e63e8d97eb9766118327a6`; `transcoder/`, `zstd/zstddeclib.c`, `zstd/zstd.h`, `zstd/zstd_errors.h` and licenses |
 | [libwebp](https://github.com/webmproject/libwebp) | v1.6.0 | [Tag](https://github.com/webmproject/libwebp/releases/tag/v1.6.0), commit `4fa21912338357f89e4fd51cf2368325b59e9bd9`; the decoder subset below |
 | [Draco](https://github.com/google/draco) | 1.5.9 | [Release](https://github.com/google/draco/releases/tag/1.5.9), commit `554628821c3448319d7d4ae48db170b8c63e1aaf`; the glTF mesh decoder subset below |
+| [MikkTSpace](https://github.com/mmikk/MikkTSpace) | 1.0 | [Commit](https://github.com/mmikk/MikkTSpace/tree/3e895b49d05ea07e4c2133156cfa94369e19e409) `3e895b49d05ea07e4c2133156cfa94369e19e409`, unmodified `mikktspace.c` and `mikktspace.h` with their zlib license notices |
 
 libwebp keeps only the files upstream's `libwebpdecoder` is built from, unedited:
 `src/dec/`, the decoding and common files of `src/dsp/` and `src/utils/` with every SIMD
