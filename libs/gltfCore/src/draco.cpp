@@ -151,8 +151,7 @@ decodeIndices(const fastgltf::Asset& asset, const fastgltf::Primitive& primitive
 
 bool
 DecodeDracoPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& primitive,
-                     const BufferLoader& loadBuffer, DecodedDracoPrimitive& result,
-                     std::string& error)
+                     const BufferReader& buffers, DecodedDracoPrimitive& result, std::string& error)
 {
     if (!primitive.dracoCompression ||
         (primitive.type == fastgltf::PrimitiveType::TriangleStrip &&
@@ -169,7 +168,7 @@ DecodeDracoPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& pr
         return false;
     }
     std::span<const std::byte> bytes;
-    if (!GetBufferViewBytes(asset, compression.bufferView, bytes, error, loadBuffer))
+    if (!buffers.GetView(asset, compression.bufferView, bytes, error))
     {
         error = "KHR_draco_mesh_compression: " + error;
         return false;

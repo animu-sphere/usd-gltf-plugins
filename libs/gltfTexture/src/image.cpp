@@ -241,7 +241,7 @@ ParsePackageEntry(std::string_view entry, std::size_t& imageIndex, ImageFormat& 
 
 bool
 GetPackagedImage(const fastgltf::Asset& asset, std::size_t imageIndex,
-                 const std::string& sourcePath, const gltfCore::BufferLoader& loadBuffer,
+                 const std::string& sourcePath, const gltfCore::BufferReader& buffers,
                  std::vector<std::byte>& owned, std::span<const std::byte>& bytes,
                  ImageFormat& format, std::string& error)
 {
@@ -253,7 +253,7 @@ GetPackagedImage(const fastgltf::Asset& asset, std::size_t imageIndex,
     const auto& data = asset.images[imageIndex].data;
     if (const auto* view = std::get_if<fastgltf::sources::BufferView>(&data))
     {
-        if (!gltfCore::GetBufferViewBytes(asset, view->bufferViewIndex, bytes, error, loadBuffer))
+        if (!buffers.GetView(asset, view->bufferViewIndex, bytes, error))
         {
             return false;
         }
@@ -299,7 +299,7 @@ GetPackagedImage(const fastgltf::Asset& asset, std::size_t imageIndex,
 
 bool
 LocateImage(const fastgltf::Asset& asset, std::size_t imageIndex, const std::string& sourcePath,
-            const gltfCore::BufferLoader& loadBuffer, ImageLocation& location, std::string& error)
+            const gltfCore::BufferReader& buffers, ImageLocation& location, std::string& error)
 {
     if (imageIndex >= asset.images.size())
     {
@@ -313,7 +313,7 @@ LocateImage(const fastgltf::Asset& asset, std::size_t imageIndex, const std::str
     std::vector<std::byte> owned;
     std::span<const std::byte> bytes;
     ImageFormat format;
-    if (!GetPackagedImage(asset, imageIndex, sourcePath, loadBuffer, owned, bytes, format, error) ||
+    if (!GetPackagedImage(asset, imageIndex, sourcePath, buffers, owned, bytes, format, error) ||
         !CheckImage(bytes, format, error))
     {
         return false;

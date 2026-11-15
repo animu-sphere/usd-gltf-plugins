@@ -27,13 +27,13 @@ using DecodedMeshes =
 // material. A node that uses the mesh places it by this or a copy of its result.
 [[nodiscard]] bool ConvertMesh(const fastgltf::Asset& asset, std::size_t meshIndex,
                                const pxr::UsdStagePtr& stage, const pxr::SdfPath& path,
-                               const gltfCore::BufferLoader& loadBuffer, MaterialAuthor& materials,
+                               const gltfCore::BufferReader& buffers, MaterialAuthor& materials,
                                DecodedMeshes& decodedMeshes);
 
 // Binds a placed copy to its node's skeleton after geometry has been copied to every placement.
 [[nodiscard]] bool BindSkinnedMesh(const fastgltf::Asset& asset, std::size_t meshIndex,
                                    const pxr::UsdStagePtr& stage, const pxr::SdfPath& path,
-                                   const MappedSkin& skin, const gltfCore::BufferLoader& loadBuffer,
+                                   const MappedSkin& skin, const gltfCore::BufferReader& buffers,
                                    const DecodedMeshes& decodedMeshes);
 
 [[nodiscard]] bool BindMorphMesh(const fastgltf::Mesh& source, const pxr::UsdStagePtr& stage,

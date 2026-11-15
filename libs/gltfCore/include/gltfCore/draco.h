@@ -23,7 +23,7 @@ struct DecodedDracoPrimitive
 // strip leaves the result empty. Attribute names in the result borrow from the source primitive.
 [[nodiscard]] bool DecodeDracoPrimitive(const fastgltf::Asset& asset,
                                         const fastgltf::Primitive& primitive,
-                                        const BufferLoader& loadBuffer,
-                                        DecodedDracoPrimitive& result, std::string& error);
+                                        const BufferReader& buffers, DecodedDracoPrimitive& result,
+                                        std::string& error);
 
 } // namespace gltfCore

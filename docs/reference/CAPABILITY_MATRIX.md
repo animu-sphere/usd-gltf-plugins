@@ -37,6 +37,7 @@ CI success is not evidence of display compatibility.
 | Lights (`KHR_lights_punctual`) | Experimental | Directional, point and spot, optional or required, below each node that uses them, with the node's scale, shear and reflection cancelled. A directional light is a distant light in lux. A point or spot light is a sphere of 1 millimeter whose intensity gives glTF's candela, so a renderer that ignores `treatAsPoint` draws a small sphere. The cone's softness approximates glTF's spot falloff, and Storm ignores the cone. `range` is ignored, with a warning. Degenerate nodes and values outside the specification fail. Tested in CI, with the [display check](#display-checks) on Windows. See the [decision record](../adr/0013-lights.md). | `tests/test_file_format.py::test_lights`, `tests/test_file_format.py::test_lights_reference_into_a_scaled_stage`, `tests/test_file_format.py::test_light_range_is_ignored_with_a_warning`, `tests/test_file_format.py::test_light_failures_preserve_layer`, `tests/test_file_format.py::test_lights_required_and_outside_selected_scene`, `tests/check_display.py` |
 | Triangle-based meshes | Verified (USD data, CI) | Indexed and non-indexed TRIANGLES, TRIANGLE_STRIP and TRIANGLE_FAN with float or quantized POSITION. Interleaved accessors are accepted. | `tests/test_file_format.py::test_triangle_meshes`, `tests/test_file_format.py::test_triangle_strips_and_fans`, `tests/test_file_format.py::test_triangle_strip_and_fan_index_types_and_nonindexed_counts`, `tests/test_file_format.py::test_mesh_schema_attributes` |
 | Draco (`KHR_draco_mesh_compression`) | Verified (Windows x86-64, Linux x86-64, macOS arm64; OpenUSD 26.08) | Draco 2.2 TRIANGLES with bufferViews from GLB, data URIs and restricted external buffers. Mapped attributes and faces feed normal mesh authoring, including skin influences. Optional TRIANGLE_STRIP uses its uncompressed fallback with a warning. Required strips and corrupt triangle payloads fail. The [Khronos sample checks](#sample-assets) ran on Windows. See the [decision record](../adr/0033-draco-decoder.md). | `tests/test_file_format.py::test_draco_mesh_data`, `tests/test_file_format.py::test_optional_draco_triangle_strip_fallback`, `tests/test_file_format.py::test_draco_failures_preserve_layer`, [`tests/check_samples.py`](../../tests/check_samples.py), [workspace CI 43244411123](https://github.com/animu-sphere/usd-gltf-plugins/actions/runs/43244411123) |
+| Meshopt (`EXT_meshopt_compression`) | Verified (Windows x86-64; OpenUSD 26.08) | GLB, data URI and restricted external sources. The buffer reader shares decoded views across mesh and animation reads; it prefers a valid compressed payload even with an optional fallback. Invalid layouts and corrupt compressed data fail. See [modes, filters and bounds](../adr/0034-meshopt-buffer-views.md). `KHR_meshopt_compression` is unsupported. | `libs/gltfCore/tests/accessor.cpp`, `tests/test_file_format.py::test_meshopt_buffer_views`, `tests/test_file_format.py::test_meshopt_failures_preserve_layer`, [sample check](#sample-assets) |
 | Normals | Verified (USD data, CI) | Supplied float or quantized NORMAL, or generated per face when absent. | `tests/test_file_format.py::test_flat_normals_and_negative_scale` |
 | Mesh quantization (`KHR_mesh_quantization`) | Verified (USD data, CI) | Every format the extension adds to base POSITION, NORMAL, TANGENT and TEXCOORD_n, authored as floats, when the file lists it in `extensionsRequired`. Without that, quantized data fails. Normals are not renormalized, so a renderer must normalize them, which Storm was [seen to do](#display-checks) on two samples only. See the morph target row for quantized deltas. | `tests/test_file_format.py::test_quantized_attribute_formats`, `tests/test_file_format.py::test_quantized_values_keep_their_range_and_precision`, `tests/test_file_format.py::test_quantized_attributes_interleaved_with_node_transform`, `tests/test_file_format.py::test_quantization_declared_without_quantized_data`, `tests/test_file_format.py::test_quantized_failures_preserve_layer` |
 | Texture coordinate sets | Verified (USD data, CI) | Consecutive TEXCOORD_n. Authored values; sampling through them is covered by the texture rows. | `tests/test_file_format.py::test_texture_coordinates`, `tests/test_file_format.py::test_texture_coordinate_failures_preserve_layer` |
@@ -443,14 +444,19 @@ default time through both shader paths in Storm with the OpenStrata lookdev runt
 RTX A5000. The other render results are from previous runs in the same environment.
 NodePerformanceTest's GLB timed out through both shader paths. The sample check runs outside CI.
 
+Both files requiring `EXT_meshopt_compression` opened and drew through both Storm shader paths.
+BrainStem's mesh and animation data and DragonAttenuation's mesh data agree with the JavaScript
+reference decoder. The comparison allows one integer step for octahedral normals, as specified
+by the extension. DragonAttenuation also uses the ignored optional `KHR_materials_variants`.
+
 | Result | Files | What it means |
 | --- | --- | --- |
-| Opened | 319 | The stage opens. No file crashed or timed out while opening. |
-| Rejected | 20 | Each has a diagnostic naming a cause the file really has. |
-| Meaning verified | 259 | USD agrees with values decoded from the file, in all that is compared, and the file uses no ignored extension. |
-| Meaning partial | 60 | The same, but the file uses an optional extension that is ignored, with a warning. What it changes is not compared. |
+| Opened | 321 | The stage opens. No file crashed or timed out while opening. |
+| Rejected | 18 | Each has a diagnostic naming a cause the file really has. |
+| Meaning verified | 260 | USD agrees with values decoded from the file, in all that is compared, and the file uses no ignored extension. |
+| Meaning partial | 61 | The same, but the file uses an optional extension that is ignored, with a warning. What it changes is not compared. |
 | Meaning differs | 0 | |
-| Rendered | 318 | Storm drew through both shader paths, measured by coverage in a static frame. One more file timed out through both. |
+| Rendered | 320 | Storm drew through both shader paths, measured by coverage in a static frame. One more file timed out through both. |
 
 Why files are rejected, read from each file. Most files have several causes, so a count of files that
 have a cause is not what supporting it would open:
@@ -460,7 +466,7 @@ have a cause is not what supporting it would open:
 | Morph target TANGENT deltas | 2 | 2 |
 | Requires a material extension | 4 | 4 |
 | Requires `KHR_node_visibility` | 4 | 4 |
-| Requires meshopt compression | 5 | 5 |
+| Requires `KHR_meshopt_compression` | 3 | 3 |
 | Points or lines | 3 | 3 |
 | Sparse accessor | 2 | 2 |
 

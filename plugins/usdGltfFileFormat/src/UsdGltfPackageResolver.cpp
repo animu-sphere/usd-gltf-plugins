@@ -23,7 +23,6 @@
 #include <memory>
 #include <mutex>
 #include <new>
-#include <optional>
 #include <span>
 #include <string>
 #include <unordered_map>
@@ -38,14 +37,18 @@ namespace
 // Keeps the asset and its loaded buffers alive for the image bytes they own.
 struct Package
 {
-    explicit Package(const std::string& sourcePath) : path(sourcePath), loader(sourcePath)
+    Package(const std::string& sourcePath, fastgltf::Asset&& parsed)
+        : path(sourcePath), loader(sourcePath), asset(std::move(parsed)),
+          buffers(asset, [this](const fastgltf::Buffer& buffer, std::span<const std::byte>& data,
+                                std::string& error) { return loader.Load(buffer, data, error); })
     {
     }
 
     std::string path;
-    std::mutex loaderMutex;
+    std::mutex buffersMutex;
     ExternalBufferLoader loader;
-    std::optional<fastgltf::Asset> asset;
+    fastgltf::Asset asset;
+    gltfCore::BufferReader buffers;
 };
 
 std::shared_ptr<Package>
@@ -65,9 +68,7 @@ openPackage(const std::string& resolvedPackagePath)
     {
         return {};
     }
-    auto package = std::make_shared<Package>(resolvedPackagePath);
-    package->asset = std::move(parsed.get());
-    return package;
+    return std::make_shared<Package>(resolvedPackagePath, std::move(parsed.get()));
 }
 
 // `bytes` refers to the package, or to `owned` for a KTX2 or WebP file.
@@ -143,16 +144,13 @@ findImage(const std::shared_ptr<Package>& package, const std::string& entry, Pac
     std::size_t index;
     gltfTexture::ImageFormat requested;
     std::string error;
-    return package && gltfTexture::ParsePackageEntry(entry, index, requested) &&
-           gltfTexture::GetPackagedImage(
-               *package->asset, index, package->path,
-               [&package](const fastgltf::Buffer& buffer, std::span<const std::byte>& data,
-                          std::string& loadError)
-               {
-                   const std::lock_guard lock(package->loaderMutex);
-                   return package->loader.Load(buffer, data, loadError);
-               },
-               image.owned, image.bytes, image.format, error) &&
+    if (!package || !gltfTexture::ParsePackageEntry(entry, index, requested))
+    {
+        return false;
+    }
+    const std::lock_guard lock(package->buffersMutex);
+    return gltfTexture::GetPackagedImage(package->asset, index, package->path, package->buffers,
+                                         image.owned, image.bytes, image.format, error) &&
            requested == gltfTexture::ServedFormat(image.format);
 }
 

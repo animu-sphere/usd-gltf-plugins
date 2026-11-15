@@ -46,7 +46,7 @@ enum class ImageFormat
 // by the asset, by the buffer loader or, for a file, by `owned`.
 [[nodiscard]] bool GetPackagedImage(const fastgltf::Asset& asset, std::size_t imageIndex,
                                     const std::string& sourcePath,
-                                    const gltfCore::BufferLoader& loadBuffer,
+                                    const gltfCore::BufferReader& buffers,
                                     std::vector<std::byte>& owned,
                                     std::span<const std::byte>& bytes, ImageFormat& format,
                                     std::string& error);
@@ -63,8 +63,7 @@ struct ImageLocation
 // file policy. Those read directly must have the file extension of their format,
 // and KTX2 and WebP files are served through the package.
 [[nodiscard]] bool LocateImage(const fastgltf::Asset& asset, std::size_t imageIndex,
-                               const std::string& sourcePath,
-                               const gltfCore::BufferLoader& loadBuffer, ImageLocation& location,
-                               std::string& error);
+                               const std::string& sourcePath, const gltfCore::BufferReader& buffers,
+                               ImageLocation& location, std::string& error);
 
 } // namespace gltfTexture

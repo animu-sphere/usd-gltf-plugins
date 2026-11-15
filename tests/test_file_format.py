@@ -126,6 +126,37 @@ def mesh_document(extension, index_type=5123):
     return document, binary if extension == "glb" else None
 
 
+MESHOPT = "EXT_meshopt_compression"
+
+
+def meshopt_document(fallback=False, mode="TRIANGLES"):
+    document, raw = mesh_document("glb")
+    # meshoptimizer 0.25 encodeGltfBuffer: Float32 positions and normals interleaved
+    # at stride 24, and Uint16 indices (0, 1, 2) encoded in both index modes.
+    vertices = base64.b64decode(
+        "oAAAATwAAAD//wE8AAAAfn0AAAEMAAAA/wEMAAAAfgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAPw=="
+    )
+    indices = base64.b64decode({"TRIANGLES": "4fAAdodWZ3iphmWJaJgBaQAA", "INDICES": "0QAEBAAAAAA="}[mode])
+    payload = b"HEAD" + vertices + indices
+    parent = {"byteLength": len(raw), "extensions": {MESHOPT: {"fallback": True}}}
+    if fallback:
+        parent["uri"] = "data:application/octet-stream;base64," + base64.b64encode(raw).decode()
+    else:
+        document["extensionsRequired"] = [MESHOPT]
+    document["extensionsUsed"] = [MESHOPT]
+    document["buffers"] = [{"byteLength": len(payload)}, parent]
+    for view, blob, offset, stride, codec in zip(
+        document["bufferViews"], (vertices, indices), (4, 4 + len(vertices)), (24, 2), ("ATTRIBUTES", mode), strict=True
+    ):
+        view["buffer"] = 1
+        view["extensions"] = {MESHOPT: {"buffer": 0, "byteOffset": offset, "byteLength": len(blob),
+                                          "byteStride": stride, "count": 3, "mode": codec}}
+    document["accessors"][2]["min"] = [0]
+    document["accessors"][2]["max"] = [2]
+    # The fallback has the same face with a cyclic rotation of its vertex indices.
+    return document, payload
+
+
 DRACO = "KHR_draco_mesh_compression"
 
 
@@ -896,6 +927,79 @@ def topology_document(extension, mode, indices, external=False, normal=False, in
 
 
 class FileFormatTest(unittest.TestCase):
+    def test_meshopt_buffer_views(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            for source, mode in (("glb", "TRIANGLES"), ("data URI", "INDICES"),
+                                 ("external", "TRIANGLES"), ("optional", "INDICES")):
+                with self.subTest(source=source):
+                    document, binary = meshopt_document(fallback=source == "optional", mode=mode)
+                    path = root / (source + (".glb" if source == "glb" else ".gltf"))
+                    if source == "external":
+                        (root / "mesh opt.bin").write_bytes(binary)
+                        document["buffers"][0]["uri"] = "mesh%20opt.bin"
+                    elif source != "glb":
+                        document["buffers"][0]["uri"] = ("data:application/octet-stream;base64,"
+                                                         + base64.b64encode(binary).decode())
+                    write_asset(path, document, binary)
+                    stage = Usd.Stage.Open(str(path))
+                    mesh = next(UsdGeom.Mesh(prim) for prim in stage.Traverse() if prim.IsA(UsdGeom.Mesh))
+                    self.assertEqual(list(mesh.GetPointsAttr().Get()),
+                                     [Gf.Vec3f(0, 0, 0), Gf.Vec3f(1, 0, 0), Gf.Vec3f(0, 1, 0)])
+                    self.assertEqual(list(mesh.GetNormalsAttr().Get()), [Gf.Vec3f(0, 0, 1)] * 3)
+                    self.assertEqual(list(mesh.GetFaceVertexIndicesAttr().Get()), [0, 1, 2])
+
+    def test_meshopt_failures_preserve_layer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "meshopt.glb"
+            write_asset(path, *meshopt_document())
+            stage = Usd.Stage.Open(str(path))
+            layer = stage.GetRootLayer()
+            before = layer_text(layer)
+            for case, message in (
+                ("header", "invalid bitstream"), ("corruption with fallback", "invalid bitstream"),
+                ("source range", "exceeds its buffer"), ("parent range", "fallback buffer range"),
+                ("stride", "invalid decoded layout"), ("count", "invalid decoded layout"),
+                ("filter", "invalid decoded layout"), ("invalid extension", "must be an object"),
+                ("fallback used as source", "tagged fallback buffer"),
+                ("output limit", "exceed 512 MiB"),
+            ):
+                with self.subTest(case=case):
+                    document, payload = meshopt_document(fallback=case == "corruption with fallback")
+                    view = document["bufferViews"][0]
+                    compression = view["extensions"][MESHOPT]
+                    if case == "header":
+                        payload = payload[:4] + b"\xa1" + payload[5:]
+                    elif case == "corruption with fallback":
+                        start = compression["byteOffset"]
+                        size = compression["byteLength"]
+                        payload = payload[:start + 1] + b"\xff" * (size - 1) + payload[start + size:]
+                    elif case == "source range":
+                        compression["byteOffset"] = len(payload)
+                    elif case == "parent range":
+                        view["byteOffset"] = document["buffers"][1]["byteLength"]
+                    elif case == "stride":
+                        compression["byteStride"] = 8
+                    elif case == "count":
+                        compression["count"] = 1 << 62
+                    elif case == "filter":
+                        compression["filter"] = "OCTAHEDRAL"
+                    elif case == "invalid extension":
+                        view["extensions"][MESHOPT] = True
+                    elif case == "fallback used as source":
+                        compression["buffer"] = 1
+                    else:
+                        size = 24 * (1 << 25)
+                        view["byteLength"] = document["buffers"][1]["byteLength"] = size
+                        compression["count"] = size // 24
+                    write_asset(path, document, payload)
+                    with self.assertRaisesRegex(Tf.ErrorException, f"{MESHOPT}.*{message}"):
+                        layer.Reload(True)
+                    self.assertEqual(layer_text(layer), before)
+            write_asset(path, *meshopt_document())
+            self.assertTrue(layer.Reload(True))
+            self.assertEqual(layer_text(layer), before)
+
     def test_draco_mesh_data(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
@@ -7282,9 +7386,9 @@ assert layer.ExportToString() == Path(sys.argv[3]).read_text(encoding="utf-8")
                                     "extensionsRequired": ["UNKNOWN_extension"]},
                                    "cannot parse .*unsupported required extensions: UNKNOWN_extension"),
             "disabled required extension": ({"asset": {"version": "2.0"}, "scenes": [{}],
-                                             "extensionsUsed": ["EXT_meshopt_compression"],
-                                             "extensionsRequired": ["EXT_meshopt_compression"]},
-                                            "unsupported required extensions: EXT_meshopt_compression"),
+                                             "extensionsUsed": ["KHR_meshopt_compression"],
+                                             "extensionsRequired": ["KHR_meshopt_compression"]},
+                                            "unsupported required extensions: KHR_meshopt_compression"),
             "several required extensions": ({"asset": {"version": "2.0"}, "scenes": [{}],
                                              "extensionsUsed": ["KHR_texture_basisu", "EXT_texture_avif",
                                                                 "UNKNOWN_extension"],

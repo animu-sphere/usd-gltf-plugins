@@ -46,6 +46,11 @@ the existing USD mesh and skin authoring paths. Other attributes and morph targe
 their glTF accessors. A failed decode leaves the previous layer intact on reload. See the
 [Draco decision](../adr/0033-draco-decoder.md) for topology and fallback behavior.
 
+For `EXT_meshopt_compression`, the buffer reader decodes each referenced view once per import.
+The decoded bytes feed the existing buffer view and accessor paths, including animation and sparse
+accessor reads. See the [meshopt decision](../adr/0034-meshopt-buffer-views.md) for the supported
+bitstreams, limits and fallback rules.
+
 The GLB header's total length must match the input size. Chunk lengths must be
 multiples of four, fit within the file, and account for all bytes after the header
 together with their chunk headers.

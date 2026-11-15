@@ -8,6 +8,11 @@ here.
 
 ## [Unreleased]
 
+### Added
+
+- Import `EXT_meshopt_compression` buffer views for meshes and animation.
+  See the [meshopt decision](docs/adr/0034-meshopt-buffer-views.md).
+
 ## [0.6.0] - 2026-11-15
 
 ### Added

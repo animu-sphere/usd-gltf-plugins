@@ -7,6 +7,8 @@
 #include <iostream>
 #include <limits>
 #include <string>
+#include <string_view>
+#include <span>
 #include <utility>
 #include <vector>
 
@@ -102,6 +104,52 @@ checkInterleavedBounds(fastgltf::Asset& asset)
     return true;
 }
 
+bool
+checkMeshoptSharedView()
+{
+    // EXT attributes: version 0, four groups of zero deltas, and a zero baseline.
+    std::array<std::byte, 37> encoded{};
+    encoded[0] = std::byte{0xa0};
+    fastgltf::Asset asset;
+    asset.buffers.resize(2);
+    asset.buffers[0].byteLength = encoded.size();
+    asset.buffers[0].data = fastgltf::sources::URI{
+        0, fastgltf::box<fastgltf::URI>(std::in_place, std::string_view("encoded.bin"))};
+    asset.buffers[1].byteLength = 12;
+    asset.buffers[1].data = fastgltf::sources::Fallback{};
+    auto& view = asset.bufferViews.emplace_back();
+    view.bufferIndex = 1;
+    view.byteLength = 12;
+    view.meshoptCompression.emplace() = {0,
+                                         0,
+                                         encoded.size(),
+                                         3,
+                                         fastgltf::MeshoptCompressionMode::Attributes,
+                                         fastgltf::MeshoptCompressionFilter::None,
+                                         4};
+
+    int reads = 0;
+    const gltfCore::BufferReader buffers(
+        asset,
+        [&](const fastgltf::Buffer& buffer, std::span<const std::byte>& data, std::string&)
+        {
+            ++reads;
+            data = encoded;
+            return &buffer == &asset.buffers[0];
+        });
+    std::span<const std::byte> first, second;
+    std::string error;
+    if (reads != 0 || !buffers.GetView(asset, 0, first, error) ||
+        !buffers.GetView(asset, 0, second, error) || reads != 1 || first.size() != 12 ||
+        first.data() != second.data() ||
+        !std::all_of(first.begin(), first.end(), [](std::byte b) { return b == std::byte{0}; }))
+    {
+        std::cerr << "meshopt view was not decoded and shared: " << error << '\n';
+        return false;
+    }
+    return true;
+}
+
 } // namespace
 
 int
@@ -177,5 +225,6 @@ main()
     asset.accessors[0].componentType = fastgltf::ComponentType::Float;
     asset.accessors[0].normalized = false;
     ok = checkInterleavedBounds(asset) && ok;
+    ok = checkMeshoptSharedView() && ok;
     return ok ? 0 : 1;
 }

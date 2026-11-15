@@ -12,7 +12,7 @@ namespace gltfUsd
 {
 
 // Extends the scene map with the skeletons and skel roots, and clears the paths of joint-only nodes.
-[[nodiscard]] bool MapSkins(const fastgltf::Asset& asset, const gltfCore::BufferLoader& loadBuffer,
+[[nodiscard]] bool MapSkins(const fastgltf::Asset& asset, const gltfCore::BufferReader& buffers,
                             SceneMap& map);
 
 [[nodiscard]] bool AuthorSkeletons(const fastgltf::Asset& asset, const SceneMap& map,
