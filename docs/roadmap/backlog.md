@@ -11,6 +11,8 @@ cost of distributing them on every platform. Begin USD-to-glTF export only after
 specification and quality goals, without complicating the importer's verification or ABI boundary.
 
 - Further material extensions, one pull request each after investigating renderer representation.
+- Evaluate `KHR_meshopt_compression` once its specification is ratified, including its additional
+  bitstream and filter requirements.
 - KTX 1.0 images, reaching consumers as standard images like KTX2. No glTF extension
   references KTX 1.0, so this first needs an ADR on how an asset would use them.
 
