@@ -11,7 +11,7 @@ usd_gltf_read_version(_usd_gltf_version)
 project(gltfUsd
     VERSION ${_usd_gltf_version}
     DESCRIPTION "glTF to OpenUSD translation for usd-gltf-plugins"
-    LANGUAGES CXX)
+    LANGUAGES C CXX)
 usd_gltf_default_build_type()
 if(PROJECT_IS_TOP_LEVEL)
     include(CTest)
@@ -24,6 +24,7 @@ usd_gltf_require_library(gltfCore)
 usd_gltf_require_library(gltfTexture)
 
 add_library(gltfUsd STATIC
+    "${USD_GLTF_REPOSITORY_ROOT}/third_party/mikktspace/mikktspace.c"
     src/animation.cpp
     src/camera.cpp
     src/light.cpp
@@ -31,7 +32,8 @@ add_library(gltfUsd STATIC
     src/mesh.cpp
     src/scene.cpp
     src/sceneMap.cpp
-    src/skin.cpp)
+    src/skin.cpp
+    src/tangents.cpp)
 add_library(gltfUsd::gltfUsd ALIAS gltfUsd)
 usd_gltf_configure_target(gltfUsd)
 target_include_directories(gltfUsd
@@ -39,7 +41,11 @@ target_include_directories(gltfUsd
         "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
         "$<INSTALL_INTERFACE:include>"
     PRIVATE
-        "${CMAKE_CURRENT_SOURCE_DIR}/src")
+        "${CMAKE_CURRENT_SOURCE_DIR}/src"
+        "${USD_GLTF_REPOSITORY_ROOT}/third_party/mikktspace")
+target_compile_definitions(gltfUsd PRIVATE
+    genTangSpace=UsdGltfMikkGenTangSpace
+    genTangSpaceDefault=UsdGltfMikkGenTangSpaceDefault)
 target_link_libraries(gltfUsd PUBLIC gltfCore::gltfCore PRIVATE gltfTexture::gltfTexture)
 usd_gltf_link_openusd(TARGET gltfUsd VISIBILITY PUBLIC
     COMPONENTS usdSkel usdShade usdLux usdGeom usd sdf ar tf)

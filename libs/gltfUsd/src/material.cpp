@@ -1314,6 +1314,32 @@ MaterialAuthor::MaterialAuthor(const fastgltf::Asset& asset, const std::string& 
 {
 }
 
+std::optional<std::size_t>
+MaterialAuthor::TangentTexCoord(std::size_t index) const
+{
+    // Called after Bind validates the material and its texture coordinates.
+    const auto& material = _asset.materials[index];
+    if (material.unlit)
+    {
+        return std::nullopt;
+    }
+    if (material.normalTexture)
+    {
+        return texCoordOf(*material.normalTexture);
+    }
+    if (material.clearcoat && material.clearcoat->clearcoatFactor > 0.0f &&
+        material.clearcoat->clearcoatNormalTexture)
+    {
+        return texCoordOf(*material.clearcoat->clearcoatNormalTexture);
+    }
+    if (material.anisotropy && material.anisotropy->anisotropyStrength > 0.0f)
+    {
+        const auto& texture = material.anisotropy->anisotropyTexture;
+        return texture ? texCoordOf(*texture) : 0;
+    }
+    return std::nullopt;
+}
+
 bool
 MaterialAuthor::Bind(std::size_t index, std::size_t uvSetCount, const pxr::VtVec3fArray* colors,
                      const pxr::VtFloatArray& alpha, const pxr::UsdGeomMesh& mesh,

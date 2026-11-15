@@ -24,30 +24,52 @@ derived from `st` already has the right handedness.
 
 ### Tangents
 
-The renderer derives the tangent frame in both paths. A TANGENT attribute is validated
-and retained as a primvar, but no shading network reads it. The options were:
+Decision revised 2026-11-13 after testing the Khronos reference shaders and the installed
+OpenUSD and MaterialX runtime. Preserve the mesh-local frame in USD and use the
+renderer-derived frame in both shading networks.
 
-- Keep rejecting TANGENT, which loses many valid assets.
-- Accept and discard it, which drops data that a consumer could not recover.
-- Retain it without using it for shading.
-- Read it in the MaterialX graph, through `ND_geompropvalue_vector3` and the `tangent`
-  and `bitangent` inputs of `normalmap`.
-- Generate MikkTSpace tangents when absent, as glTF asks, and read them likewise.
+- UsdPreviewSurface exposes a tangent-space normal, with the renderer responsible for its
+  basis. It has no tangent, bitangent or anisotropy input.
+- MaterialX `normalmap` accepts explicit world-space tangents and bitangents.
+  `gltf_pbr` accepts a world-space tangent and rotates it around the shading normal.
+  Storm can read a vector primvar, but its generated `transformvector` shader passed the
+  vector through in the tested runtime. Connecting mesh-local vectors would give incorrect
+  shading under transformed nodes. Pretransforming the data would freeze it in the glTF
+  scene's coordinate system, causing errors under a USD reference, an animated transform,
+  or deformation. The importer requires ordinary USD composition.
+- The Khronos Sample Renderer transforms tangent XYZ by the model matrix, transforms the
+  geometric normal by its inverse transpose, and computes the world bitangent with
+  `cross(N, T) * W`. It applies anisotropy direction in the geometric tangent plane.
+  MaterialX's built-in rotation uses the shading normal. A connection that supplies only
+  the tangent would still lose W in anisotropy rotation and can differ when a normal map
+  tilts the shading normal.
 
-Choose retention. Reading tangents would be possible only in MaterialX, since
-UsdPreviewSurface has no tangent input, so the two paths would use different frames. A
-material used with and without TANGENT would also need two graphs and two `Material`
-prims, as vertex colors do. Generated tangents would add a dependency and still reach
-only one path.
+Keep supplied TANGENT as vertex-interpolated `gltf_tangent`. Validate its component
+type, count and finiteness as before. For a triangle primitive whose active material uses
+a normal map, clearcoat normal map or anisotropy, generate a separate
+`gltf_generatedTangent` primvar when a supplied frame cannot be used. A supplied tangent
+requires a supplied NORMAL. Otherwise use the available normals, including the flat
+normals the importer authors when glTF omits NORMAL.
 
-Derived frames can differ from those a normal map was baked against. This most affects
-maps baked for smooth meshes against interpolated tangents, for example across UV
-seams. No warning is issued, because the same difference applies to an asset without
-TANGENT, so a warning would describe the attribute's presence rather than a defect.
+Use the reference MikkTSpace algorithm with the base normal texture's UV set, including
+any `texCoord` override. In the absence of that texture, use the active clearcoat normal
+texture's set, the active anisotropy texture's set, or UV set 0, in that order. Compute in
+glTF's original UV convention before the V conversion and before sampling transforms.
+Store the returned XYZ and negate the returned sign, as Khronos does, to account for
+normal-map +Y pointing opposite to increasing glTF V. Store the frame per face corner
+so mirrored UVs can share a position index and keep distinct signs. Both primvars use
+`B = cross(N, T) * W` in mesh space.
+The generated frame describes the base mesh. Deforming it is the consumer's responsibility.
+Omit it when the inputs cannot define a frame, including a missing UV set or normals
+that the consumer must compute after deformation. The renderer's fallback remains
+available in these cases. Skip generation for position or UV magnitudes above 1e8,
+more than 1024 corners at the same position, or a face count outside MikkTSpace's
+integer range. These bounds protect the generator's float math and limit the cost
+and recursion depth of its grouping pass.
 
-Validation requires VEC4 floats with the same count as POSITION, and finite values. It
-does not check unit length or the sign of W, because nothing consumes them and failing
-an otherwise usable asset on them would gain nothing.
+Frame connections can be reconsidered when the target renderer can transport the
+explicit frame through USD composition. Preview's standard interface still delegates
+its normal frame to the renderer.
 
 ## Evidence and limits
 
@@ -60,3 +82,18 @@ map on a curved mesh with glTF's reference, or measure the frame difference abov
 Why Storm's MaterialX frame follows the normal texture's UV set was not determined. Its
 shader text derives the frame from one named primvar, and both orders of two sets gave
 the expected result. Treat that as observed, not as guaranteed for more sets.
+
+The [tangent frame probe](../../tests/probe_tangent_frames.py) evaluates the Khronos
+renderer shaders for explicit tangents and the renderer's MikkTSpace Wasm output for
+generated tangents. It compares Storm against shading controls with those directions.
+The [capability matrix](../reference/CAPABILITY_MATRIX.md#tangent-frame-comparison)
+records the results.
+
+## Sources
+
+- [glTF 2.0 mesh attributes](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html#meshes)
+- [UsdPreviewSurface specification](https://openusd.org/release/spec_usdpreviewsurface.html)
+- [MaterialX 1.39.5 normalmap GLSL](https://github.com/AcademySoftwareFoundation/MaterialX/blob/v1.39.5/libraries/stdlib/genglsl/mx_normalmap.glsl)
+- [MaterialX 1.39.5 gltf_pbr](https://github.com/AcademySoftwareFoundation/MaterialX/blob/v1.39.5/libraries/bxdf/gltf_pbr.mtlx)
+- [Khronos Sample Renderer vertex shader](https://github.com/KhronosGroup/glTF-Sample-Renderer/blob/cc3d5ff52217a63161c5c876677292546c01564a/source/Renderer/shaders/primitive.vert)
+- [Khronos Sample Renderer normal and anisotropy shaders](https://github.com/KhronosGroup/glTF-Sample-Renderer/blob/cc3d5ff52217a63161c5c876677292546c01564a/source/Renderer/shaders/material_info.glsl)
