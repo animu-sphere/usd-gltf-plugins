@@ -7097,6 +7097,74 @@ assert layer.ExportToString() == Path(sys.argv[3]).read_text(encoding="utf-8")
                     authored = [str(prim.GetPath()) for prim in stage.Traverse() if prim.HasAPI(UsdLux.LightAPI)]
                     self.assertEqual(authored, ["/Root/Scenes/Scene_0/Node_0/Light_0"])
 
+    def test_node_visibility(self):
+        name = "KHR_node_visibility"
+        with tempfile.TemporaryDirectory() as directory:
+            for extension, required in itertools.product(("gltf", "glb"), (False, True)):
+                with self.subTest(extension=extension, required=required):
+                    document, binary = light_document(extension)
+                    document["extensionsUsed"].append(name)
+                    if required:
+                        document["extensionsRequired"] = [name]
+                    document["scenes"][0]["nodes"] = [0, 3, 4, 5]
+                    document["nodes"] = [
+                        {"mesh": 0, "children": [1], "extensions": {name: {"visible": False}}},
+                        {"mesh": 0, "children": [2], "extensions": {name: {"visible": True}, **light_extension(0)}},
+                        {"camera": 0, "translation": [1, 2, 3]},
+                        {"mesh": 0, "extensions": {name: {}}},
+                        {"mesh": 0, "extensions": {name: {"visible": True}}},
+                        {"mesh": 0, "extensions": light_extension(0)},
+                    ]
+                    document["cameras"] = [{"type": "perspective", "perspective": {"yfov": 1, "znear": 0.1}}]
+                    path = pathlib.Path(directory) / f"visibility-{required}.{extension}"
+                    write_asset(path, document, binary)
+                    stage = Usd.Stage.Open(str(path))
+                    scene = Sdf.Path("/Root/Scenes/Scene_0")
+                    hidden = scene.AppendChild("Node_0")
+                    child = hidden.AppendChild("Node_1")
+                    hidden_xform = UsdGeom.Imageable(stage.GetPrimAtPath(hidden))
+                    self.assertEqual(hidden_xform.GetVisibilityAttr().Get(), UsdGeom.Tokens.invisible)
+                    for node in (hidden, child, *(scene.AppendChild(f"Node_{n}") for n in (3, 4, 5))):
+                        mesh = UsdGeom.Mesh.Get(stage, node.AppendPath("Mesh_0/Primitive_0"))
+                        self.assertTrue(mesh)
+                        self.assertFalse(mesh.GetVisibilityAttr().HasAuthoredValueOpinion())
+                        expected = UsdGeom.Tokens.invisible if node.HasPrefix(hidden) else UsdGeom.Tokens.inherited
+                        self.assertEqual(mesh.ComputeVisibility(), expected)
+                    for node, expected in ((child, UsdGeom.Tokens.invisible),
+                                           (scene.AppendChild("Node_5"), UsdGeom.Tokens.inherited)):
+                        light = UsdLux.DistantLight.Get(stage, node.AppendChild("Light_0"))
+                        self.assertTrue(light)
+                        self.assertEqual(light.ComputeVisibility(), expected)
+                        self.assertEqual(light.GetIntensityAttr().Get(), 2)
+                    camera = UsdGeom.Camera.Get(stage, child.AppendPath("Node_2/Camera_0"))
+                    self.assertTrue(camera.GetPrim().IsActive())
+                    self.assertEqual(camera.GetCamera().transform.ExtractTranslation(), Gf.Vec3d(1, 2, 3))
+
+    def test_node_visibility_failures_preserve_layer(self):
+        name = "KHR_node_visibility"
+        cases = [(value, "must be an object") for value in (None, False, [])]
+        cases += [({"visible": value}, "visible must be a boolean") for value in (None, 0, "false", [], {})]
+        with tempfile.TemporaryDirectory() as directory:
+            for extension in ("gltf", "glb"):
+                document, binary = mesh_document(extension)
+                document["extensionsUsed"] = [name]
+                extensions = document["nodes"][0]["extensions"] = {name: {"visible": False}}
+                path = pathlib.Path(directory) / f"visibility.{extension}"
+                write_asset(path, document, binary)
+                layer = Sdf.Layer.FindOrOpen(str(path))
+                before = layer_text(layer)
+                for value, message in cases:
+                    with self.subTest(extension=extension, value=value):
+                        extensions[name] = value
+                        write_asset(path, document, binary)
+                        with self.assertRaisesRegex(Tf.ErrorException, f"glTF node 0: {name} {message}"):
+                            layer.Reload(True)
+                        self.assertEqual(layer_text(layer), before)
+                extensions[name] = {"visible": True}
+                write_asset(path, document, binary)
+                self.assertTrue(layer.Reload(True))
+                self.assertNotIn("visibility =", layer_text(layer))
+
     def test_external_buffers_and_reload(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)

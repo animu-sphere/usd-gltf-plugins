@@ -37,11 +37,12 @@ BASELINE = ROOT / "tests" / "sample_baseline.json"
 DRACO = "KHR_draco_mesh_compression"
 MESHOPT = "EXT_meshopt_compression"
 EMISSIVE_STRENGTH = "KHR_materials_emissive_strength"
+NODE_VISIBILITY = "KHR_node_visibility"
 IMPLEMENTED_EXTENSIONS = {
     "EXT_texture_webp", DRACO, MESHOPT, "KHR_lights_punctual", "KHR_materials_anisotropy",
     "KHR_materials_clearcoat", EMISSIVE_STRENGTH, "KHR_materials_ior", "KHR_materials_iridescence",
     "KHR_materials_sheen", "KHR_materials_specular", "KHR_materials_transmission", "KHR_materials_unlit",
-    "KHR_materials_volume", "KHR_mesh_quantization", "KHR_texture_basisu", "KHR_texture_transform",
+    "KHR_materials_volume", "KHR_mesh_quantization", NODE_VISIBILITY, "KHR_texture_basisu", "KHR_texture_transform",
 }
 PATHS = ("mtlx", "preview")
 CAMERA = "/SampleCheckCamera"
@@ -1413,8 +1414,10 @@ def check_meaning(stage, asset):
         plan = Plan(asset, VARIANTS[0])
         dropped = set(plan.dropped)
 
-    def walk(index, parent_path, parent_world):
+    def walk(index, parent_path, parent_world, parent_visible):
         node = document["nodes"][index]
+        visible = parent_visible and node.get("extensions", {}).get(NODE_VISIBILITY, {}).get("visible", True)
+        expected_visibility = UsdGeom.Tokens.inherited if visible else UsdGeom.Tokens.invisible
         path = f"{parent_path}/Node_{index}"
         node_paths[index] = path
         prim = stage.GetPrimAtPath(path)
@@ -1432,6 +1435,8 @@ def check_meaning(stage, asset):
                 label = f"mesh {mesh_index} primitive {number}"
                 mesh_prim = stage.GetPrimAtPath(mesh_path)
                 if check.expect(mesh_prim and mesh_prim.IsA(UsdGeom.Mesh), f"{mesh_path} is not a Mesh"):
+                    check.expect(UsdGeom.Imageable(mesh_prim).ComputeVisibility() == expected_visibility,
+                                 f"{mesh_path} does not have the expected visibility {expected_visibility}")
                     bound, material, has_colors = check_primitive(check, asset, mesh_prim, primitive, label)
                     if primitive.get("targets"):
                         check_morph_targets(check, asset, mesh_prim, document["meshes"][mesh_index],
@@ -1461,13 +1466,16 @@ def check_meaning(stage, asset):
             light_index = node["extensions"]["KHR_lights_punctual"]["light"]
             light_path = f"{path}/Light_{light_index}"
             expected_lights.add(light_path)
-            check_light(check, stage.GetPrimAtPath(light_path), lights[light_index], world,
-                        f"light {light_index} on Node_{index}")
+            light_prim = stage.GetPrimAtPath(light_path)
+            check_light(check, light_prim, lights[light_index], world, f"light {light_index} on Node_{index}")
+            if light_prim:
+                check.expect(UsdGeom.Imageable(light_prim).ComputeVisibility() == expected_visibility,
+                             f"{light_path} does not have the expected visibility {expected_visibility}")
         for child in node.get("children", []):
-            walk(child, path, world)
+            walk(child, path, world, visible)
 
     for root in roots:
-        walk(root, f"/Root/Scenes/Scene_{document.get('scene', 0)}", numpy.identity(4))
+        walk(root, f"/Root/Scenes/Scene_{document.get('scene', 0)}", numpy.identity(4), True)
     check_animation(check, stage, asset, node_paths)
     if placements:
         check_skinning(check, stage, asset, plan, node_paths, placements)

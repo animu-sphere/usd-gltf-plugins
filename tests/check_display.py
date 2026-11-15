@@ -121,7 +121,7 @@ class Renderer:
         if not self.usdrecord:
             sys.exit("usdrecord was not found. Activate the lookdev runtime first.")
 
-    def session(self, name, asset, path, view):
+    def session(self, name, asset, path, view, *, frame=True):
         """Authors the camera, and for UsdPreviewSurface blocks the MaterialX surfaces."""
         session_path = self.output / f"{name}_{path}.usda"
         session = Sdf.Layer.CreateAnonymous(".usda")
@@ -129,7 +129,7 @@ class Renderer:
         stage.SetEditTarget(session)
         if view:
             session.subLayerPaths.append(str(view).replace("\\", "/"))
-        else:
+        elif frame:
             author_framing_camera(stage)
         materials = [UsdShade.Material(prim) for prim in stage.Traverse() if prim.IsA(UsdShade.Material)]
         for material in materials:
@@ -489,9 +489,9 @@ def offscreen_context(report, label):
     return application, surface, context
 
 
-def engine_image(stage, lights, ambient, cull=UsdImagingGL.CullStyle.CULL_STYLE_NOTHING):
-    """Renders through CAMERA with UsdImagingGL.Engine, as usdview does, in the current context."""
-    camera = UsdGeom.Camera(stage.GetPrimAtPath(CAMERA)).GetCamera()
+def engine_image(stage, lights, ambient, cull=UsdImagingGL.CullStyle.CULL_STYLE_NOTHING, *, camera_path=CAMERA):
+    """Renders through the selected camera with UsdImagingGL.Engine, as usdview does."""
+    camera = UsdGeom.Camera(stage.GetPrimAtPath(camera_path)).GetCamera()
     width, height = IMAGE_WIDTH, round(IMAGE_WIDTH / camera.aspectRatio)
     framebuffer_format = QtOpenGL.QOpenGLFramebufferObjectFormat()
     framebuffer_format.setAttachment(QtOpenGL.QOpenGLFramebufferObject.Attachment.Depth)
@@ -506,7 +506,7 @@ def engine_image(stage, lights, ambient, cull=UsdImagingGL.CullStyle.CULL_STYLE_
     engine.SetRendererAov("color")
     engine.SetRenderBufferSize(Gf.Vec2i(width, height))
     engine.SetFraming(CameraUtil.Framing(Gf.Rect2i(Gf.Vec2i(0, 0), width, height)))
-    engine.SetCameraPath(CAMERA)
+    engine.SetCameraPath(camera_path)
     engine.SetLightingState(lights, Glf.SimpleMaterial(), ambient)
     parameters = UsdImagingGL.RenderParams()
     parameters.cullStyle = cull
@@ -605,6 +605,70 @@ def check_lights(renderer, report):
         report.same(f"{path} Storm does not apply a spot light's cone",
                     render("spot_away", cone, rotation=(1, 0, 0, 0)).sample(0), near)
         report.color("light color", render("red", point(ILLUMINANCE * 2, color=[1, 0, 0])), 0, (0.5, 0.5), "R")
+    qt[2].doneCurrent()
+
+
+def check_node_visibility(renderer, report):
+    """Uses a glTF camera below a hidden node and checks geometry and scene lighting."""
+    qt = offscreen_context(report, "node visibility")
+    if not qt:
+        return
+    visibility = "KHR_node_visibility"
+    punctual = "KHR_lights_punctual"
+    camera = "/Root/Scenes/Scene_0/Node_1/Node_3/Camera_0"
+    document = quad_document([pbr(**ROUGH_DIELECTRIC, **GRAY_BASE)])
+    document["extensionsUsed"] = [visibility, punctual]
+    document["extensionsRequired"] = [visibility]
+    document["scenes"][0]["nodes"] = [0, 1, 5]
+    document["nodes"].extend([
+        {"mesh": 0, "translation": [1.25, 0, 0], "children": [2, 3, 4],
+         "extensions": {visibility: {"visible": False}}},
+        {"mesh": 0, "translation": [1.25, 0, 0], "extensions": {visibility: {"visible": True}}},
+        {"camera": 0, "translation": [0.5, 0.5, 3]},
+        {"translation": [-0.75, 0.5, 1]},
+        {"translation": [0.5, 0.5, 1], "extensions": {punctual: {"light": 0}}},
+    ])
+    document["cameras"] = [{"type": "orthographic", "orthographic": {
+        "xmag": 2, "ymag": 1, "znear": 0.1, "zfar": 10}}]
+    lights = [{"type": "directional", "intensity": ILLUMINANCE}]
+    document["extensions"] = {punctual: {"lights": lights}}
+
+    def render(name, path):
+        asset = renderer.output / f"visibility_{name}_{path}.gltf"
+        asset.write_text(json.dumps(document), encoding="utf-8")
+        _, stage = renderer.session(f"visibility_{name}", asset, path, None, frame=False)
+        image = engine_image(stage, [], Gf.Vec4f(0, 0, 0, 1), camera_path=camera)
+        image.save(str(asset.with_suffix(".png")))
+        return Render(f"{path} {name}", image, stage, camera)
+
+    for path in PATHS:
+        parent = document["nodes"][1]["extensions"][visibility]
+        light_node = document["nodes"][4]
+        parent["visible"] = False
+        light_node.pop("extensions", None)
+        control = render("hidden", path)
+        visible = control.sample(0)
+        black = (0, 0, 0, 255)
+        report.different(f"{path} hidden camera sees the visible quad", visible, black)
+        report.same(f"{path} hidden node's quad is black", control.sample(1), black)
+        report.same(f"{path} hidden node's explicitly visible child's quad is black", control.sample(2), black)
+        parent["visible"] = True
+        revealed = render("revealed", path)
+        for mesh in (1, 2):
+            report.same(f"{path} showing the parent reveals quad {mesh}", revealed.sample(mesh), visible)
+        light_node["extensions"] = {punctual: {"light": 1}, visibility: {"visible": True}}
+        for light_type in ("directional", "point", "spot"):
+            light = {"type": light_type, "intensity": ILLUMINANCE}
+            if light_type == "spot":
+                light["spot"] = {"outerConeAngle": 0.5}
+            lights[1:] = [light]
+            show_light = render(f"{light_type}_shown", path)
+            report.different(f"{path} visible {light_type} contributes light", show_light.sample(0), visible)
+            parent["visible"] = False
+            hide_light = render(f"{light_type}_hidden", path)
+            report.same(f"{path} hidden {light_type} contributes no light", hide_light.sample(0), visible)
+            parent["visible"] = True
+        del lights[1:]
     qt[2].doneCurrent()
 
 
@@ -1176,7 +1240,7 @@ def main():
 
     report = Report(arguments.verbose)
     renderer = Renderer(output, plugin, report)
-    for check in (check_reflections, check_lights, check_unlit, check_emissive_strength, check_ior,
+    for check in (check_reflections, check_lights, check_node_visibility, check_unlit, check_emissive_strength, check_ior,
                   check_specular, check_anisotropy, check_iridescence, check_sheen, check_clearcoat,
                   check_transmission, check_volume, check_alpha_modes, check_base_color_textures,
                   check_pbr_textures, check_normal_textures, check_texture_transforms,

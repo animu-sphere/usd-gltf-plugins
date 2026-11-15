@@ -345,6 +345,11 @@ authorScene(const fastgltf::Asset& asset, const std::string& sourcePath,
             TF_RUNTIME_ERROR("Could not author glTF node %zu", index);
             return {};
         }
+        if (!node.visible && !xform.CreateVisibilityAttr().Set(UsdGeomTokens->invisible))
+        {
+            TF_RUNTIME_ERROR("Could not author glTF node %zu visibility", index);
+            return {};
+        }
         // A moved node's values are in each animation's variant.
         if (animation.moved[position]
                 ? !xform.AddTranslateOp() || !xform.AddOrientOp() || !xform.AddScaleOp()

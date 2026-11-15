@@ -66,6 +66,7 @@ available when the decision was made; they are not progress reports:
 - [0033: Draco mesh decoder](adr/0033-draco-decoder.md)
 - [0034: Meshopt buffer views](adr/0034-meshopt-buffer-views.md)
 - [0035: Emissive strength](adr/0035-emissive-strength.md)
+- [0036: Static node visibility](adr/0036-node-visibility.md)
 
 New decisions go in `docs/adr/NNNN-title.md`.
 
