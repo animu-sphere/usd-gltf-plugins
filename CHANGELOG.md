@@ -8,6 +8,8 @@ here.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-15
+
 ### Added
 
 - Generate mesh-local MikkTSpace tangent frames for materials that need them. USD
