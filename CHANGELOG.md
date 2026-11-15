@@ -8,6 +8,8 @@ here.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-15
+
 ### Added
 
 - Import `EXT_meshopt_compression` buffer views for meshes and animation.
