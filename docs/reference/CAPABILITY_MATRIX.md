@@ -47,13 +47,14 @@ CI success is not evidence of display compatibility.
 | Coordinate system and units | Verified (USD data, CI) | Y-up and meters authored on direct open and reload; referencing into a Z-up centimeter stage. Not every transform combination. | `tests/test_file_format.py::test_coordinate_system_and_reference_composition` |
 | Reflections, winding and normals | Verified (USD data, CI) | Indexed and non-indexed triangles with odd and even reflections in hierarchical transforms and a mirrored reference. | `tests/test_file_format.py::test_hierarchical_reflection_winding_and_normals`, `tests/test_file_format.py::test_reflection_view_fixture` |
 | Failure and reload behavior | Verified (USD data, CI) | Tested failures emit a diagnostic and do not publish a partial layer. Not proven for every USD error; [the transfer itself is not atomic](../architecture/LAYER_AUTHORING.md#decision). | `tests/test_file_format.py::test_failed_reload_does_not_publish_partial_stage`, `tests/test_file_format.py::test_mesh_failures_and_reload_preservation`, `tests/test_file_format.py::test_nonfinite_position_is_rejected` |
-| Extensions | Experimental | `EXT_texture_webp`, `KHR_lights_punctual`, `KHR_materials_anisotropy`, `KHR_materials_clearcoat`, `KHR_materials_ior`, `KHR_materials_iridescence`, `KHR_materials_sheen`, `KHR_materials_specular`, `KHR_materials_transmission`, `KHR_materials_unlit`, `KHR_materials_volume`, `KHR_mesh_quantization`, `KHR_texture_basisu` and `KHR_texture_transform` are implemented; see their rows. Any other required extension fails, and the diagnostic names it. Other optional extensions warn and are ignored. See the [policy](../architecture/IMPORT_PIPELINE.md#failure-policy). | `tests/test_file_format.py::test_failures_report_diagnostics`, `tests/test_file_format.py::test_node_order_and_optional_extension_warning` |
+| Extensions | Experimental | `EXT_texture_webp`, `KHR_lights_punctual`, `KHR_materials_anisotropy`, `KHR_materials_clearcoat`, `KHR_materials_emissive_strength`, `KHR_materials_ior`, `KHR_materials_iridescence`, `KHR_materials_sheen`, `KHR_materials_specular`, `KHR_materials_transmission`, `KHR_materials_unlit`, `KHR_materials_volume`, `KHR_mesh_quantization`, `KHR_texture_basisu` and `KHR_texture_transform` are implemented; see their rows. Any other required extension fails, and the diagnostic names it. Other optional extensions warn and are ignored. See the [policy](../architecture/IMPORT_PIPELINE.md#failure-policy). | `tests/test_file_format.py::test_failures_report_diagnostics`, `tests/test_file_format.py::test_node_order_and_optional_extension_warning` |
 | usdview/Storm display | Experimental | The [display check](#display-checks) of simple fixtures through both shader paths, run on one Windows machine. Not general renderer support. | `tests/check_display.py`, `tests/fixtures/reflections.gltf`, `tests/fixtures/alpha_modes.gltf`, `tests/fixtures/base_color_textures.gltf`, `tests/fixtures/pbr_textures.gltf`, `tests/fixtures/normal_textures.gltf`, `tests/fixtures/texture_transforms.gltf`, `tests/fixtures/ktx2_textures.gltf` |
 | OpenStrata workspace build and tests | Verified (Windows x86-64, Linux x86-64, macOS arm64; OpenUSD 26.08) | The environments listed under [tested environments](#tested-environments). | [Release dry run 43244984207](https://github.com/animu-sphere/usd-gltf-plugins/actions/runs/43244984207/attempts/2) |
 | Standalone OpenStrata bundle | Verified (Windows x86-64, Linux x86-64, macOS arm64; OpenUSD 26.08) | `ost plugin test` confirms discovery of the file format. | `plugins/usdGltfFileFormat/openstrata.plugin.yaml`, [release dry run 43244984207](https://github.com/animu-sphere/usd-gltf-plugins/actions/runs/43244984207/attempts/2) |
 | Root CMake build, install and registration | Verified (Windows x86-64, Linux x86-64, macOS arm64; OpenUSD 26.08) | A separate process registers the installed plugin and opens a stage. | `tests/test_install_smoke.py::test_installed_plugin_registers_and_opens_a_stage`, [release dry run 43244984207](https://github.com/animu-sphere/usd-gltf-plugins/actions/runs/43244984207/attempts/2) |
 | Release package | Verified (Windows x86-64, Linux x86-64, macOS arm64; OpenUSD 26.08) | A bundle extracted outside the repository registers, opens fixtures, checks Draco triangle indices, serves KTX2 images and carries its licenses. Packaging twice gives one digest. The bundle requires the exact runtime it was built for. | `tests/check_package.py`, [release dry run 43244984207](https://github.com/animu-sphere/usd-gltf-plugins/actions/runs/43244984207/attempts/2) |
 | Materials and bindings | Experimental | Default materials and explicit factor-only metallic-roughness materials, with OPAQUE, MASK or BLEND alpha and optional vertex colors: Preview and MaterialX networks and bindings, including `doubleSided`. Network structure is tested in CI; display has the [display check](#display-checks) of alpha and vertex colors. See the [decision record](../architecture/MATERIAL_FACTORS.md). | `tests/test_file_format.py::test_default_material_with_and_without_vertex_color`, `tests/test_file_format.py::test_factor_materials_and_bindings`, `tests/test_file_format.py::test_alpha_modes`, `tests/test_file_format.py::test_explicit_material_vertex_colors`, `tests/test_file_format.py::test_alpha_modes_view_fixture`, `tests/test_file_format.py::test_material_failures_preserve_layer` |
+| Emissive strength (`KHR_materials_emissive_strength`) | Experimental | Optional or required in glTF and GLB. Both shader paths apply the multiplier to factor-only and sRGB-textured emission, including 0 and values above 1. Malformed values and use with `KHR_materials_unlit` fail while preserving the existing layer on reload. USD data, [Storm display](#display-checks) and [Khronos samples](#sample-assets) checked on Windows with OpenUSD 26.08. See [ADR 0035](../adr/0035-emissive-strength.md) for renderer limits. | `tests/test_file_format.py::test_emissive_strength_materials`, `tests/test_file_format.py::test_emissive_strength_failures_preserve_layer`, `tests/check_display.py::check_emissive_strength`, `tests/check_samples.py::check_material` |
 | Unlit materials (`KHR_materials_unlit`) | Experimental | Optional or required. The base color term, with its factor, texture, vertex colors and alpha, is emitted through both networks, which reflect nothing: Preview is a black metal and MaterialX `gltf_pbr` a black dielectric with `specular` 0. Alpha modes, cutoff and `doubleSided` apply. Fallback metallic-roughness, normal, occlusion and emissive properties are not authored, and their images not read; their values and UV sets are still checked. Through Storm's UsdPreviewSurface a dome light still adds a reflection, read from its shader source. A value that is not an object fails. Tested in CI, with the [display check](#display-checks) on Windows. See the [decision record](../adr/0015-unlit.md). | `tests/test_file_format.py::test_unlit_materials`, `tests/test_file_format.py::test_unlit_textures_and_vertex_colors`, `tests/test_file_format.py::test_unlit_failures_preserve_layer`, `tests/check_display.py` |
 | Index of refraction (`KHR_materials_ior`) | Experimental | Optional or required. An ior other than 1.5 is authored as the `ior` input of UsdPreviewSurface and MaterialX `gltf_pbr`, uniform in the latter, whose dielectric F0 is glTF's `((ior - 1) / (ior + 1))^2`, read from their sources. An ior of 0 is authored as 1000000, an F0 of 0.999996. Through `gltf_pbr` a little of a rough material's base color still shows at an ior of 0, read from its source. An unlit material authors none, with a warning. A value below 1 other than 0, one too large for a float, a field of the wrong type and a value that is not an object fail. Tested in CI, with the [display check](#display-checks) on Windows, and compared in the [sample check](#sample-assets). See the [decision record](../adr/0016-ior.md). | `tests/test_file_format.py::test_ior_materials`, `tests/test_file_format.py::test_ior_failures_preserve_layer`, `tests/check_display.py` |
 | Specular (`KHR_materials_specular`) | Experimental | Optional or required. A weight and color other than 1 are authored as MaterialX `gltf_pbr`'s `specular` and `specular_color`, with the weight texture's A as non-color data and the color texture's RGB as sRGB, factors, UV sets, transforms and wrap modes. `gltf_pbr` computes glTF's dielectric F0 of `min(F0 of the ior * color, 1) * weight` and F90 of the weight, and leaves a metal alone, read from its source. UsdPreviewSurface's metallic workflow has neither and ignores them, with a warning, drawing glTF's default specular. A weight of 0 reads neither texture, a color factor of 0 does not read the color texture, and an unlit material authors none and reads no specular image, with a warning; their values and UV sets are still checked. A weight outside 0 to 1, a negative color component, a number too large for a float, a color that is not three numbers, a field of the wrong type and a value that is not an object fail. Tested in CI, with the [display check](#display-checks) on Windows; the [sample check](#sample-assets) compares it. See the [decision record](../adr/0020-specular.md). | `tests/test_file_format.py::test_specular_materials`, `tests/test_file_format.py::test_specular_textures`, `tests/test_file_format.py::test_specular_failures_preserve_layer`, `tests/check_display.py` |
@@ -210,8 +211,8 @@ Storm through MaterialX and UsdPreviewSurface, and compares pixels. The
 [development guide](../DEVELOPMENT.md) has the command, and
 [ADR 0007](../adr/0007-display-check.md) explains the comparisons and their limits.
 
-The current scene hierarchy passed all 681 comparisons on Windows with OpenUSD 26.08, the OpenStrata
-lookdev runtime and an NVIDIA RTX A5000. The v0.2.0 release candidate also passed all 681 comparisons
+The suite with emissive strength passed all 691 comparisons on Windows with OpenUSD 26.08, the
+OpenStrata lookdev runtime and an NVIDIA RTX A5000. The v0.2.0 release candidate passed 681 comparisons
 after a clean build. The iridescence suite passed 663 comparisons, and the preceding sheen suite 639.
 The earlier specular suite passed 621 twice, and was the first with the unlit, ior, clearcoat,
 transmission, volume and specular comparisons. An earlier result, on `7de8b8f` with lights added,
@@ -262,6 +263,11 @@ the left; occlusion at strength 0.5; the emissive image upright; and the emissiv
 a yellow factor upside down through TEXCOORD_1. Both occlusion quads are dark on the right
 through UsdPreviewSurface (black, then midway) and uniform through MaterialX, which is the
 [documented difference](../adr/0003-pbr-texture-networks.md#occlusion-differs-between-the-paths).
+
+A black quad in darkness shows the emissive term through each path. A multiplier of 3 matches a
+factor-only control with the emissive factor tripled. With a texture, the control uses the factor
+times 3 and the linear value of the texture's sRGB channel of 188. A missing multiplier matches
+the core material, and a multiplier of 0 makes the textured quad black.
 
 Color and non-color reading are measured on assets the check generates, each rendered alone
 so that geometry and view are the same. An image value of 188 is 0.737 read as data and
@@ -449,14 +455,19 @@ BrainStem's mesh and animation data and DragonAttenuation's mesh data agree with
 reference decoder. The comparison allows one integer step for octahedral normals, as specified
 by the extension. DragonAttenuation also uses the ignored optional `KHR_materials_variants`.
 
+Both PlaysetLightTest files requiring `KHR_materials_emissive_strength` opened and drew through
+both Storm shader paths. Their authored emission agrees with the glTF, including a factor-only
+material with strength 1500. The checker also compares authored emission in the 13 files listing
+the extension as optional.
+
 | Result | Files | What it means |
 | --- | --- | --- |
-| Opened | 321 | The stage opens. No file crashed or timed out while opening. |
-| Rejected | 18 | Each has a diagnostic naming a cause the file really has. |
-| Meaning verified | 260 | USD agrees with values decoded from the file, in all that is compared, and the file uses no ignored extension. |
-| Meaning partial | 61 | The same, but the file uses an optional extension that is ignored, with a warning. What it changes is not compared. |
+| Opened | 323 | The stage opens. No file crashed or timed out while opening. |
+| Rejected | 16 | Each has a diagnostic naming a cause the file really has. |
+| Meaning verified | 269 | USD agrees with values decoded from the file, in all that is compared, and the file uses no ignored extension. |
+| Meaning partial | 54 | The same, but the file uses an optional extension that is ignored, with a warning. What it changes is not compared. |
 | Meaning differs | 0 | |
-| Rendered | 320 | Storm drew through both shader paths, measured by coverage in a static frame. One more file timed out through both. |
+| Rendered | 322 | Storm drew through both shader paths, measured by coverage in a static frame. One more file timed out through both. |
 
 Why files are rejected, read from each file. Most files have several causes, so a count of files that
 have a cause is not what supporting it would open:
@@ -464,11 +475,10 @@ have a cause is not what supporting it would open:
 | Cause | Files with it | Files with only it |
 | --- | --- | --- |
 | Morph target TANGENT deltas | 2 | 2 |
-| Requires a material extension | 4 | 4 |
+| Requires `KHR_materials_pbrSpecularGlossiness` | 2 | 2 |
 | Requires `KHR_node_visibility` | 4 | 4 |
 | Requires `KHR_meshopt_compression` | 3 | 3 |
 | Points or lines | 3 | 3 |
 | Sparse accessor | 2 | 2 |
 
-Ignored optional extensions, in files that opened, include `KHR_materials_variants` (15)
-and `KHR_materials_emissive_strength` (12).
+Ignored optional extensions, in files that opened, include `KHR_materials_variants` (21).

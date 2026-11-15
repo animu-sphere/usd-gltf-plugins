@@ -65,6 +65,7 @@ available when the decision was made; they are not progress reports:
 - [0032: Derived USDZ](adr/0032-derived-usdz.md)
 - [0033: Draco mesh decoder](adr/0033-draco-decoder.md)
 - [0034: Meshopt buffer views](adr/0034-meshopt-buffer-views.md)
+- [0035: Emissive strength](adr/0035-emissive-strength.md)
 
 New decisions go in `docs/adr/NNNN-title.md`.
 

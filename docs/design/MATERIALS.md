@@ -54,6 +54,21 @@ without another flip. `KHR_texture_transform` applies between the reader and the
 [ADR 0011](../adr/0011-texture-transform.md). Document observed differences from glTF shading and
 renderer-specific limitations.
 
+## Emissive strength
+
+`KHR_materials_emissive_strength` scales emission by a non-negative, unitless
+`emissiveStrength`, with a default of 1. The emitted RGB is the emissive factor times the
+strength and, if supplied, the linearized RGB of the sRGB emissive texture. Without a texture,
+the factor and strength determine the color. A strength of 0 gives black emission. Strengths
+above 1 are preserved, including when the resulting color exceeds 1.
+
+MaterialX `gltf_pbr` keeps the emissive color and texture in `emissive` and authors a separate
+uniform `emissive_strength` for strengths other than 1. UsdPreviewSurface stores the product
+of the factor and strength in `emissiveColor` and in `UsdUVTexture.inputs:scale` RGB when the
+input is driven by a texture. Both paths keep the texture connection at strength 0. Malformed
+values, negative strengths, float overflow and use on the same material as
+`KHR_materials_unlit` fail. See [ADR 0035](../adr/0035-emissive-strength.md).
+
 ## Unlit materials
 
 A `KHR_materials_unlit` material emits its base color term, the same graph of factor, texture and

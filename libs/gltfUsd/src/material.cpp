@@ -60,6 +60,7 @@ struct PbrFactors
 {
     GfVec3f baseColor;
     GfVec3f emissive;
+    float emissiveStrength;
     float alpha;
     float alphaCutoff;
     float metallic;
@@ -112,6 +113,7 @@ pbrFactors(const fastgltf::Material& source)
     const auto& pbr = source.pbrData;
     return {GfVec3f(pbr.baseColorFactor[0], pbr.baseColorFactor[1], pbr.baseColorFactor[2]),
             GfVec3f(source.emissiveFactor[0], source.emissiveFactor[1], source.emissiveFactor[2]),
+            float(source.emissiveStrength),
             float(pbr.baseColorFactor[3]),
             float(source.alphaCutoff),
             float(pbr.metallicFactor),
@@ -495,9 +497,9 @@ bool
 connectPreviewEmissive(const UsdShadeNodeGraph& graph, UsdShadeShader& surface,
                        const PbrFactors& factors, const TextureInput& texture)
 {
-    auto image = authorPreviewTexture(
-        graph, "emissiveTexture", texture, "sRGB",
-        GfVec4f(factors.emissive[0], factors.emissive[1], factors.emissive[2], 1));
+    const auto color = factors.emissive * factors.emissiveStrength;
+    auto image = authorPreviewTexture(graph, "emissiveTexture", texture, "sRGB",
+                                      GfVec4f(color[0], color[1], color[2], 1));
     return image &&
            connectPreviewOutput(image, "rgb", SdfValueTypeNames->Float3, surface, "emissiveColor");
 }
@@ -1011,7 +1013,7 @@ authorPreview(const UsdShadeMaterial& material, const PbrFactors& factors, bool 
            setInput(surface, "roughness", SdfValueTypeNames->Float,
                     unlit ? 1.0f : factors.roughness) &&
            setInput(surface, "emissiveColor", SdfValueTypeNames->Color3f,
-                    unlit ? factors.baseColor : factors.emissive) &&
+                    unlit ? factors.baseColor : factors.emissive * factors.emissiveStrength) &&
            (!ior || setInput(surface, "ior", SdfValueTypeNames->Float, *ior)) &&
            (!clearcoat ||
             (setInput(surface, "clearcoat", SdfValueTypeNames->Float, factors.clearcoat) &&
@@ -1048,6 +1050,11 @@ authorMtlx(const UsdShadeMaterial& material, const PbrFactors& factors, bool ver
     // A dielectric's specular input scales both its F0 and F90, so 0 removes its reflection.
     const bool unlit = factors.unlit;
     const auto alphaMode = surface.CreateInput(TfToken("alpha_mode"), SdfValueTypeNames->Int);
+    const bool hasEmissiveStrength = factors.emissiveStrength != 1.0f;
+    const auto emissiveStrength =
+        hasEmissiveStrength
+            ? surface.CreateInput(TfToken("emissive_strength"), SdfValueTypeNames->Float)
+            : UsdShadeInput();
     // gltf_pbr computes its dielectric F0 from ior as glTF does, and declares the input uniform.
     const auto ior = authoredIor(factors);
     const auto iorInput =
@@ -1107,6 +1114,9 @@ authorMtlx(const UsdShadeMaterial& material, const PbrFactors& factors, bool ver
                       factors.iridescenceMaximum))) &&
            setInput(surface, "emissive", SdfValueTypeNames->Color3f,
                     unlit ? factors.baseColor : factors.emissive) &&
+           (!hasEmissiveStrength ||
+            (emissiveStrength && emissiveStrength.GetAttr().SetVariability(SdfVariabilityUniform) &&
+             emissiveStrength.Set(factors.emissiveStrength))) &&
            (!ior || (iorInput && iorInput.GetAttr().SetVariability(SdfVariabilityUniform) &&
                      iorInput.Set(*ior))) &&
            (!clearcoat ||
