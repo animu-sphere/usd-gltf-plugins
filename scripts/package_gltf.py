@@ -18,7 +18,7 @@ def stage_layer(source, directory):
         if not imported:
             raise RuntimeError(f"cannot import {source}")
 
-        # Copy the layer specs so animation variants survive and the imported layer stays intact.
+        # Copy the layer specs so variants survive and the imported layer stays intact.
         layer = Sdf.Layer.CreateAnonymous(".usdc")
         layer.TransferContent(imported)
         (directory / "textures").mkdir()

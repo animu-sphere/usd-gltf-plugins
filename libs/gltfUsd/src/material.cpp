@@ -1279,39 +1279,26 @@ resolveTexture(const fastgltf::Asset& asset, const fastgltf::TextureInfo& info,
     return true;
 }
 
-bool
-authorPreviewPrimvars(const PbrFactors& factors, const VtVec3fArray& colors,
-                      const VtFloatArray& alpha, const UsdGeomMesh& mesh)
+void
+preparePreviewPrimvars(const PbrFactors& factors, const VtVec3fArray& colors,
+                       const VtFloatArray& alpha, MaterialBinding& binding)
 {
-    const UsdGeomPrimvarsAPI primvars(mesh);
     if (factors.baseColor != GfVec3f(1))
     {
-        VtVec3fArray scaled(colors.size());
+        binding.previewColors.resize(colors.size());
         for (std::size_t i = 0; i < colors.size(); ++i)
         {
-            scaled[i] = GfCompMult(colors[i], factors.baseColor);
+            binding.previewColors[i] = GfCompMult(colors[i], factors.baseColor);
         }
-        if (!primvars
-                 .CreatePrimvar(TfToken(previewColorPrimvar(factors)),
-                                SdfValueTypeNames->Color3fArray, UsdGeomTokens->vertex)
-                 .Set(scaled))
+    }
+    if (previewUsesOpacity(factors) && factors.alpha != 1.0f && !alpha.empty())
+    {
+        binding.previewAlpha.resize(alpha.size());
+        for (std::size_t i = 0; i < alpha.size(); ++i)
         {
-            return false;
+            binding.previewAlpha[i] = alpha[i] * factors.alpha;
         }
     }
-    if (!previewUsesOpacity(factors) || factors.alpha == 1.0f || alpha.empty())
-    {
-        return true;
-    }
-    VtFloatArray scaled(alpha.size());
-    for (std::size_t i = 0; i < alpha.size(); ++i)
-    {
-        scaled[i] = alpha[i] * factors.alpha;
-    }
-    return primvars
-        .CreatePrimvar(TfToken(previewAlphaPrimvar(factors)), SdfValueTypeNames->FloatArray,
-                       UsdGeomTokens->vertex)
-        .Set(scaled);
 }
 
 } // namespace
@@ -1327,7 +1314,7 @@ MaterialAuthor::MaterialAuthor(const fastgltf::Asset& asset, const std::string& 
 std::optional<std::size_t>
 MaterialAuthor::TangentTexCoord(std::size_t index) const
 {
-    // Called after Bind validates the material and its texture coordinates.
+    // Called after Prepare validates the material and its texture coordinates.
     const auto& material = _asset.materials[index];
     if (material.unlit)
     {
@@ -1351,10 +1338,15 @@ MaterialAuthor::TangentTexCoord(std::size_t index) const
 }
 
 bool
-MaterialAuthor::Bind(std::size_t index, std::size_t uvSetCount, const pxr::VtVec3fArray* colors,
-                     const pxr::VtFloatArray& alpha, const pxr::UsdGeomMesh& mesh,
-                     std::string& error)
+MaterialAuthor::Prepare(std::optional<std::size_t> materialIndex, std::size_t uvSetCount,
+                        const pxr::VtVec3fArray* colors, const pxr::VtFloatArray& alpha,
+                        MaterialBinding& binding, std::string& error)
 {
+    if (!materialIndex)
+    {
+        return PrepareDefault(colors != nullptr, binding, error);
+    }
+    const auto index = *materialIndex;
     if (index >= _asset.materials.size())
     {
         error = "material index is out of range";
@@ -1695,17 +1687,17 @@ MaterialAuthor::Bind(std::size_t index, std::size_t uvSetCount, const pxr::VtVec
             return false;
         }
     }
-    if (colors && !pbr.baseColorTexture &&
-        !authorPreviewPrimvars(pbrFactors(source), *colors, alpha, mesh))
+    if (colors && !pbr.baseColorTexture)
     {
-        error = "could not author USD preview vertex colors";
-        return false;
+        preparePreviewPrimvars(pbrFactors(source), *colors, alpha, binding);
     }
-    return BindMaterial(material, source.doubleSided, mesh, error);
+    binding.material = material;
+    binding.doubleSided = source.doubleSided;
+    return true;
 }
 
 bool
-MaterialAuthor::BindDefault(bool hasVertexColor, const pxr::UsdGeomMesh& mesh, std::string& error)
+MaterialAuthor::PrepareDefault(bool hasVertexColor, MaterialBinding& binding, std::string& error)
 {
     auto& material = hasVertexColor ? _defaultVertexColorMaterial : _defaultMaterial;
     if (!material)
@@ -1719,18 +1711,38 @@ MaterialAuthor::BindDefault(bool hasVertexColor, const pxr::UsdGeomMesh& mesh, s
             return false;
         }
     }
-    return BindMaterial(material, false, mesh, error);
+    binding.material = material;
+    return true;
 }
 
 bool
-MaterialAuthor::BindMaterial(const pxr::UsdShadeMaterial& material, bool doubleSided,
-                             const pxr::UsdGeomMesh& mesh, std::string& error)
+MaterialBinding::Author(const pxr::UsdGeomMesh& mesh, std::string& error) const
 {
     using namespace pxr;
-    if (!UsdShadeMaterialBindingAPI::Apply(mesh.GetPrim()).Bind(material) ||
+    if (!UsdShadeMaterialBindingAPI(mesh.GetPrim()).Bind(material) ||
         !mesh.CreateDoubleSidedAttr().Set(doubleSided))
     {
         error = "could not author USD material binding or sidedness";
+        return false;
+    }
+    const UsdGeomPrimvarsAPI primvars(mesh);
+    if ((!previewColors.empty() &&
+         !primvars
+              .CreatePrimvar(TfToken("gltf_previewBaseColor"), SdfValueTypeNames->Color3fArray,
+                             UsdGeomTokens->vertex)
+              .Set(previewColors)) ||
+        (!previewAlpha.empty() &&
+         !primvars
+              .CreatePrimvar(TfToken("gltf_previewAlpha"), SdfValueTypeNames->FloatArray,
+                             UsdGeomTokens->vertex)
+              .Set(previewAlpha)) ||
+        (!generatedTangents.empty() &&
+         !primvars
+              .CreatePrimvar(TfToken("gltf_generatedTangent"), SdfValueTypeNames->Float4Array,
+                             UsdGeomTokens->faceVarying)
+              .Set(generatedTangents)))
+    {
+        error = "could not author USD material primvars";
         return false;
     }
     return true;

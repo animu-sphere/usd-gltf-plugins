@@ -54,6 +54,27 @@ without another flip. `KHR_texture_transform` applies between the reader and the
 [ADR 0011](../adr/0011-texture-transform.md). Document observed differences from glTF shading and
 renderer-specific limitations.
 
+## Material variants
+
+`KHR_materials_variants` authors a variant set `materialVariant` on `/Root` when the glTF
+declares variants. The default choice, `Original`, uses each primitive's stated material or the
+implicit glTF material. Each glTF choice is named `Variant_{index}_{name}`, using its zero-based
+index and a name made into a USD identifier. An empty source name omits the suffix. The selected
+variant's original name is available as `gltf:materialVariantName` in the root's `customData`.
+
+The selection applies to every placement of each mapped primitive in the selected scene. A choice
+without a mapping uses the primitive's original material. A mapped primitive's binding,
+`doubleSided`, Preview vertex color products and generated tangents follow the selection. Its
+geometry and vertex attributes stay shared across choices, and its UsdShade networks stay under
+`/Root/Materials`. The separate `animation` selection can be changed independently. Use
+`Original` to return to the original bindings: an unknown or blocked USD variant selection leaves
+mapped primitives without those opinions.
+
+Optional and required declarations use the same mapping. Missing declarations and malformed
+lists, duplicate variant indices on one primitive, and out-of-range indices fail import.
+An alternate material used in the selected scene must pass the same texture and shading input
+checks as the original. See [ADR 0038](../adr/0038-material-variants.md).
+
 ## Emissive strength
 
 `KHR_materials_emissive_strength` scales emission by a non-negative, unitless

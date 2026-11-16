@@ -707,6 +707,48 @@ def check_node_visibility(renderer, report):
     qt[2].doneCurrent()
 
 
+def check_material_variants(renderer, report):
+    qt = offscreen_context(report, "material variants")
+    if not qt:
+        return
+    extension, unlit = "KHR_materials_variants", "KHR_materials_unlit"
+
+    def color(rgb):
+        return {**pbr(baseColorFactor=[*rgb, 1]), "extensions": {unlit: {}}}
+
+    # Only the left quad has a mapping. The other choice has no mapping for either quad.
+    document = quad_document([color((1, 0, 0))])
+    document["materials"].extend([color((0, 1, 0)), color((0, 0, 1))])
+    document["extensionsUsed"] = [extension, unlit]
+    document["extensions"] = {extension: {"variants": [{"name": "Blue"}, {"name": "Unmapped"}]}}
+    left = document["meshes"][0]["primitives"][0]
+    document["meshes"].append({"primitives": [{**left, "material": 1}]})
+    document["scenes"][0]["nodes"].append(1)
+    document["nodes"].append({"mesh": 1, "translation": [1.25, 0, 0]})
+    left["extensions"] = {
+        extension: {"mappings": [{"material": 2, "variants": [0]}]}}
+    asset = renderer.output / "material_variants.gltf"
+    asset.write_text(json.dumps(document), encoding="utf-8")
+
+    for path in PATHS:
+        _, stage = renderer.session("material_variants", asset, path, None)
+        variants = stage.GetDefaultPrim().GetVariantSet("materialVariant")
+        for selection, mapped_color in (("Original", "R"), ("Variant_0_Blue", "B"),
+                                        ("Variant_1_Unmapped", "R"), ("Original", "R")):
+            label = f"{path} material variants {selection}"
+            selected = variants.SetVariantSelection(selection)
+            report.expect(label, selected, "select variant")
+            if not selected:
+                continue
+            image = engine_image(stage, [], Gf.Vec4f(0, 0, 0, 1))
+            image.save(str(renderer.output / f"material_variants_{selection}_{path}.png"))
+            render = Render(label, image, stage)
+            render.meshes.sort(key=lambda prim: prim.GetPath())
+            report.color("mapped quad", render, 0, (0.5, 0.5), mapped_color)
+            report.color("unmapped quad", render, 1, (0.5, 0.5), "G")
+    qt[2].doneCurrent()
+
+
 def check_unlit(renderer, report):
     """Renders a quad of KHR_materials_unlit, which glTF says shows its base color however it is lit,
     in darkness and under a light, without usdview's light at the camera."""
@@ -1275,7 +1317,8 @@ def main():
 
     report = Report(arguments.verbose)
     renderer = Renderer(output, plugin, report)
-    for check in (check_reflections, check_lights, check_node_visibility, check_unlit, check_emissive_strength, check_ior,
+    for check in (check_reflections, check_lights, check_node_visibility, check_material_variants,
+                  check_unlit, check_emissive_strength, check_ior,
                   check_specular, check_anisotropy, check_iridescence, check_sheen, check_clearcoat,
                   check_transmission, check_volume, check_alpha_modes, check_base_color_textures,
                   check_pbr_textures, check_normal_textures, check_texture_transforms,

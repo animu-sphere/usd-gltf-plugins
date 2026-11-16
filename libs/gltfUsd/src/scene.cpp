@@ -15,6 +15,7 @@
 #include "pxr/base/tf/diagnostic.h"
 #include "pxr/base/tf/errorMark.h"
 #include "pxr/base/tf/errorTransport.h"
+#include "pxr/base/tf/stringUtils.h"
 #include "pxr/base/vt/array.h"
 #include "pxr/base/vt/value.h"
 #include "pxr/usd/sdf/copyUtils.h"
@@ -67,12 +68,13 @@ defineNode(const UsdStageRefPtr& stage, const SceneMap& map, const SdfPath& path
 bool
 placeMesh(const fastgltf::Asset& asset, const SceneMap& map, std::size_t meshIndex,
           const SdfPath& path, const UsdStageRefPtr& stage, const gltfCore::BufferReader& buffers,
-          MaterialAuthor& materials, DecodedMeshes& decodedMeshes)
+          MaterialAuthor& materials, DecodedMeshes& decodedMeshes, VariantBindings& variantBindings)
 {
     const auto& first = map.meshes[meshIndex].front();
     if (path == first)
     {
-        return ConvertMesh(asset, meshIndex, stage, path, buffers, materials, decodedMeshes);
+        return ConvertMesh(asset, meshIndex, stage, path, buffers, materials, decodedMeshes,
+                           variantBindings);
     }
     // Material bindings target a scope outside the copied subtree, so they are copied unchanged.
     const auto layer = stage->GetRootLayer();
@@ -181,6 +183,87 @@ orderedOps(const UsdStageRefPtr& stage, const SdfPath& path, std::size_t count)
         return {};
     }
     return ops;
+}
+
+// Direct bindings would be stronger than the variants. Author every choice for mapped primitives,
+// including the base material wherever a choice has no mapping.
+bool
+authorMaterialVariants(const UsdStageRefPtr& stage, const SdfPath& root, const SceneMap& map,
+                       const fastgltf::Asset& asset, const VariantBindings& bindings)
+{
+    if (asset.materialVariants.empty())
+    {
+        return true;
+    }
+    static const TfToken setName("materialVariant");
+    static const std::string original("Original");
+    auto variantSet = stage->GetPrimAtPath(root).GetVariantSets().AddVariantSet(setName);
+    const auto authorVariant = [&](const std::string& name, std::optional<std::size_t> index)
+    {
+        const auto fail = [&](const std::string& reason)
+        {
+            TF_RUNTIME_ERROR("Could not author glTF material variant %s: %s", name.c_str(),
+                             reason.c_str());
+            return false;
+        };
+        if (!variantSet.AddVariant(name) || !variantSet.SetVariantSelection(name))
+        {
+            return fail("could not add or select the USD variant");
+        }
+        const auto target = variantSet.GetVariantEditTarget();
+        if (!target.IsValid())
+        {
+            return fail("could not edit the USD variant");
+        }
+        const UsdEditContext context(stage, target);
+        if (index)
+        {
+            stage->GetPrimAtPath(root).SetCustomDataByKey(TfToken("gltf:materialVariantName"),
+                                                          VtValue(asset.materialVariants[*index]));
+        }
+        for (const auto& [key, materials] : bindings)
+        {
+            const auto [meshIndex, primitiveIndex] = key;
+            const auto& primitive = asset.meshes[meshIndex].primitives[primitiveIndex];
+            auto material = primitive.materialIndex;
+            if (index && primitive.mappings[*index])
+            {
+                material = primitive.mappings[*index];
+            }
+            const auto& binding = materials.at(material ? std::optional(*material) : std::nullopt);
+            const TfToken child("Primitive_" + std::to_string(primitiveIndex));
+            for (const auto& placement : map.meshes[meshIndex])
+            {
+                const auto mesh = UsdGeomMesh::Get(stage, placement.AppendChild(child));
+                std::string error;
+                if (!mesh || !binding.Author(mesh, error))
+                {
+                    return fail(mesh ? error : "could not find placed mesh primitive");
+                }
+            }
+        }
+        return true;
+    };
+    if (!variantSet || !authorVariant(original, std::nullopt))
+    {
+        TF_RUNTIME_ERROR("Could not author the glTF material variant set");
+        return false;
+    }
+    for (std::size_t index = 0; index < asset.materialVariants.size(); ++index)
+    {
+        const auto& name = asset.materialVariants[index];
+        const auto suffix = name.empty() ? std::string{} : "_" + TfMakeValidIdentifier(name);
+        if (!authorVariant("Variant_" + std::to_string(index) + suffix, index))
+        {
+            return false;
+        }
+    }
+    if (!variantSet.SetVariantSelection(original))
+    {
+        TF_RUNTIME_ERROR("Could not select the original glTF materials");
+        return false;
+    }
+    return true;
 }
 
 // The variant set `animation` on the asset's root, with each animation's values in its variant:
@@ -354,6 +437,7 @@ authorScene(const fastgltf::Asset& asset, const std::string& sourcePath,
 
     MaterialAuthor materials(asset, sourcePath, buffers, stage, materialScope.GetPath());
     DecodedMeshes decodedMeshes;
+    VariantBindings variantBindings;
     std::vector<AnimatedCorrection> corrections;
     for (std::size_t position = 0; position < map->nodes.size(); ++position)
     {
@@ -386,7 +470,7 @@ authorScene(const fastgltf::Asset& asset, const std::string& sourcePath,
             return {};
         }
         if (node.meshIndex && !placeMesh(asset, *map, *node.meshIndex, mapped.mesh, stage, buffers,
-                                         materials, decodedMeshes))
+                                         materials, decodedMeshes, variantBindings))
         {
             return {};
         }
@@ -425,7 +509,8 @@ authorScene(const fastgltf::Asset& asset, const std::string& sourcePath,
             return {};
         }
     }
-    if (!authorAnimations(stage, root.GetPath(), *map, animation, corrections))
+    if (!authorAnimations(stage, root.GetPath(), *map, animation, corrections) ||
+        !authorMaterialVariants(stage, root.GetPath(), *map, asset, variantBindings))
     {
         return {};
     }
