@@ -8,6 +8,12 @@ here.
 
 ## [Unreleased]
 
+### Added
+
+- Import `KHR_animation_pointer` channels that animate node visibility in glTF and GLB. Visibility
+  switches at each STEP keyframe and follows the selected animation variant.
+  See the [animated visibility decision](docs/adr/0037-animated-node-visibility.md).
+
 ## [0.9.0] - 2026-11-16
 
 ### Added

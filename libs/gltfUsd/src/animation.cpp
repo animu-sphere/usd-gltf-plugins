@@ -13,11 +13,13 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <charconv>
 #include <cmath>
 #include <cstdint>
 #include <limits>
 #include <set>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <variant>
 
@@ -108,6 +110,64 @@ readTimes(const fastgltf::Asset& asset, std::size_t index, const gltfCore::Buffe
         if (!std::isfinite(times[i]) || times[i] < 0.0 || (i > 0 && times[i] <= times[i - 1]))
         {
             error = "input times are not finite, nonnegative and strictly increasing";
+            return false;
+        }
+    }
+    return true;
+}
+
+bool
+readVisibility(const fastgltf::Asset& asset, const gltfCore::BufferReader& buffers,
+               const fastgltf::AnimationSampler& sampler, TimeSamples<bool>& samples,
+               std::string& error)
+{
+    if (sampler.interpolation != fastgltf::AnimationInterpolation::Step)
+    {
+        error = "visibility requires STEP interpolation";
+        return false;
+    }
+    std::vector<double> times;
+    if (!readTimes(asset, sampler.inputAccessor, buffers, times, error))
+    {
+        return false;
+    }
+    // Boolean pointers use the raw bytes even when the accessor is marked normalized.
+    const bool normalized = sampler.outputAccessor < asset.accessors.size() &&
+                            asset.accessors[sampler.outputAccessor].normalized;
+    gltfCore::AccessorData data;
+    if (!gltfCore::GetAccessorData(asset, sampler.outputAccessor, fastgltf::AccessorType::Scalar,
+                                   fastgltf::ComponentType::UnsignedByte, 1, false, data, error,
+                                   buffers, normalized))
+    {
+        error = "visibility output " + error;
+        return false;
+    }
+    if (data.count != times.size())
+    {
+        error = "visibility output count does not match the input's";
+        return false;
+    }
+    for (std::size_t i = 0; i < data.count; ++i)
+    {
+        samples.emplace_back(times[i] * TimeCodesPerSecond,
+                             data.bytes[i * data.stride] != std::byte{0});
+    }
+    return true;
+}
+
+bool
+isPropertyPointer(std::string_view pointer)
+{
+    if (!pointer.starts_with('/'))
+    {
+        return false;
+    }
+    for (auto escape = pointer.find('~'); escape != std::string_view::npos;
+         escape = pointer.find('~', escape + 2))
+    {
+        if (escape + 1 == pointer.size() ||
+            (pointer[escape + 1] != '0' && pointer[escape + 1] != '1'))
+        {
             return false;
         }
     }
@@ -507,6 +567,13 @@ readAnimation(const fastgltf::Asset& asset, const gltfCore::BufferReader& buffer
     const auto& animation = asset.animations[animationIndex];
     values.name = std::string(animation.name);
     std::set<std::pair<std::size_t, fastgltf::AnimationPath>> targets;
+    std::set<std::size_t> visibilityTargets;
+    constexpr auto pointerExtension = fastgltf::extensions::KHR_animation_pointer;
+    const auto declared = std::find(asset.extensionsUsed.begin(), asset.extensionsUsed.end(),
+                                    pointerExtension) != asset.extensionsUsed.end();
+    const auto required =
+        std::find(asset.extensionsRequired.begin(), asset.extensionsRequired.end(),
+                  pointerExtension) != asset.extensionsRequired.end();
     bool capped = false;
     for (std::size_t c = 0; c < animation.channels.size(); ++c)
     {
@@ -520,6 +587,69 @@ readAnimation(const fastgltf::Asset& asset, const gltfCore::BufferReader& buffer
         if (channel.samplerIndex >= animation.samplers.size())
         {
             return fail("sampler index is out of range");
+        }
+        if (channel.pointer)
+        {
+            constexpr std::string_view prefix = "/nodes/";
+            constexpr std::string_view suffix = "/extensions/KHR_node_visibility/visible";
+            const std::string_view pointer = *channel.pointer;
+            if (!declared && !required)
+            {
+                return fail("KHR_animation_pointer is not declared");
+            }
+            if (channel.nodeIndex || !isPropertyPointer(pointer))
+            {
+                return fail(
+                    "KHR_animation_pointer requires a pointer path, a JSON property pointer "
+                    "and no target node field");
+            }
+            if (!pointer.starts_with(prefix) || !pointer.ends_with(suffix))
+            {
+                const auto message = "unsupported KHR_animation_pointer target " + *channel.pointer;
+                if (required)
+                {
+                    return fail(message);
+                }
+                TF_WARN("glTF animation %zu channel %zu: %s; channel ignored", animationIndex, c,
+                        message.c_str());
+                continue;
+            }
+            if (pointer.size() <= prefix.size() + suffix.size())
+            {
+                return fail("KHR_animation_pointer visibility target has an invalid node index");
+            }
+            const auto index =
+                pointer.substr(prefix.size(), pointer.size() - prefix.size() - suffix.size());
+            std::size_t nodeIndex = 0;
+            const auto [end, ec] =
+                std::from_chars(index.data(), index.data() + index.size(), nodeIndex);
+            if (ec != std::errc() || end != index.data() + index.size() ||
+                (index.size() > 1 && index.front() == '0') || nodeIndex >= asset.nodes.size())
+            {
+                return fail("KHR_animation_pointer visibility target has an invalid node index");
+            }
+            if (!asset.nodes[nodeIndex].hasNodeVisibility)
+            {
+                return fail("KHR_animation_pointer visibility target is missing its "
+                            "KHR_node_visibility object");
+            }
+            if (!visibilityTargets.insert(nodeIndex).second)
+            {
+                return fail("KHR_animation_pointer targets the same visibility as another channel");
+            }
+            if (const auto position = map.positions[nodeIndex];
+                position && !map.nodes[*position].path.IsEmpty())
+            {
+                std::string error;
+                auto& samples = values.visibility[*position];
+                if (!readVisibility(asset, buffers, animation.samplers[channel.samplerIndex],
+                                    samples, error))
+                {
+                    return fail(error);
+                }
+                values.endTimeCode = std::max(values.endTimeCode, samples.back().first);
+            }
+            continue;
         }
         // glTF ignores a channel without a node, unless an extension says what it animates.
         if (!channel.nodeIndex)
@@ -649,6 +779,11 @@ PlanAnimation(const fastgltf::Asset& asset, const gltfCore::BufferReader& buffer
         }
         plan.endTimeCode = std::max(plan.endTimeCode, values.endTimeCode);
         plan.hasChannels = plan.hasChannels || !values.weights.empty();
+        for (const auto& [position, samples] : values.visibility)
+        {
+            plan.statedVisibility.emplace(position, asset.nodes[map.nodes[position].index].visible);
+        }
+        plan.hasChannels = plan.hasChannels || !values.visibility.empty();
         for (std::size_t position = 0; position < map.nodes.size(); ++position)
         {
             if (values.nodes[position])

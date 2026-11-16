@@ -29,6 +29,7 @@
 
 #if !defined(FASTGLTF_MODULE)
 #include <cassert>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -889,6 +890,8 @@ namespace fastgltf {
 		std::size_t samplerIndex;
 		optional<std::size_t> nodeIndex;
 		AnimationPath path;
+		// Set for a pointer target; empty if the extension payload or target path is malformed.
+		std::optional<std::string> pointer;
 	};
 
 	FASTGLTF_EXPORT struct AnimationSampler {
@@ -1280,6 +1283,7 @@ namespace fastgltf {
 		std::variant<TRS, math::nmat4x4> transform;
 
 		bool visible = true;
+		bool hasNodeVisibility = false;
 		bool selectable = true;
 		bool hoverable = true;
 

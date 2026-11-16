@@ -29,7 +29,5 @@ or spot light inside the subtree, with the parent visible and hidden. Renderer v
 Storm with OpenUSD 26.08 on Windows and both material paths.
 
 The [sample check](../../tests/check_samples.py) compares each mesh and light's computed visibility
-with the selected glTF scene's hierarchy. The CubeVisibility and LightVisibility samples use
-optional `KHR_animation_pointer`, and follow the
-[optional extension policy](../architecture/IMPORT_PIPELINE.md#failure-policy). Their imported
-values are static.
+with the selected glTF scene's hierarchy. Animated visibility for CubeVisibility and LightVisibility
+uses the same hierarchy; see [ADR 0037](0037-animated-node-visibility.md).

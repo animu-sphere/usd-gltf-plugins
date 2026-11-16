@@ -1009,6 +1009,19 @@ fg::Error fg::Parser::parseAnimations(simdjson::dom::array& animations, Asset& a
 					return Error::InvalidGltf;
 				}
 
+				if (hasBit(config.extensions, Extensions::KHR_animation_pointer)) {
+					dom::element extension;
+					const bool hasExtension = targetObject["extensions"][extensions::KHR_animation_pointer].get(extension) == SUCCESS;
+					if (path == "pointer" || hasExtension) {
+						std::string_view pointer;
+						if (hasExtension && path == "pointer" && extension["pointer"].get_string().get(pointer) == SUCCESS) {
+							channel.pointer.emplace(pointer);
+						} else {
+							channel.pointer.emplace();
+						}
+					}
+				}
+
 				if (path == "translation") {
 					channel.path = AnimationPath::Translation;
 				} else if (path == "rotation") {
@@ -1020,7 +1033,7 @@ fg::Error fg::Parser::parseAnimations(simdjson::dom::array& animations, Asset& a
 				}
 			}
 
-			animation.channels.emplace_back(channel);
+			animation.channels.emplace_back(std::move(channel));
 		}
 
 		dom::array samplers;
@@ -2979,6 +2992,7 @@ fg::Error fg::Parser::parseNodes(simdjson::dom::array& nodes, Asset& asset) {
 			if (hasBit(config.extensions, Extensions::KHR_node_visibility)) {
 				dom::object nodeVisibilityObject;
 				if (auto nodeVisibilityError = extensionsObject[extensions::KHR_node_visibility].get_object().get(nodeVisibilityObject); nodeVisibilityError == SUCCESS) {
+					node.hasNodeVisibility = true;
 					if (const auto visibleError = nodeVisibilityObject["visible"].get_bool().get(node.visible);
 						visibleError != NO_SUCH_FIELD && visibleError != SUCCESS) [[unlikely]] {
 						return Error::InvalidGltf;
