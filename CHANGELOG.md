@@ -8,6 +8,8 @@ here.
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-16
+
 ### Added
 
 - Import `KHR_materials_variants` in glTF and GLB. Choose a material variant or restore the
