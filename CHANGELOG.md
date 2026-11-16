@@ -8,6 +8,8 @@ here.
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-11-16
+
 ### Added
 
 - Import `KHR_animation_pointer` channels that animate node visibility in glTF and GLB. Visibility
