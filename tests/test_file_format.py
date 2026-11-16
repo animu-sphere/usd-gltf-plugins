@@ -6387,7 +6387,7 @@ assert layer.ExportToString() == Path(sys.argv[3]).read_text(encoding="utf-8")
                               "channel 0: sampler index is out of range"),
             "node index": (None, lambda d: channel(d, 0)["target"].update(node=9),
                            "channel 0: node index is out of range"),
-            "unknown path": (None, lambda d: channel(d, 1)["target"].update(path="pointer"),
+            "unknown path": (None, lambda d: channel(d, 1)["target"].update(path="unknown"),
                              "channel 1: target path is not translation"),
             "repeated target": (None, lambda d: d["animations"][0]["channels"].append(dict(channel(d, 1))),
                                 "channel 3: targets the same node and path"),
@@ -7259,6 +7259,12 @@ assert layer.ExportToString() == Path(sys.argv[3]).read_text(encoding="utf-8")
                         self.assertEqual(layer_text(layer), before)
                 channels = document["animations"][0]["channels"]
                 original = channels[0]
+                document["extensionsUsed"].remove(pointer)
+                write_asset(path, document, binary)
+                with self.assertRaisesRegex(Tf.ErrorException, "KHR_animation_pointer is not declared"):
+                    layer.Reload(True)
+                self.assertEqual(layer_text(layer), before)
+                document["extensionsUsed"].append(pointer)
                 for bad, message in (([visibility_channel(99)], "invalid node index"),
                                      ([visibility_channel("01")], "invalid node index"),
                                      ([visibility_channel(2)], "missing its KHR_node_visibility object"),
