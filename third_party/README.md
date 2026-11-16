@@ -38,3 +38,6 @@ The amalgamations match the SHA-256 hashes in fastgltf 1.0.1's
 licenses, notices and build configuration together, and run the parser and
 plugin tests. The combined [notices](NOTICES.txt) are included in installed
 and packaged plugins.
+
+The local fastgltf import change retains `KHR_animation_pointer` targets and the presence of a
+node's `KHR_node_visibility` object. See [ADR 0037](../docs/adr/0037-animated-node-visibility.md).

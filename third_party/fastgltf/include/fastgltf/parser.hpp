@@ -159,6 +159,9 @@ namespace fastgltf {
 
 		// See https://github.com/KhronosGroup/glTF/pull/2397
 		KHR_accessor_float16 = 1ULL << 36,
+
+		// Local import support for KHR_animation_pointer targets.
+		KHR_animation_pointer = 1ULL << 37,
 	};
 	// clang-format on
 
@@ -268,6 +271,7 @@ namespace fastgltf {
 		inline constexpr std::string_view KHR_meshopt_compression = "KHR_meshopt_compression";
 		inline constexpr std::string_view KHR_mesh_quantization = "KHR_mesh_quantization";
 		inline constexpr std::string_view KHR_node_visibility = "KHR_node_visibility";
+		inline constexpr std::string_view KHR_animation_pointer = "KHR_animation_pointer";
 		inline constexpr std::string_view KHR_node_selectability = "KHR_node_selectability";
 		inline constexpr std::string_view KHR_node_hoverability = "KHR_node_hoverability";
 		inline constexpr std::string_view KHR_physics_rigid_bodies = "KHR_physics_rigid_bodies";
@@ -310,6 +314,7 @@ namespace fastgltf {
 		{ extensions::KHR_meshopt_compression,                  Extensions::KHR_meshopt_compression },
 		{ extensions::KHR_mesh_quantization,                    Extensions::KHR_mesh_quantization },
 		{ extensions::KHR_node_visibility,                      Extensions::KHR_node_visibility },
+		{ extensions::KHR_animation_pointer,                    Extensions::KHR_animation_pointer },
 		{ extensions::KHR_node_selectability,                   Extensions::KHR_node_selectability },
 		{ extensions::KHR_node_hoverability,                    Extensions::KHR_node_hoverability },
 		{ extensions::KHR_physics_rigid_bodies,                 Extensions::KHR_physics_rigid_bodies },

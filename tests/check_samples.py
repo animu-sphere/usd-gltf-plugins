@@ -38,11 +38,14 @@ DRACO = "KHR_draco_mesh_compression"
 MESHOPT = "EXT_meshopt_compression"
 EMISSIVE_STRENGTH = "KHR_materials_emissive_strength"
 NODE_VISIBILITY = "KHR_node_visibility"
+ANIMATION_POINTER = "KHR_animation_pointer"
+VISIBILITY_POINTER = re.compile(r"/nodes/(0|[1-9][0-9]*)/extensions/KHR_node_visibility/visible")
 IMPLEMENTED_EXTENSIONS = {
     "EXT_texture_webp", DRACO, MESHOPT, "KHR_lights_punctual", "KHR_materials_anisotropy",
     "KHR_materials_clearcoat", EMISSIVE_STRENGTH, "KHR_materials_ior", "KHR_materials_iridescence",
     "KHR_materials_sheen", "KHR_materials_specular", "KHR_materials_transmission", "KHR_materials_unlit",
-    "KHR_materials_volume", "KHR_mesh_quantization", NODE_VISIBILITY, "KHR_texture_basisu", "KHR_texture_transform",
+    "KHR_materials_volume", "KHR_mesh_quantization", NODE_VISIBILITY, ANIMATION_POINTER,
+    "KHR_texture_basisu", "KHR_texture_transform",
 }
 PATHS = ("mtlx", "preview")
 CAMERA = "/SampleCheckCamera"
@@ -54,6 +57,7 @@ MINIMUM_COVERAGE = 0.001
 MAXIMUM_MISMATCHES = 6
 TOLERANCE = 1e-5
 OPTIONAL_WARNING = re.compile(r"glTF optional extension '(.*)' is not supported")
+POINTER_WARNING = re.compile(r"glTF animation (\d+) channel (\d+): unsupported KHR_animation_pointer target .+; channel ignored")
 # The text of a rejection, and the causes that make it a fitting one.
 DIAGNOSTIC_CAUSES = {
     "missing base attribute for morph target": ("morph target attribute",),
@@ -1195,6 +1199,67 @@ def check_animated_world_transforms(check, stage, asset, node_paths, channels, e
                              f"{path} animation {index} at {seconds:g}s: relative world transform error {error:.3g}")
 
 
+def target_pointer(target):
+    return target.get("extensions", {}).get(ANIMATION_POINTER, {}).get("pointer", "")
+
+
+def check_animated_visibility(check, stage, document, node_paths, animated, channels, index):
+    from pxr import UsdGeom
+
+    if not animated:
+        return
+    nodes = document["nodes"]
+    inherited, invisible = UsdGeom.Tokens.inherited, UsdGeom.Tokens.invisible
+    defaults = {node: nodes[node].get("extensions", {}).get(NODE_VISIBILITY, {}).get("visible", True)
+                for node in node_paths}
+    query = set()
+    for node in animated:
+        prim = stage.GetPrimAtPath(node_paths[node])
+        if not prim:  # A joint with no authored attachments.
+            continue
+        attr = UsdGeom.Imageable(prim).GetVisibilityAttr()
+        label = f"animation {index} Node_{node} visibility"
+        check.expect(attr.Get() == (inherited if defaults[node] else invisible), f"{label}: default differs")
+        if node not in channels:
+            check.expect(not attr.GetTimeSamples(), f"{label}: samples leaked from another variant")
+            continue
+        times, _ = channels[node]
+        check.expect(attr.GetTimeSamples() == list(times * TIME_CODES_PER_SECOND), f"{label}: sample times differ")
+        query.update((times[0] - 1, times[-1] + 1))
+        query.update(times)
+        query.update(times[1:] - numpy.minimum(numpy.diff(times) / 2, 1e-5))
+
+    parents = {child: node for node in node_paths for child in nodes[node].get("children", [])}
+    for seconds in sorted(query):
+        code = float(seconds * TIME_CODES_PER_SECOND)
+        effective = {}
+        for node, path in node_paths.items():
+            visible = defaults[node]
+            if node in channels:
+                times, values = channels[node]
+                sample = max(0, numpy.searchsorted(times, seconds, side="right") - 1)
+                visible = bool(values[sample])
+                prim = stage.GetPrimAtPath(path)
+                if prim:
+                    attr = UsdGeom.Imageable(prim).GetVisibilityAttr()
+                    check.expect(attr.Get(code) == (inherited if visible else invisible),
+                                 f"animation {index} Node_{node} at {seconds:g}s: visibility differs")
+            effective[node] = visible and effective.get(parents.get(node), True)
+            expected = inherited if effective[node] else invisible
+            attachments = []
+            if "mesh" in nodes[node]:
+                mesh = nodes[node]["mesh"]
+                attachments.extend(f"{path}/Mesh_{mesh}/Primitive_{p}"
+                                   for p in range(len(document["meshes"][mesh]["primitives"])))
+            light = nodes[node].get("extensions", {}).get("KHR_lights_punctual")
+            if light:
+                attachments.append(f"{path}/Light_{light['light']}")
+            for attachment in attachments:
+                imageable = UsdGeom.Imageable(stage.GetPrimAtPath(attachment))
+                check.expect(imageable and imageable.ComputeVisibility(code) == expected,
+                             f"animation {index} {attachment} at {seconds:g}s: inherited visibility differs")
+
+
 def check_animation(check, stage, asset, node_paths):
     """Chooses each animation's variant and compares its channels on the selected nodes with glTF's
     values at each keyframe, just before it and inside each segment, checks that the properties it
@@ -1217,11 +1282,16 @@ def check_animation(check, stage, asset, node_paths):
         for number, channel in enumerate(animation["channels"]):
             target = channel["target"]
             node, path = target.get("node"), target.get("path")
+            if path == "pointer" and (match := VISIBILITY_POINTER.fullmatch(target_pointer(target))):
+                node = int(match[1])
+                if node in node_paths and stage.GetPrimAtPath(node_paths[node]):
+                    yield number, channel, node, "visibility"
             if node in node_paths and (path in ANIMATED_ATTRIBUTES or path == "weights"):
                 yield number, channel, node, path
 
     animated = {(node, path) for animation in animations for _, _, node, path in targets(animation)}
     has_transforms = any(path in ANIMATED_ATTRIBUTES for _, path in animated)
+    visibility_nodes = {node for node, path in animated if path == "visibility"}
     end = None
     for index, animation in enumerate(animations):
         with Usd.EditContext(stage, stage.GetSessionLayer()):
@@ -1229,6 +1299,7 @@ def check_animation(check, stage, asset, node_paths):
         own_end = 0.0
         own = set()
         transforms = {}
+        visibility = {}
         for number, channel, node, path in targets(animation):
             own.add((node, path))
             sampler = animation["samplers"][channel["sampler"]]
@@ -1237,6 +1308,9 @@ def check_animation(check, stage, asset, node_paths):
             values = asset.accessor(sampler["output"]).astype(numpy.float64)
             label = f"animation {index} channel {number} on Node_{node}"
             own_end = max(own_end, float(times[-1]))
+            if path == "visibility":
+                visibility[node] = times, values[:, 0]
+                continue
             if path in ANIMATED_ATTRIBUTES:
                 transforms.setdefault(node, {})[path] = times, values, interpolation
             if not stage.GetPrimAtPath(node_paths[node]):
@@ -1288,6 +1362,8 @@ def check_animation(check, stage, asset, node_paths):
                 worst = max(worst, float(numpy.abs(actual - expected).max()))
             check.expect(worst <= limit, f"{label}: values differ by {worst:.3g}")
         for node, path in sorted(animated - own):
+            if path == "visibility":
+                continue  # Checked with the animated visibility defaults below.
             if path == "weights":
                 continue  # The shared weight array can still have samples for other nodes.
             if not stage.GetPrimAtPath(node_paths[node]):
@@ -1297,6 +1373,7 @@ def check_animation(check, stage, asset, node_paths):
                          f"animation {index} moves {path} of Node_{node}, which it does not animate")
         if has_transforms:
             check_animated_world_transforms(check, stage, asset, node_paths, transforms, own_end, index)
+        check_animated_visibility(check, stage, asset.json, node_paths, visibility_nodes, visibility, index)
         data = root.GetCustomDataByKey("gltf") or {}
         check.close(data.get("endTimeCode", -1.0), own_end * TIME_CODES_PER_SECOND, f"animation {index} end")
         name = animation.get("name") or None
@@ -1546,6 +1623,10 @@ def inspect(path, root, directory):
     asset = Asset(path)
     used = asset.json.get("extensionsUsed", [])
     result["ignored"] = sorted(set(used) - IMPLEMENTED_EXTENSIONS)
+    result["ignored_pointers"] = [(a, c) for a, animation in enumerate(asset.json.get("animations", []))
+                                  for c, channel in enumerate(animation["channels"])
+                                  if channel["target"].get("path") == "pointer" and
+                                  not VISIBILITY_POINTER.fullmatch(target_pointer(channel["target"]))]
     # Embedded images share a parsed package only inside a resolver cache scope.
     # Bound the scope to this inspection, so another file or reload sees fresh bytes.
     try:
@@ -1609,7 +1690,14 @@ def open_file(key, path, root, build, output):
     # What the plugin ignores it must say it ignores, so that nothing is dropped silently.
     warned = {match[1] for match in map(OPTIONAL_WARNING.fullmatch, warnings) if match}
     mismatches += [f"{name} is ignored without a warning" for name in found["ignored"] if name not in warned]
-    warnings = [warning for warning in warnings if not OPTIONAL_WARNING.fullmatch(warning)]
+    ignored_pointers = {tuple(pair) for pair in found["ignored_pointers"]}
+    warned_pointers = {tuple(map(int, match.groups())) for match in map(POINTER_WARNING.fullmatch, warnings) if match}
+    if ignored_pointers:
+        found["ignored"] = sorted(found["ignored"] + [ANIMATION_POINTER])
+    for animation, channel in sorted(ignored_pointers ^ warned_pointers):
+        mismatches.append(f"unexpected support or warning for animation {animation} pointer channel {channel}")
+    warnings = [warning for warning in warnings
+                if not (OPTIONAL_WARNING.fullmatch(warning) or POINTER_WARNING.fullmatch(warning))]
     if mismatches:
         meaning = "differs"
     elif found["ignored"]:

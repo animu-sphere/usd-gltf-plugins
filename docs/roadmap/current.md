@@ -6,13 +6,7 @@ implementation order, which investigation may change. Each feature follows the
 
 ## v0.10.0 — Animated node visibility
 
-- Evaluate authoring `KHR_animation_pointer` visibility channels as USD visibility time samples,
-  including inheritance and switching between animation variants. Record the supported pointers,
-  validation rules, and diagnostics for other pointers in optional and required declarations.
-- Import visibility channels in glTF and GLB. Cover static defaults, step transitions, nested nodes,
-  mixed clips, invalid targets and sampler data, and failed reloads.
-- Compare authored samples with CubeVisibility and LightVisibility, verify transitions in Storm,
-  and update the sample baseline and capability matrix.
+- Run the release workflow dry run and repeat the display and sample checks on the commit to tag.
 
 ### Release criteria
 

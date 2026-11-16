@@ -329,11 +329,15 @@ selected node uses is not checked.
 ## Node visibility
 
 For `KHR_node_visibility`, `visible: false` authors `visibility = "invisible"` on the node's
-Xform or SkelRoot. A missing property and `visible: true` leave the USD fallback of `inherited`.
+Xform or SkelRoot. On a node with no visibility animation, a missing property and `visible: true`
+leave the USD fallback of `inherited`.
 The authored opinion applies to the node's meshes and punctual lights and those of its descendants.
 Cameras stay active at their existing paths with their original transforms and projection.
 Each placement of a shared mesh inherits from its own node.
-See the [visibility decision](../adr/0036-node-visibility.md).
+`KHR_animation_pointer` channels for node visibility author held `inherited` and `invisible`
+samples on that property inside the existing `animation` variants. Default time and variants with
+no visibility channel for that node use its stated visibility. See the decisions on
+[static visibility](../adr/0036-node-visibility.md) and [animated visibility](../adr/0037-animated-node-visibility.md).
 
 ## Scene selection
 

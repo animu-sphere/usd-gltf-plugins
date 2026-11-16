@@ -105,6 +105,12 @@ setValues(const UsdGeomXformOp& op, const T& stated, const TimeSamples<T>& sampl
     return true;
 }
 
+const TfToken&
+visibilityToken(bool visible)
+{
+    return visible ? UsdGeomTokens->inherited : UsdGeomTokens->invisible;
+}
+
 // A camera or light below a node that an animation moves, and its correction for each animation.
 struct AnimatedCorrection
 {
@@ -216,6 +222,26 @@ authorAnimations(const UsdStageRefPtr& stage, const SdfPath& root, const SceneMa
             return fail();
         }
         const UsdEditContext context(variantSet.GetVariantEditContext());
+        for (const auto& [position, stated] : plan.statedVisibility)
+        {
+            const auto node = UsdGeomImageable(stage->GetPrimAtPath(map.nodes[position].path));
+            const auto attr = node.CreateVisibilityAttr();
+            if (!attr || !attr.Set(visibilityToken(stated)))
+            {
+                return fail();
+            }
+            if (const auto samples = values.visibility.find(position);
+                samples != values.visibility.end())
+            {
+                for (const auto& [code, visible] : samples->second)
+                {
+                    if (!attr.Set(visibilityToken(visible), UsdTimeCode(code)))
+                    {
+                        return fail();
+                    }
+                }
+            }
+        }
         for (std::size_t position = 0; position < map.nodes.size(); ++position)
         {
             if (!plan.moved[position] || map.nodes[position].path.IsEmpty())
@@ -345,7 +371,8 @@ authorScene(const fastgltf::Asset& asset, const std::string& sourcePath,
             TF_RUNTIME_ERROR("Could not author glTF node %zu", index);
             return {};
         }
-        if (!node.visible && !xform.CreateVisibilityAttr().Set(UsdGeomTokens->invisible))
+        if (!node.visible && !animation.statedVisibility.contains(position) &&
+            !xform.CreateVisibilityAttr().Set(UsdGeomTokens->invisible))
         {
             TF_RUNTIME_ERROR("Could not author glTF node %zu visibility", index);
             return {};

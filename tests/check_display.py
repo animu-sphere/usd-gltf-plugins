@@ -489,9 +489,10 @@ def offscreen_context(report, label):
     return application, surface, context
 
 
-def engine_image(stage, lights, ambient, cull=UsdImagingGL.CullStyle.CULL_STYLE_NOTHING, *, camera_path=CAMERA):
+def engine_image(stage, lights, ambient, cull=UsdImagingGL.CullStyle.CULL_STYLE_NOTHING, *,
+                 camera_path=CAMERA, time=Usd.TimeCode.Default()):
     """Renders through the selected camera with UsdImagingGL.Engine, as usdview does."""
-    camera = UsdGeom.Camera(stage.GetPrimAtPath(camera_path)).GetCamera()
+    camera = UsdGeom.Camera(stage.GetPrimAtPath(camera_path)).GetCamera(time)
     width, height = IMAGE_WIDTH, round(IMAGE_WIDTH / camera.aspectRatio)
     framebuffer_format = QtOpenGL.QOpenGLFramebufferObjectFormat()
     framebuffer_format.setAttachment(QtOpenGL.QOpenGLFramebufferObject.Attachment.Depth)
@@ -509,6 +510,7 @@ def engine_image(stage, lights, ambient, cull=UsdImagingGL.CullStyle.CULL_STYLE_
     engine.SetCameraPath(camera_path)
     engine.SetLightingState(lights, Glf.SimpleMaterial(), ambient)
     parameters = UsdImagingGL.RenderParams()
+    parameters.frame = time
     parameters.cullStyle = cull
     parameters.gammaCorrectColors = False
     parameters.enableSampleAlphaToCoverage = False
@@ -633,13 +635,40 @@ def check_node_visibility(renderer, report):
     lights = [{"type": "directional", "intensity": ILLUMINANCE}]
     document["extensions"] = {punctual: {"lights": lights}}
 
-    def render(name, path):
+    def open_stage(name, path, source=document):
         asset = renderer.output / f"visibility_{name}_{path}.gltf"
-        asset.write_text(json.dumps(document), encoding="utf-8")
+        asset.write_text(json.dumps(source), encoding="utf-8")
         _, stage = renderer.session(f"visibility_{name}", asset, path, None, frame=False)
-        image = engine_image(stage, [], Gf.Vec4f(0, 0, 0, 1), camera_path=camera)
-        image.save(str(asset.with_suffix(".png")))
-        return Render(f"{path} {name}", image, stage, camera)
+        return stage
+
+    def frame(name, path, stage, time=Usd.TimeCode.Default()):
+        image = engine_image(stage, [], Gf.Vec4f(0, 0, 0, 1), camera_path=camera, time=time)
+        image.save(str(renderer.output / f"visibility_{name}_{path}.png"))
+        result = Render(f"{path} {name}", image, stage, camera)
+        # A variant opinion on Node_1 can change traversal order, not the mesh locations.
+        result.meshes.sort(key=lambda prim: prim.GetPath())
+        return result
+
+    def render(name, path):
+        return frame(name, path, open_stage(name, path))
+
+    def animate_parent():
+        pointer = "KHR_animation_pointer"
+        data = struct.pack("<3f3B", 0, 1, 2, 0, 255, 0)
+        buffer = {"byteLength": len(data),
+                  "uri": "data:application/octet-stream;base64," + base64.b64encode(data).decode()}
+        view = len(document["bufferViews"])
+        views = [{"buffer": 1, "byteLength": 12}, {"buffer": 1, "byteOffset": 12, "byteLength": 3}]
+        accessor = len(document["accessors"])
+        accessors = [{"bufferView": view, "componentType": 5126, "count": 3, "type": "SCALAR",
+                      "min": [0], "max": [2]},
+                     {"bufferView": view + 1, "componentType": 5121, "count": 3, "type": "SCALAR"}]
+        animation = {"samplers": [{"input": accessor, "output": accessor + 1, "interpolation": "STEP"}],
+                     "channels": [{"sampler": 0, "target": {"path": "pointer", "extensions": {
+                         pointer: {"pointer": f"/nodes/1/extensions/{visibility}/visible"}}}}]}
+        return {**document, "extensionsUsed": [*document["extensionsUsed"], pointer],
+                "buffers": [*document["buffers"], buffer], "bufferViews": [*document["bufferViews"], *views],
+                "accessors": [*document["accessors"], *accessors], "animations": [animation]}
 
     for path in PATHS:
         parent = document["nodes"][1]["extensions"][visibility]
@@ -667,6 +696,12 @@ def check_node_visibility(renderer, report):
             parent["visible"] = False
             hide_light = render(f"{light_type}_hidden", path)
             report.same(f"{path} hidden {light_type} contributes no light", hide_light.sample(0), visible)
+            animated = open_stage(f"{light_type}_animated", path, animate_parent())
+            for time, reference in ((23.5, hide_light), (24, show_light), (47.5, show_light), (48, hide_light)):
+                result = frame(f"{light_type}_at_{time}", path, animated, Usd.TimeCode(time))
+                for mesh in (0, 1, 2):
+                    report.same(f"{path} {light_type} at {time:g}: camera sees expected quad {mesh}",
+                                result.sample(mesh), reference.sample(mesh))
             parent["visible"] = True
         del lights[1:]
     qt[2].doneCurrent()

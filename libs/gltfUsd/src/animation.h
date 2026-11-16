@@ -55,6 +55,8 @@ struct AnimationValues
     std::vector<std::optional<NodeAnimation>> nodes;
     // By position in SceneMap::nodes. Empty or absent for nodes without a weight channel.
     std::map<std::size_t, TimeSamples<pxr::VtFloatArray>> weights;
+    // By position in SceneMap::nodes. Absent for nodes without a visibility channel in this clip.
+    std::map<std::size_t, TimeSamples<bool>> visibility;
     // By position in SceneMap::nodes, the node's transform relative to the asset at time 0.
     std::vector<pxr::GfMatrix4d> world;
 };
@@ -68,6 +70,8 @@ struct AnimationPlan
     std::vector<char> moved;
     // By position in SceneMap::nodes, whether any animation moves the node or one of its ancestors.
     std::vector<char> animated;
+    // By position in SceneMap::nodes, the stated visibility of nodes animated in any clip.
+    std::map<std::size_t, bool> statedVisibility;
     // The last keyframe of any animation's channels on the selected scene, in time codes.
     double endTimeCode = 0.0;
     // Whether any animation has a channel on the selected scene.
@@ -75,9 +79,9 @@ struct AnimationPlan
 };
 
 // Reads every animation's channels that target nodes of the selected scene and turns their samplers
-// into time samples, with each node's transforms at each animation's time 0. Channels without a
-// node, or with a node outside the scene, are ignored. Reports an error and returns false for an
-// invalid channel or sampler in any animation, for content that cannot be converted yet, and for a
+// into time samples, with each node's transforms at each animation's time 0. Ignores channels
+// outside the scene, and those without a node or supported pointer where allowed. Reports an error
+// and returns false for an invalid channel or sampler in any animation, or for a
 // camera or light whose correction for its node's scale would have to change during an animation.
 [[nodiscard]] bool PlanAnimation(const fastgltf::Asset& asset,
                                  const gltfCore::BufferReader& buffers, const SceneMap& map,

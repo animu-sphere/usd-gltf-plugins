@@ -719,6 +719,16 @@ def animation_document(extension, samplers, channels, more_animations=(), nodes=
     return document, binary
 
 
+def visibility_channel(node, sampler=0):
+    return {"sampler": sampler, "target": {"path": "pointer", "extensions": {
+        "KHR_animation_pointer": {"pointer": f"/nodes/{node}/extensions/KHR_node_visibility/visible"},
+    }}}
+
+
+def visibility_sampler(times=(0, 1), values=(0, 1)):
+    return {"input": times, "output": values, "interpolation": "STEP", "type": "SCALAR", "componentType": 5121}
+
+
 def skin_document(split_roots):
     """Two skins share joints and mesh data. The first lists the child before its parent."""
     nodes = [
@@ -7164,6 +7174,115 @@ assert layer.ExportToString() == Path(sys.argv[3]).read_text(encoding="utf-8")
                 write_asset(path, document, binary)
                 self.assertTrue(layer.Reload(True))
                 self.assertNotIn("visibility =", layer_text(layer))
+
+    def test_animated_node_visibility(self):
+        name = "KHR_node_visibility"
+        pointer = "KHR_animation_pointer"
+        translation = {"input": [0, 1], "output": [0, 0, 0, 2, 0, 0]}
+        parent = "/Root/Scenes/Scene_0/Node_1"
+        child = parent + "/Node_2"
+        with tempfile.TemporaryDirectory() as directory:
+            for extension, required in itertools.product(("gltf", "glb"), (False, True)):
+                with self.subTest(extension=extension, required=required):
+                    document, binary = animation_document(
+                        extension, [translation, visibility_sampler((0.5, 1, 1.5), (0, 128, 0)),
+                                    {**visibility_sampler((0, 2), (255, 1)), "normalized": True}],
+                        [(0, 0, "translation")], more_animations=[([translation], [(0, 0, "translation")])])
+                    document["extensionsUsed"] = [name, pointer, "KHR_lights_punctual"]
+                    document["extensionsRequired"] = [name, pointer] if required else [name]
+                    document["nodes"][1]["extensions"] = {name: {"visible": False}}
+                    document["nodes"][2]["extensions"] = {name: {}, **light_extension(0)}
+                    document["extensions"] = {"KHR_lights_punctual": {"lights": [{"type": "directional"}]}}
+                    document["animations"][0]["channels"] += [visibility_channel(1, 1), visibility_channel(2, 2)]
+                    path = pathlib.Path(directory) / f"animated-{required}.{extension}"
+                    write_asset(path, document, binary)
+                    stage = Usd.Stage.Open(str(path))
+                    root = stage.GetDefaultPrim()
+                    variant = root.GetVariantSet("animation")
+                    imageable = UsdGeom.Imageable(stage.GetPrimAtPath(parent))
+                    attr = imageable.GetVisibilityAttr()
+                    child_visibility = stage.GetAttributeAtPath(child + ".visibility")
+                    mesh = UsdGeom.Imageable(stage.GetPrimAtPath(child + "/Mesh_0/Primitive_0"))
+                    light = UsdLux.DistantLight.Get(stage, child + "/Light_0")
+                    hidden, visible = UsdGeom.Tokens.invisible, UsdGeom.Tokens.inherited
+                    self.assertEqual(attr.Get(), hidden)
+                    self.assertEqual(child_visibility.Get(), visible)
+                    self.assertEqual(attr.GetTimeSamples(), [12, 24, 36])
+                    self.assertEqual(child_visibility.GetTimeSamples(), [0, 48])
+                    for time, expected in ((0, hidden), (23.999, hidden), (24, visible),
+                                           (35.999, visible), (36, hidden), (48, hidden)):
+                        self.assertEqual(attr.Get(time), expected)
+                        self.assertEqual(child_visibility.Get(time), visible)
+                        self.assertEqual(mesh.ComputeVisibility(time), expected)
+                        self.assertEqual(light.ComputeVisibility(time), expected)
+                    self.assertEqual(stage.GetEndTimeCode(), 48)
+                    self.assertEqual(root.GetCustomDataByKey("gltf:endTimeCode"), 48)
+                    self.assertEqual(stage.GetAttributeAtPath("/Root/Scenes/Scene_0/Node_0.xformOp:translate")
+                                     .Get(24), Gf.Vec3d(2, 0, 0))
+                    stage.SetEditTarget(stage.GetSessionLayer())
+                    self.assertTrue(variant.SetVariantSelection("Animation_1"))
+                    self.assertEqual(attr.GetTimeSamples(), [])
+                    self.assertEqual(attr.Get(24), hidden)
+                    self.assertEqual(child_visibility.GetTimeSamples(), [])
+                    self.assertEqual(child_visibility.Get(24), visible)
+                    self.assertEqual(root.GetCustomDataByKey("gltf:endTimeCode"), 24)
+                    self.assertTrue(variant.SetVariantSelection("Animation_0"))
+                    self.assertEqual(mesh.ComputeVisibility(24), visible)
+
+    def test_animated_visibility_failures_preserve_layer(self):
+        name = "KHR_node_visibility"
+        pointer = "KHR_animation_pointer"
+
+        def fixture(extension, sampler):
+            document, binary = animation_document(extension, [sampler], [(0, None, "pointer")])
+            document["extensionsUsed"] = [name, pointer]
+            document["nodes"][1]["extensions"] = {name: {"visible": False}}
+            document["animations"][0]["channels"] = [visibility_channel(1)]
+            return document, binary
+
+        with tempfile.TemporaryDirectory() as directory:
+            for extension in ("gltf", "glb"):
+                path = pathlib.Path(directory) / f"animated.{extension}"
+                document, binary = fixture(extension, visibility_sampler())
+                write_asset(path, document, binary)
+                layer = Sdf.Layer.FindOrOpen(str(path))
+                before = layer_text(layer)
+                for overrides, message in (({"interpolation": "LINEAR"}, "requires STEP"),
+                                           ({"componentType": 5126}, "visibility output accessor"),
+                                           ({"output": [1]}, "output count"),
+                                           ({"input": [0, 0]}, "strictly increasing")):
+                    with self.subTest(extension=extension, overrides=overrides):
+                        bad, data = fixture(extension, {**visibility_sampler(), **overrides})
+                        write_asset(path, bad, data)
+                        with self.assertRaisesRegex(Tf.ErrorException, message):
+                            layer.Reload(True)
+                        self.assertEqual(layer_text(layer), before)
+                channels = document["animations"][0]["channels"]
+                original = channels[0]
+                for bad, message in (([visibility_channel(99)], "invalid node index"),
+                                     ([visibility_channel("01")], "invalid node index"),
+                                     ([visibility_channel(2)], "missing its KHR_node_visibility object"),
+                                     ([original, original], "same visibility"),
+                                     ([{**original, "sampler": 99}], "sampler index"),
+                                     ([{"sampler": 0, "target": {"path": "pointer"}}], "requires a pointer path"),
+                                     ([{**original, "target": {**original["target"], "node": 1}}], "no target node")):
+                    with self.subTest(extension=extension, message=message):
+                        channels[:] = bad
+                        write_asset(path, document, binary)
+                        with self.assertRaisesRegex(Tf.ErrorException, message):
+                            layer.Reload(True)
+                        self.assertEqual(layer_text(layer), before)
+                unsupported = {"sampler": 0, "target": {"path": "pointer", "extensions": {
+                    pointer: {"pointer": "/nodes/1/translation"}}}}
+                channels[:] = [original, unsupported]
+                write_asset(path, document, binary)
+                self.assertTrue(layer.Reload(True))
+                self.assertEqual(layer_text(layer), before)
+                document["extensionsRequired"] = [pointer]
+                write_asset(path, document, binary)
+                with self.assertRaisesRegex(Tf.ErrorException, "unsupported KHR_animation_pointer target /nodes/1/translation"):
+                    layer.Reload(True)
+                self.assertEqual(layer_text(layer), before)
 
     def test_external_buffers_and_reload(self):
         with tempfile.TemporaryDirectory() as directory:
