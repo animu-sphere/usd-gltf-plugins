@@ -8,6 +8,11 @@ here.
 
 ## [Unreleased]
 
+### Added
+
+- Import `KHR_materials_variants` in glTF and GLB. Choose a material variant or restore the
+  original bindings on `/Root`, independently of the animation selection.
+
 ## [0.10.0] - 2026-11-16
 
 ### Added

@@ -89,6 +89,8 @@ ost plugin view plugins/usdGltfFileFormat $fox --profile lookdev
 ```
 
 Use the timeline to play the clip and the `animation` variant set on `/Root` to choose another.
+For a material switch, open `MaterialsVariantsShoe/glTF-Binary/MaterialsVariantsShoe.glb` the
+same way and select `materialVariant` on `/Root`. `Original` restores the glTF's base material.
 
 To measure import time, peak resident memory, repeated mesh point/topology arrays and KTX2
 conversion, build the current checkout and use its matching USD environment. The measurement

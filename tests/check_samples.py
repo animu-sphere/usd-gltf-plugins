@@ -37,6 +37,7 @@ BASELINE = ROOT / "tests" / "sample_baseline.json"
 DRACO = "KHR_draco_mesh_compression"
 MESHOPT = "EXT_meshopt_compression"
 EMISSIVE_STRENGTH = "KHR_materials_emissive_strength"
+MATERIAL_VARIANTS = "KHR_materials_variants"
 NODE_VISIBILITY = "KHR_node_visibility"
 ANIMATION_POINTER = "KHR_animation_pointer"
 VISIBILITY_POINTER = re.compile(r"/nodes/(0|[1-9][0-9]*)/extensions/KHR_node_visibility/visible")
@@ -44,7 +45,7 @@ IMPLEMENTED_EXTENSIONS = {
     "EXT_texture_webp", DRACO, MESHOPT, "KHR_lights_punctual", "KHR_materials_anisotropy",
     "KHR_materials_clearcoat", EMISSIVE_STRENGTH, "KHR_materials_ior", "KHR_materials_iridescence",
     "KHR_materials_sheen", "KHR_materials_specular", "KHR_materials_transmission", "KHR_materials_unlit",
-    "KHR_materials_volume", "KHR_mesh_quantization", NODE_VISIBILITY, ANIMATION_POINTER,
+    "KHR_materials_volume", MATERIAL_VARIANTS, "KHR_mesh_quantization", NODE_VISIBILITY, ANIMATION_POINTER,
     "KHR_texture_basisu", "KHR_texture_transform",
 }
 PATHS = ("mtlx", "preview")
@@ -412,7 +413,7 @@ def canonical_triangles(triangles):
 
 
 def check_primitive(check, asset, prim, primitive, label):
-    from pxr import UsdGeom, UsdShade
+    from pxr import UsdGeom
 
     mesh = UsdGeom.Mesh(prim)
     attributes = primitive["attributes"]
@@ -451,16 +452,61 @@ def check_primitive(check, asset, prim, primitive, label):
         if colors.shape[1] == 4:
             check.close(primvars.GetPrimvar("gltf_colorAlpha").Get(), colors[:, 3], f"{label} gltf_colorAlpha")
 
-    index = primitive.get("material")
+    return check_material_binding(check, asset, prim, primitive, primitive.get("material"), label)
+
+
+def check_material_binding(check, asset, prim, primitive, index, label):
+    from pxr import UsdGeom, UsdShade
+
     material = asset.json["materials"][index] if index is not None else {}
-    suffix = "VertexColor" if "COLOR_0" in attributes else ""
+    has_colors = "COLOR_0" in primitive["attributes"]
+    suffix = "VertexColor" if has_colors else ""
     name = f"Material_{index}{'_' + suffix if suffix else ''}" if index is not None else f"Default{suffix}"
-    bound = UsdShade.MaterialBindingAPI(prim).GetDirectBinding().GetMaterialPath()
+    bound, _ = UsdShade.MaterialBindingAPI(prim).ComputeBoundMaterial()
     expected = f"/Root/Materials/{name}"
-    check.expect(str(bound) == expected, f"{label} is bound to {bound}, expected {expected}")
-    check.expect(bool(mesh.GetDoubleSidedAttr().Get()) == bool(material.get("doubleSided")),
+    actual = str(bound.GetPath()) if bound else None
+    check.expect(actual == expected, f"{label} is bound to {actual}, expected {expected}")
+    check.expect(bool(UsdGeom.Mesh(prim).GetDoubleSidedAttr().Get()) == bool(material.get("doubleSided")),
                  f"{label} doubleSided differs")
-    return expected, material, "COLOR_0" in attributes
+    return expected, material, has_colors
+
+
+def check_material_variants(check, stage, asset, primitives, materials):
+    from pxr import Usd
+
+    source = asset.json.get("extensions", {}).get(MATERIAL_VARIANTS, {}).get("variants", [])
+    root = stage.GetDefaultPrim()
+    variants = root.GetVariantSet("materialVariant")
+    if not source:
+        check.expect(not root.GetVariantSets().HasVariantSet("materialVariant"),
+                     "materialVariant present without glTF material variants")
+        return
+    names = variants.GetVariantNames()
+    if not check.expect(len(names) == len(source) + 1 and variants.GetVariantSelection() == "Original",
+                        f"materialVariant choices or default are wrong: {names}"):
+        return
+    mappings = []
+    for path, primitive in primitives.items():
+        declared = primitive.get("extensions", {}).get(MATERIAL_VARIANTS, {}).get("mappings", [])
+        mapped = {index: mapping["material"] for mapping in declared for index in mapping["variants"]}
+        mappings.append((path, primitive, mapped))
+    with Usd.EditContext(stage, stage.GetSessionLayer()):
+        for index, variant in enumerate(source):
+            choice = f"Variant_{index}"
+            matches = [name for name in names if name == choice or name.startswith(choice + "_")]
+            if not check.expect(len(matches) == 1 and variants.SetVariantSelection(matches[0]),
+                                f"cannot select glTF material variant {index}: {matches}"):
+                continue
+            actual = root.GetCustomDataByKey("gltf:materialVariantName")
+            check.expect(actual == variant["name"], f"{choice} name is {actual!r}, expected {variant['name']!r}")
+            for path, primitive, mapped in mappings:
+                prim = stage.GetPrimAtPath(path)
+                if check.expect(prim, f"{path} missing after selecting {choice}"):
+                    bound, material, has_colors = check_material_binding(
+                        check, asset, prim, primitive, mapped.get(index, primitive.get("material")),
+                        f"{path} in {choice}")
+                    materials[bound] = (material, has_colors)
+        variants.ClearVariantSelection()
 
 
 def check_morph_targets(check, asset, prim, mesh, primitive, node_index, label):
@@ -1481,6 +1527,7 @@ def check_meaning(stage, asset):
     expected_lights = set()
     lights = document.get("extensions", {}).get("KHR_lights_punctual", {}).get("lights", [])
     materials = {}
+    primitives = {}
     node_paths = {}
     plan = None
     dropped = set()
@@ -1519,6 +1566,7 @@ def check_meaning(stage, asset):
                         check_morph_targets(check, asset, mesh_prim, document["meshes"][mesh_index],
                                             primitive, index, label)
                     materials[bound] = (material, has_colors)
+                    primitives[mesh_path] = primitive
                     if "skin" in node:
                         placements.append((mesh_prim, primitive, index, node["skin"]))
         if "camera" in node:
@@ -1556,6 +1604,7 @@ def check_meaning(stage, asset):
     check_animation(check, stage, asset, node_paths)
     if placements:
         check_skinning(check, stage, asset, plan, node_paths, placements)
+    check_material_variants(check, stage, asset, primitives, materials)
     actual = {str(prim.GetPath()) for prim in stage.Traverse() if prim.IsA(UsdGeom.Mesh)}
     check.expect(actual == expected_paths, f"{len(actual)} meshes authored, expected {len(expected_paths)}")
     cameras = {str(prim.GetPath()) for prim in stage.Traverse() if prim.IsA(UsdGeom.Camera)}

@@ -22,6 +22,7 @@
 #include "pxr/usd/usdGeom/primvarsAPI.h"
 #include "pxr/usd/usdGeom/tokens.h"
 #include "pxr/usd/usdGeom/xform.h"
+#include "pxr/usd/usdShade/materialBindingAPI.h"
 #include "pxr/usd/usdSkel/bindingAPI.h"
 #include "pxr/usd/usdSkel/blendShape.h"
 
@@ -463,7 +464,7 @@ unsupportedPrimitiveContent(const fastgltf::Primitive& primitive)
     default:
         break;
     }
-    return primitive.mappings.empty() ? "" : "KHR_materials_variants is not supported";
+    return {};
 }
 
 bool
@@ -529,9 +530,9 @@ authorMorphTargets(const fastgltf::Asset& asset, const fastgltf::Primitive& prim
 
 bool
 authorPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& primitive,
-                const UsdPrim& parent, std::size_t index, std::string& error,
+                const UsdPrim& parent, std::size_t index, std::size_t meshIndex, std::string& error,
                 const gltfCore::BufferReader& buffers, MaterialAuthor& materials,
-                const gltfCore::DecodedDracoPrimitive* decoded)
+                const gltfCore::DecodedDracoPrimitive* decoded, VariantBindings& variantBindings)
 {
     error = unsupportedPrimitiveContent(primitive);
     if (!error.empty())
@@ -725,13 +726,9 @@ authorPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& primiti
         error = "could not author USD mesh";
         return false;
     }
-    if (primitive.materialIndex && !materials.Bind(*primitive.materialIndex, uvSets.size(),
-                                                   color ? &colors : nullptr, alpha, mesh, error))
+    if (!UsdShadeMaterialBindingAPI::Apply(mesh.GetPrim()))
     {
-        return false;
-    }
-    if (!primitive.materialIndex && !materials.BindDefault(color != nullptr, mesh, error))
-    {
+        error = "could not apply USD material binding API";
         return false;
     }
     // Leave absent normals on morphing meshes to the consumer so they can follow the deformation.
@@ -751,20 +748,66 @@ authorPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& primiti
         error = "could not author USD tangents";
         return false;
     }
-    if (primitive.materialIndex && (!tangent || !normal) && !normals.empty())
+    // Compute these before flipping glTF UVs. A variant can select a normal map on another set.
+    std::map<std::size_t, VtVec4fArray> generatedTangents;
+    const auto prepareBinding =
+        [&](std::optional<std::size_t> materialIndex, MaterialBinding& binding)
     {
-        const auto uvSet = materials.TangentTexCoord(*primitive.materialIndex);
-        if (uvSet && *uvSet < uvSets.size())
+        if (!materials.Prepare(materialIndex, uvSets.size(), color ? &colors : nullptr, alpha,
+                               binding, error))
         {
-            const auto generated =
-                GenerateTangents(points, normals, uvSets[*uvSet], indices, generateNormals);
-            if (!generated.empty() &&
-                !primvars
-                     .CreatePrimvar(TfToken("gltf_generatedTangent"),
-                                    SdfValueTypeNames->Float4Array, UsdGeomTokens->faceVarying)
-                     .Set(generated))
+            return false;
+        }
+        if (materialIndex && (!tangent || !normal) && !normals.empty())
+        {
+            const auto uvSet = materials.TangentTexCoord(*materialIndex);
+            if (uvSet && *uvSet < uvSets.size())
             {
-                error = "could not author generated USD tangents";
+                auto [it, inserted] = generatedTangents.try_emplace(*uvSet);
+                if (inserted)
+                {
+                    it->second =
+                        GenerateTangents(points, normals, uvSets[*uvSet], indices, generateNormals);
+                }
+                binding.generatedTangents = it->second;
+            }
+        }
+        return true;
+    };
+    const std::optional<std::size_t> original =
+        primitive.materialIndex ? std::optional(*primitive.materialIndex) : std::nullopt;
+    MaterialBinding binding;
+    if (!prepareBinding(original, binding))
+    {
+        return false;
+    }
+    if (primitive.mappings.empty())
+    {
+        if (!binding.Author(mesh, error))
+        {
+            return false;
+        }
+    }
+    else
+    {
+        if (primitive.mappings.size() != asset.materialVariants.size())
+        {
+            error = "KHR_materials_variants mappings do not match the root variant count";
+            return false;
+        }
+        auto& bindings = variantBindings[{meshIndex, index}];
+        bindings.emplace(original, std::move(binding));
+        for (const auto material : primitive.mappings)
+        {
+            if (!material)
+            {
+                continue;
+            }
+            auto [it, inserted] = bindings.try_emplace(*material);
+            if (inserted && !prepareBinding(*material, it->second))
+            {
+                error =
+                    "KHR_materials_variants material " + std::to_string(*material) + ": " + error;
                 return false;
             }
         }
@@ -977,7 +1020,8 @@ bindPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& primitive
 bool
 ConvertMesh(const fastgltf::Asset& asset, std::size_t meshIndex, const pxr::UsdStagePtr& stage,
             const pxr::SdfPath& path, const gltfCore::BufferReader& buffers,
-            MaterialAuthor& materials, DecodedMeshes& decodedMeshes)
+            MaterialAuthor& materials, DecodedMeshes& decodedMeshes,
+            VariantBindings& variantBindings)
 {
     using namespace pxr;
     if (meshIndex >= asset.meshes.size())
@@ -1024,8 +1068,9 @@ ConvertMesh(const fastgltf::Asset& asset, std::size_t meshIndex, const pxr::UsdS
         const auto& primitive = source.primitives[i];
         gltfCore::DecodedDracoPrimitive decoded;
         if (!gltfCore::DecodeDracoPrimitive(asset, primitive, buffers, decoded, error) ||
-            !authorPrimitive(asset, primitive, group.GetPrim(), i, error, buffers, materials,
-                             decoded.indices.empty() ? nullptr : &decoded))
+            !authorPrimitive(asset, primitive, group.GetPrim(), i, meshIndex, error, buffers,
+                             materials, decoded.indices.empty() ? nullptr : &decoded,
+                             variantBindings))
         {
             TF_RUNTIME_ERROR("glTF mesh %zu primitive %zu: %s", meshIndex, i, error.c_str());
             return false;

@@ -497,6 +497,124 @@ describeMalformedMeshopt(const simdjson::dom::element& root)
     return {};
 }
 
+// Fastgltf stores one material per variant, so repeated indices would silently overwrite one
+// another. Check the source mappings, including those outside the selected scene.
+std::string
+describeMalformedMaterialVariants(const simdjson::dom::element& root)
+{
+    using namespace simdjson;
+    constexpr auto name = fastgltf::extensions::KHR_materials_variants;
+    const auto declaredIn = [&](std::string_view list)
+    {
+        dom::array extensions;
+        if (root[list].get_array().get(extensions) == SUCCESS)
+        {
+            for (const auto extension : extensions)
+            {
+                std::string_view value;
+                if (extension.get_string().get(value) == SUCCESS && value == name)
+                {
+                    return true;
+                }
+            }
+        }
+        return false;
+    };
+    const auto extension = root["extensions"][name];
+    const bool declared = declaredIn("extensionsUsed");
+    dom::array variants;
+    std::size_t variantCount = 0;
+    if (extension.error() == SUCCESS || declared || declaredIn("extensionsRequired"))
+    {
+        if (!declared)
+        {
+            return "KHR_materials_variants must be declared in extensionsUsed";
+        }
+        if (extension["variants"].get_array().get(variants) != SUCCESS || variants.size() == 0)
+        {
+            return "KHR_materials_variants requires a nonempty root variants array";
+        }
+        variantCount = variants.size();
+        for (const auto variant : variants)
+        {
+            if (!variant["name"].is_string())
+            {
+                return "KHR_materials_variants variant name must be a string";
+            }
+        }
+    }
+    dom::array meshes, materials;
+    if (root["meshes"].get_array().get(meshes) != SUCCESS)
+    {
+        return {};
+    }
+    const std::size_t materialCount =
+        root["materials"].get_array().get(materials) == SUCCESS ? materials.size() : 0;
+    std::size_t meshIndex = 0;
+    for (const auto mesh : meshes)
+    {
+        dom::array primitives;
+        if (mesh["primitives"].get_array().get(primitives) == SUCCESS)
+        {
+            std::size_t primitiveIndex = 0;
+            for (const auto primitive : primitives)
+            {
+                const auto mappingExtension = primitive["extensions"][name];
+                if (mappingExtension.error() == SUCCESS)
+                {
+                    const auto fail = [&](std::string_view reason)
+                    {
+                        return "KHR_materials_variants mesh " + std::to_string(meshIndex) +
+                               " primitive " + std::to_string(primitiveIndex) + ": " +
+                               std::string(reason);
+                    };
+                    if (variantCount == 0)
+                    {
+                        return fail("requires variants declared at the glTF root");
+                    }
+                    dom::array mappings;
+                    if (mappingExtension["mappings"].get_array().get(mappings) != SUCCESS ||
+                        mappings.size() == 0)
+                    {
+                        return fail("requires a nonempty mappings array");
+                    }
+                    std::unordered_set<std::uint64_t> seen;
+                    for (const auto mapping : mappings)
+                    {
+                        std::uint64_t material;
+                        dom::array indices;
+                        if (mapping["material"].get_uint64().get(material) != SUCCESS ||
+                            material >= materialCount)
+                        {
+                            return fail("mapping material index is invalid or out of range");
+                        }
+                        if (mapping["variants"].get_array().get(indices) != SUCCESS ||
+                            indices.size() == 0)
+                        {
+                            return fail("mapping requires a nonempty variants array");
+                        }
+                        for (const auto index : indices)
+                        {
+                            std::uint64_t value;
+                            if (index.get_uint64().get(value) != SUCCESS || value >= variantCount)
+                            {
+                                return fail("mapping variant index is invalid or out of range");
+                            }
+                            if (!seen.insert(value).second)
+                            {
+                                return fail("variant index occurs more than once");
+                            }
+                        }
+                    }
+                }
+                ++primitiveIndex;
+            }
+        }
+        ++meshIndex;
+    }
+    return {};
+}
+
 // Fastgltf keeps defaults for some missing material components and skips some invalid fields.
 std::string
 describeMalformedCheckedExtensions(const std::byte* bytes, std::size_t size)
@@ -510,6 +628,10 @@ describeMalformedCheckedExtensions(const std::byte* bytes, std::size_t size)
         return {};
     }
     if (auto description = describeMalformedMeshopt(root); !description.empty())
+    {
+        return description;
+    }
+    if (auto description = describeMalformedMaterialVariants(root); !description.empty())
     {
         return description;
     }
@@ -625,6 +747,7 @@ IsImplementedExtension(std::string_view extension)
            extension == fastgltf::extensions::KHR_materials_specular ||
            extension == fastgltf::extensions::KHR_materials_transmission ||
            extension == fastgltf::extensions::KHR_materials_unlit ||
+           extension == fastgltf::extensions::KHR_materials_variants ||
            extension == fastgltf::extensions::KHR_materials_volume ||
            extension == fastgltf::extensions::KHR_mesh_quantization ||
            extension == fastgltf::extensions::KHR_node_visibility ||
@@ -656,9 +779,10 @@ Parse(const std::byte* bytes, std::size_t size, std::string& error)
         fastgltf::Extensions::KHR_materials_ior | fastgltf::Extensions::KHR_materials_iridescence |
         fastgltf::Extensions::KHR_materials_sheen | fastgltf::Extensions::KHR_materials_specular |
         fastgltf::Extensions::KHR_materials_transmission |
-        fastgltf::Extensions::KHR_materials_unlit | fastgltf::Extensions::KHR_materials_volume |
-        fastgltf::Extensions::KHR_mesh_quantization | fastgltf::Extensions::KHR_node_visibility |
-        fastgltf::Extensions::KHR_texture_basisu | fastgltf::Extensions::KHR_texture_transform);
+        fastgltf::Extensions::KHR_materials_unlit | fastgltf::Extensions::KHR_materials_variants |
+        fastgltf::Extensions::KHR_materials_volume | fastgltf::Extensions::KHR_mesh_quantization |
+        fastgltf::Extensions::KHR_node_visibility | fastgltf::Extensions::KHR_texture_basisu |
+        fastgltf::Extensions::KHR_texture_transform);
     auto asset = parser.loadGltf(data.get(), {}, fastgltf::Options::None);
     auto result = asset.error();
     if (result == fastgltf::Error::None &&
@@ -693,7 +817,8 @@ Parse(const std::byte* bytes, std::size_t size, std::string& error)
     {
         error = describeRequiredExtensions(bytes, size);
     }
-    if (result == fastgltf::Error::InvalidGltf || result == fastgltf::Error::InvalidJson)
+    if (result == fastgltf::Error::InvalidGltf || result == fastgltf::Error::InvalidJson ||
+        result == fastgltf::Error::ValueOutOfRange)
     {
         error = describeMalformedNodeVisibility(bytes, size);
         if (error.empty())

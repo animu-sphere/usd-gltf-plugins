@@ -719,6 +719,46 @@ def animation_document(extension, samplers, channels, more_animations=(), nodes=
     return document, binary
 
 
+MATERIAL_VARIANTS = "KHR_materials_variants"
+
+
+def material_variants_document(extension):
+    tracks = [{"input": [0, 1], "output": [0, 0, 0, 2, 0, 0]}]
+    second = [{"input": [0, 1], "output": [0, 0, 0, 0, 3, 0]}]
+    document, binary = animation_document("glb", tracks, [(0, 0, "translation")],
+                                          [(second, [(0, 0, "translation")])],
+                                          nodes=[{"mesh": 0}, {"mesh": 0}])
+    document["extensionsUsed"] = [MATERIAL_VARIANTS]
+    document["extensions"] = {MATERIAL_VARIANTS: {
+        "variants": [{"name": name} for name in ("Red Blue", "Red_Blue", "Original", "")]}}
+    document["materials"] = [
+        {"alphaMode": "BLEND", "pbrMetallicRoughness": {"baseColorFactor": [1, 0.5, 1, 0.5]}},
+        {"doubleSided": True, "alphaMode": "BLEND", "normalTexture": {"index": 0},
+         "pbrMetallicRoughness": {"baseColorFactor": [0.5, 1, 1, 0.25]}},
+        {"normalTexture": {"index": 0, "texCoord": 1}},
+        {},
+    ]
+    mapped, default = document["meshes"][0]["primitives"]
+    mapped["material"] = 0
+    mapped["extensions"] = {MATERIAL_VARIANTS: {"mappings": [
+        {"material": 1, "variants": [0, 2]}, {"material": 2, "variants": [1]}]}}
+    default["extensions"] = {MATERIAL_VARIANTS: {"mappings": [{"material": 3, "variants": [2]}]}}
+    document["meshes"][0]["primitives"].append({"attributes": {"POSITION": 0}, "material": 0})
+    for name, kind, values in (
+        ("COLOR_0", "VEC4", [0.5, 0.25, 1, 0.5] * 3),
+        ("TEXCOORD_0", "VEC2", [0, 0, 1, 0, 0, 1]),
+        ("TEXCOORD_1", "VEC2", [0, 0, 0, 1, 1, 0]),
+    ):
+        binary = append_view(document, binary, extension, struct.pack(f"<{len(values)}f", *values))
+        mapped["attributes"][name] = len(document["accessors"])
+        document["accessors"].append({"bufferView": len(document["bufferViews"]) - 1,
+                                      "componentType": 5126, "count": 3, "type": kind})
+    binary = append_view(document, binary, extension, PNG)
+    document["images"] = [{"bufferView": len(document["bufferViews"]) - 1, "mimeType": "image/png"}]
+    document["textures"] = [{"source": 0}]
+    return document, binary if extension == "glb" else None
+
+
 def visibility_channel(node, sampler=0):
     return {"sampler": sampler, "target": {"path": "pointer", "extensions": {
         "KHR_animation_pointer": {"pointer": f"/nodes/{node}/extensions/KHR_node_visibility/visible"},
@@ -937,6 +977,123 @@ def topology_document(extension, mode, indices, external=False, normal=False, in
 
 
 class FileFormatTest(unittest.TestCase):
+    def test_material_variants(self):
+        cases = [
+            ("Original", None, 0, "Default", False, (0.5, 0.125, 1), 0.25, None),
+            ("Variant_0_Red_Blue", "Red Blue", 1, "Default", True, (0.25, 0.25, 1), 0.125, 0),
+            ("Variant_1_Red_Blue", "Red_Blue", 2, "Default", False, None, None, 1),
+            ("Variant_2_Original", "Original", 1, "Material_3", True, (0.25, 0.25, 1), 0.125, 0),
+            ("Variant_3", "", 0, "Default", False, (0.5, 0.125, 1), 0.25, None),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            for extension in ("gltf", "glb"):
+                with self.subTest(extension=extension):
+                    path = pathlib.Path(directory) / f"variants.{extension}"
+                    document, binary = material_variants_document(extension)
+                    if extension == "glb":
+                        document["extensionsRequired"] = [MATERIAL_VARIANTS]
+                    write_asset(path, document, binary)
+                    stage = Usd.Stage.Open(str(path))
+                    root = stage.GetDefaultPrim()
+                    variants = root.GetVariantSet("materialVariant")
+                    animations = root.GetVariantSet("animation")
+                    self.assertEqual(variants.GetVariantNames(), [case[0] for case in cases])
+                    self.assertEqual(variants.GetVariantSelection(), "Original")
+                    stage.SetEditTarget(stage.GetSessionLayer())
+                    self.assertTrue(animations.SetVariantSelection("Animation_1"))
+                    for selection, label, index, default, two_sided, color, alpha, axis in cases:
+                        self.assertTrue(variants.SetVariantSelection(selection))
+                        self.assertEqual(root.GetCustomDataByKey("gltf:materialVariantName"), label)
+                        self.assertEqual(animations.GetVariantSelection(), "Animation_1")
+                        self.assertEqual(stage.GetAttributeAtPath(
+                            "/Root/Scenes/Scene_0/Node_0.xformOp:translate").Get(24), Gf.Vec3d(0, 3, 0))
+                        for placement in (0, 1):
+                            group = f"/Root/Scenes/Scene_0/Node_{placement}/Mesh_0"
+                            for primitive, material in enumerate((f"Material_{index}_VertexColor", default,
+                                                                  "Material_0")):
+                                mesh = UsdGeom.Mesh.Get(stage, f"{group}/Primitive_{primitive}")
+                                bound, _ = UsdShade.MaterialBindingAPI(mesh).ComputeBoundMaterial()
+                                self.assertEqual(str(bound.GetPath()), f"/Root/Materials/{material}")
+                                self.assertEqual(mesh.GetDoubleSidedAttr().Get(), primitive == 0 and two_sided)
+                            mesh = UsdGeom.Mesh.Get(stage, f"{group}/Primitive_0")
+                            primvars = UsdGeom.PrimvarsAPI(mesh)
+                            colors = primvars.GetPrimvar("gltf_previewBaseColor")
+                            opacity = primvars.GetPrimvar("gltf_previewAlpha")
+                            tangents = primvars.GetPrimvar("gltf_generatedTangent")
+                            self.assertEqual(list(colors.Get()) if colors else None,
+                                             None if color is None else [Gf.Vec3f(*color)] * 3)
+                            self.assertEqual(list(opacity.Get()) if opacity else None,
+                                             None if alpha is None else [alpha] * 3)
+                            if axis is None:
+                                self.assertFalse(tangents)
+                            else:
+                                self.assertEqual(len(tangents.Get()), 3)
+                                for tangent in tangents.Get():
+                                    self.assertAlmostEqual(abs(tangent[axis]), 1)
+                                    self.assertAlmostEqual(tangent[1 - axis], 0)
+
+                    self.assertTrue(variants.SetVariantSelection(cases[1][0]))
+                    self.assertTrue(animations.SetVariantSelection("Animation_0"))
+                    mesh_path = "/Root/Scenes/Scene_0/Node_0/Mesh_0/Primitive_0"
+                    self.assertEqual(variants.GetVariantSelection(), cases[1][0])
+                    self.assertTrue(UsdGeom.Mesh.Get(stage, mesh_path).GetDoubleSidedAttr().Get())
+
+                    host = Usd.Stage.CreateInMemory()
+                    for name, index in (("A", 1), ("B", 0)):
+                        ref = host.OverridePrim(f"/{name}")
+                        self.assertTrue(ref.GetReferences().AddReference(str(path)))
+                        if index:
+                            self.assertTrue(ref.GetVariantSet("materialVariant").SetVariantSelection(cases[1][0]))
+                    for name, index in (("A", 1), ("B", 0)):
+                        prim = host.GetPrimAtPath(f"/{name}/Scenes/Scene_0/Node_1/Mesh_0/Primitive_0")
+                        bound, _ = UsdShade.MaterialBindingAPI(prim).ComputeBoundMaterial()
+                        self.assertEqual(str(bound.GetPath()), f"/{name}/Materials/Material_{index}_VertexColor")
+
+    def test_invalid_material_variants_preserve_layer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "variants.glb"
+            write_asset(path, *material_variants_document("glb"))
+            stage = Usd.Stage.Open(str(path))
+            layer = stage.GetRootLayer()
+            before = layer_text(layer)
+            stage.SetEditTarget(stage.GetSessionLayer())
+            variants = stage.GetDefaultPrim().GetVariantSet("materialVariant")
+            self.assertTrue(variants.SetVariantSelection("Variant_1_Red_Blue"))
+            for case, diagnostic in (
+                ("undeclared", "declared in extensionsUsed"), ("missing root", "root variants array"),
+                ("invalid name", "name must be a string"), ("empty mappings", "nonempty mappings array"),
+                ("material range", "material index is invalid or out of range"),
+                ("variant range", "variant index is invalid or out of range"),
+                ("empty variants", "nonempty variants array"), ("duplicate", "occurs more than once"),
+                ("missing UV", "texture coordinate set the primitive does not have"),
+            ):
+                with self.subTest(case=case):
+                    document, binary = material_variants_document("glb")
+                    mappings = document["meshes"][0]["primitives"][0]["extensions"][MATERIAL_VARIANTS]["mappings"]
+                    if case == "undeclared":
+                        del document["extensionsUsed"]
+                    elif case == "missing root":
+                        del document["extensions"]
+                    elif case == "invalid name":
+                        document["extensions"][MATERIAL_VARIANTS]["variants"][0]["name"] = 1
+                    elif case == "empty mappings":
+                        mappings.clear()
+                    elif case == "material range":
+                        mappings[0]["material"] = 8
+                    elif case == "variant range":
+                        mappings[0]["variants"] = [4]
+                    elif case == "empty variants":
+                        mappings[0]["variants"] = []
+                    elif case == "duplicate":
+                        mappings[1]["variants"].append(0)
+                    elif case == "missing UV":
+                        document["materials"][1]["normalTexture"]["texCoord"] = 2
+                    write_asset(path, document, binary)
+                    with self.assertRaisesRegex(Tf.ErrorException, f"{MATERIAL_VARIANTS}.*{diagnostic}"):
+                        layer.Reload(True)
+                    self.assertEqual(layer_text(layer), before)
+                    self.assertEqual(variants.GetVariantSelection(), "Variant_1_Red_Blue")
+
     def test_meshopt_buffer_views(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
