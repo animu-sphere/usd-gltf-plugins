@@ -10,7 +10,7 @@ Prioritize extensions by actual asset demand, the size and license of their depe
 cost of distributing them on every platform. Begin USD-to-glTF export only after defining a separate
 specification and quality goals, without complicating the importer's verification or ABI boundary.
 
-- Further material extensions after diffuse transmission, one pull request each after investigating
+- Further material extensions after dispersion, one pull request each after investigating
   renderer representation.
 - Evaluate `KHR_meshopt_compression` once its specification is ratified, including its additional
   bitstream and filter requirements.
@@ -31,3 +31,6 @@ Record the investigation and outcome in an ADR before relying on these:
   is authored until then.
 - Resource resolution through custom asset resolvers and shared parent directories, with its
   security model. [ADR 0025](../adr/0025-packaged-sources.md) decides only sources inside packages.
+- Importing `KHR_materials_diffuse_transmission`, which
+  [ADR 0039](../adr/0039-diffuse-transmission.md) keeps unsupported until MaterialX `gltf_pbr` has an
+  input for it, or the ratified specification changes what these shaders would need.

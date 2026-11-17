@@ -4807,6 +4807,65 @@ assert layer.ExportToString() == Path(sys.argv[3]).read_text(encoding="utf-8")
                             layer.Reload(True)
                         self.assertEqual(layer_text(layer), before)
 
+    def test_diffuse_transmission_is_unsupported(self):
+        def described(stage, path):
+            # Each authored attribute below the material, with values and connections relative to it.
+            root = Sdf.Path(path)
+            result = {}
+            for prim in Usd.PrimRange(stage.GetPrimAtPath(path)):
+                for attribute in prim.GetAuthoredAttributes():
+                    key = str(attribute.GetPath().MakeRelativePath(root))
+                    result[key] = (attribute.Get(), [str(source.MakeRelativePath(root))
+                                                     for source in attribute.GetConnections()])
+            return result
+
+        extension_name = "KHR_materials_diffuse_transmission"
+        # The extension's textures name an image that does not exist, which must not be resolved.
+        diffuse_transmission = {
+            "diffuseTransmissionFactor": 0.75, "diffuseTransmissionTexture": {"index": 1},
+            "diffuseTransmissionColorFactor": [1, 0.5, 0.25],
+            "diffuseTransmissionColorTexture": {"index": 1, "texCoord": 1},
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            for extension, required in itertools.product(("gltf", "glb"), (False, True)):
+                with self.subTest(extension=extension, required=required):
+                    name = "required" if required else "optional"
+                    path = pathlib.Path(directory) / f"diffuse_transmission_{name}.{extension}"
+                    document, binary = textured_document(extension, None, PNG)
+                    document["images"].append({"uri": "missing.png"})
+                    document["textures"].append({"source": 1})
+                    document["extensionsUsed"] = [extension_name]
+                    if required:
+                        document["extensionsRequired"] = [extension_name]
+                    lit = {"pbrMetallicRoughness": {"baseColorTexture": {"index": 0},
+                                                    "baseColorFactor": [0.2, 0.4, 0.6, 1],
+                                                    "metallicFactor": 0, "roughnessFactor": 0.5}}
+                    document["materials"] = [{**lit, "extensions": {extension_name: diffuse_transmission}}, lit]
+                    document["meshes"][0]["primitives"][1]["material"] = 1
+                    write_asset(path, document, binary)
+                    if required:
+                        with self.assertRaisesRegex(Tf.ErrorException,
+                                                    f"unsupported required extensions: {extension_name}"):
+                            Usd.Stage.Open(str(path))
+                        continue
+
+                    result = subprocess.run(
+                        [sys.executable, "-c",
+                         "from pxr import Usd; import sys; assert Usd.Stage.Open(sys.argv[1])", str(path)],
+                        capture_output=True, text=True, check=False,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIn(f"glTF optional extension '{extension_name}' is not supported", result.stderr)
+                    self.assertNotIn("missing.png", result.stderr)
+
+                    # The material is the one a client without the extension draws: its base alone,
+                    # in both networks, as the same material without the extension.
+                    stage = Usd.Stage.Open(str(path))
+                    material = described(stage, "/Root/Materials/Material_0")
+                    self.assertIn("mtlx/surface.inputs:base_color", material)
+                    self.assertEqual(material, described(stage, "/Root/Materials/Material_1"))
+                    self.assertNotIn("missing.png", layer_text(stage.GetRootLayer()))
+
     def test_transmission_materials(self):
         def open_with_stderr(path):
             return subprocess.run(
