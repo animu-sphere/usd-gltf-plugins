@@ -340,6 +340,23 @@ describeMalformedCheckedExtension(const simdjson::dom::element& material)
             return "KHR_materials_emissive_strength cannot be combined with KHR_materials_unlit";
         }
     }
+    simdjson::dom::element dispersion;
+    if (extensions[fastgltf::extensions::KHR_materials_dispersion].get(dispersion) ==
+        simdjson::SUCCESS)
+    {
+        if (auto description = describeMalformedMaterialExtension(
+                fastgltf::extensions::KHR_materials_dispersion, dispersion, {"dispersion"}, {});
+            !description.empty())
+        {
+            return description;
+        }
+        // fastgltf can round tiny negative values to zero, so check the JSON number.
+        double value = 0.0;
+        if (dispersion["dispersion"].get_double().get(value) == simdjson::SUCCESS && value < 0)
+        {
+            return "KHR_materials_dispersion must be non-negative";
+        }
+    }
     simdjson::dom::element anisotropy;
     if (material["extensions"][fastgltf::extensions::KHR_materials_anisotropy].get(anisotropy) ==
         simdjson::SUCCESS)
@@ -740,6 +757,7 @@ IsImplementedExtension(std::string_view extension)
            extension == fastgltf::extensions::KHR_lights_punctual ||
            extension == fastgltf::extensions::KHR_materials_anisotropy ||
            extension == fastgltf::extensions::KHR_materials_clearcoat ||
+           extension == fastgltf::extensions::KHR_materials_dispersion ||
            extension == fastgltf::extensions::KHR_materials_emissive_strength ||
            extension == fastgltf::extensions::KHR_materials_ior ||
            extension == fastgltf::extensions::KHR_materials_iridescence ||
@@ -775,6 +793,7 @@ Parse(const std::byte* bytes, std::size_t size, std::string& error)
         fastgltf::Extensions::KHR_draco_mesh_compression |
         fastgltf::Extensions::KHR_lights_punctual | fastgltf::Extensions::KHR_materials_anisotropy |
         fastgltf::Extensions::KHR_materials_clearcoat |
+        fastgltf::Extensions::KHR_materials_dispersion |
         fastgltf::Extensions::KHR_materials_emissive_strength |
         fastgltf::Extensions::KHR_materials_ior | fastgltf::Extensions::KHR_materials_iridescence |
         fastgltf::Extensions::KHR_materials_sheen | fastgltf::Extensions::KHR_materials_specular |
