@@ -4,9 +4,17 @@ Unfinished work only; see the [task lifecycle](README.md#task-lifecycle). Tasks 
 implementation order, which investigation may change. Each feature follows the
 [contract for adding a feature](../design/IMPLEMENTATION_POLICY.md#adding-a-gltf-feature).
 
-## v0.12.0 — Dispersion
+## v0.13.0 — Core geometry gaps
+
+- Read sparse accessors wherever the importer reads accessor data, including base vertex
+  attributes, indices, skin data and animation, not only morph deltas and weight outputs. Verify
+  against SimpleSparseAccessor.
+- Evaluate morph target TANGENT deltas. UsdSkel blend shapes carry only point and normal offsets,
+  so record in an ADR how a retained or generated tangent relates to a morphed mesh, then import
+  AnimatedMorphCube by that decision.
 
 ### Release criteria
 
-- The supported dispersion behavior and shader limits are documented and verified.
+- No Khronos sample file is rejected for sparse accessors or morph target TANGENT deltas, and the
+  behavior and its limits are documented and verified.
 - The [release gate](README.md#release-gate) is satisfied.

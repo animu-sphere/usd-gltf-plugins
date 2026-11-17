@@ -8,6 +8,8 @@ here.
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-11-17
+
 ### Added
 
 - Import `KHR_materials_dispersion` as the MaterialX `gltf_pbr` dispersion of a material with a

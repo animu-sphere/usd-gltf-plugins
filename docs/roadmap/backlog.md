@@ -10,7 +10,7 @@ Prioritize extensions by actual asset demand, the size and license of their depe
 cost of distributing them on every platform. Begin USD-to-glTF export only after defining a separate
 specification and quality goals, without complicating the importer's verification or ABI boundary.
 
-- Further material extensions after dispersion, one pull request each after investigating
+- Further material extensions, one pull request each after investigating
   renderer representation.
 - Evaluate `KHR_meshopt_compression` once its specification is ratified, including its additional
   bitstream and filter requirements.
