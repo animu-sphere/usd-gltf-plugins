@@ -70,6 +70,7 @@ available when the decision was made; they are not progress reports:
 - [0037: Animated node visibility](adr/0037-animated-node-visibility.md)
 - [0038: Material variants](adr/0038-material-variants.md)
 - [0039: Diffuse transmission](adr/0039-diffuse-transmission.md)
+- [0040: Dispersion](adr/0040-dispersion.md)
 
 New decisions go in `docs/adr/NNNN-title.md`.
 

@@ -5368,6 +5368,126 @@ assert layer.ExportToString() == Path(sys.argv[3]).read_text(encoding="utf-8")
                             layer.Reload(True)
                         self.assertEqual(layer_text(layer), before)
 
+    def test_dispersion_materials(self):
+        def open_with_stderr(path):
+            return subprocess.run(
+                [sys.executable, "-c",
+                 "from pxr import Usd; import sys; assert Usd.Stage.Open(sys.argv[1])", str(path)],
+                capture_output=True, text=True, check=False,
+            )
+
+        ignored = "KHR_materials_dispersion is ignored, because the material is unlit"
+        preview_warning = "UsdPreviewSurface has no dispersion; its network ignores KHR_materials_dispersion"
+        transmits = {"KHR_materials_transmission": {"transmissionFactor": 1}}
+        volume = {**transmits, "KHR_materials_volume": {"thicknessFactor": 0.5}}
+        # The dispersion authored in MaterialX, or None where there is none.
+        cases = (
+            ("crown glass", {"dispersion": 0.33}, volume, 0.33),
+            ("exaggerated", {"dispersion": 2.04}, volume, 2.04),
+            ("with ior", {"dispersion": 0.5}, {**volume, "KHR_materials_ior": {"ior": 2.4}}, 0.5),
+            ("zero", {"dispersion": 0}, volume, None),
+            ("empty", {}, volume, None),
+            # glTF disperses only light that a volume refracts.
+            ("thin", {"dispersion": 1}, transmits, None),
+            ("zero thickness", {"dispersion": 1},
+             {**transmits, "KHR_materials_volume": {"thicknessFactor": 0}}, None),
+            ("no transmission", {"dispersion": 1}, {"KHR_materials_volume": {"thicknessFactor": 0.5}}, None),
+            ("unlit", {"dispersion": 1}, {**volume, "KHR_materials_unlit": {}}, None),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            for extension in ("gltf", "glb"):
+                for (case, dispersion, others, expected), required in itertools.product(cases, (False, True)):
+                    with self.subTest(extension=extension, case=case, required=required):
+                        name = f"{case.replace(' ', '_')}_{'required' if required else 'optional'}"
+                        path = pathlib.Path(directory) / f"dispersion_{name}.{extension}"
+                        document, binary = mesh_document(extension)
+                        used = ["KHR_materials_dispersion", *others]
+                        document["extensionsUsed"] = used
+                        if required:
+                            document["extensionsRequired"] = used
+                        document["meshes"][0]["primitives"][0]["material"] = 0
+                        document["meshes"][0]["primitives"][1]["material"] = 1
+                        lit = {"pbrMetallicRoughness": {"baseColorFactor": [0.2, 0.4, 0.6, 1],
+                                                        "metallicFactor": 0, "roughnessFactor": 0.5}}
+                        extensions = {"KHR_materials_dispersion": dispersion, **others}
+                        document["materials"] = [{**lit, "extensions": extensions},
+                                                 {**lit, "extensions": dict(others)}]
+                        write_asset(path, document, binary)
+                        result = open_with_stderr(path)
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertNotIn("'KHR_materials_dispersion' is not supported", result.stderr)
+                        self.assertEqual(ignored in result.stderr, case == "unlit", result.stderr)
+                        self.assertEqual(preview_warning in result.stderr, expected is not None, result.stderr)
+
+                        stage = Usd.Stage.Open(str(path))
+                        material = UsdShade.Material.Get(stage, "/Root/Materials/Material_0")
+                        preview = UsdShade.Shader.Get(stage, "/Root/Materials/Material_0/preview/surface")
+                        mtlx = UsdShade.Shader.Get(stage, "/Root/Materials/Material_0/mtlx/surface")
+                        self.assert_material_nodegraphs(material, preview, mtlx)
+                        if expected is None:
+                            self.assertFalse(mtlx.GetInput("dispersion"))
+                        else:
+                            self.assertAlmostEqual(mtlx.GetInput("dispersion").Get(), expected, places=6)
+                        # UsdPreviewSurface has no dispersion.
+                        self.assertFalse(preview.GetInput("dispersion"))
+                        # The dispersion changes nothing else: both materials author the same inputs
+                        # apart from it.
+                        plain_mtlx = UsdShade.Shader.Get(stage, "/Root/Materials/Material_1/mtlx/surface")
+                        self.assertFalse(plain_mtlx.GetInput("dispersion"))
+                        self.assertEqual(
+                            {i.GetBaseName(): i.Get() for i in mtlx.GetInputs() if i.GetBaseName() != "dispersion"},
+                            {i.GetBaseName(): i.Get() for i in plain_mtlx.GetInputs()})
+                        if case == "with ior":
+                            self.assertAlmostEqual(mtlx.GetInput("ior").Get(), 2.4, places=6)
+
+    def test_dispersion_failures_preserve_layer(self):
+        wrong_type = "KHR_materials_dispersion has a field of the wrong type"
+        negative = "KHR_materials_dispersion must be non-negative"
+        cases = (
+            ("not an object", [1], "KHR_materials_dispersion is not an object"),
+            ("string", {"dispersion": "1"}, wrong_type),
+            ("array", {"dispersion": [1]}, wrong_type),
+            ("overflow", {"dispersion": 1e39}, "KHR_materials_dispersion is out of range"),
+            ("negative", {"dispersion": -0.5}, negative),
+            # A float would round this to 0.
+            ("tiny negative", {"dispersion": -1e-50}, negative),
+            # Ignoring the extension does not make an invalid value valid.
+            ("thin negative", {"dispersion": -1}, negative),
+            ("unlit negative", {"dispersion": -1}, negative),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            for extension in ("gltf", "glb"):
+                path = pathlib.Path(directory) / ("dispersion." + extension)
+                volume = {"KHR_materials_transmission": {"transmissionFactor": 1},
+                          "KHR_materials_volume": {"thicknessFactor": 0.5}}
+                used = ["KHR_materials_dispersion", "KHR_materials_transmission", "KHR_materials_volume"]
+                document, binary = mesh_document(extension)
+                document["extensionsUsed"] = used
+                document["meshes"][0]["primitives"][0]["material"] = 0
+                document["materials"] = [{"extensions": {**volume, "KHR_materials_dispersion": {"dispersion": 0.5}}}]
+                write_asset(path, document, binary)
+                stage = Usd.Stage.Open(str(path))
+                layer = stage.GetRootLayer()
+                before = layer_text(layer)
+                mtlx = UsdShade.Shader.Get(stage, "/Root/Materials/Material_0/mtlx/surface")
+                self.assertAlmostEqual(mtlx.GetInput("dispersion").Get(), 0.5, places=6)
+                for case, value, message in cases:
+                    with self.subTest(extension=extension, case=case):
+                        invalid, invalid_binary = mesh_document(extension)
+                        invalid["extensionsUsed"] = list(used)
+                        invalid["meshes"][0]["primitives"][0]["material"] = 0
+                        invalid["meshes"][0]["primitives"][1]["material"] = 1
+                        extensions = {} if case.startswith("thin") else dict(volume)
+                        extensions["KHR_materials_dispersion"] = value
+                        if case.startswith("unlit"):
+                            invalid["extensionsUsed"].append("KHR_materials_unlit")
+                            extensions["KHR_materials_unlit"] = {}
+                        invalid["materials"] = [{}, {"extensions": extensions}]
+                        write_asset(path, invalid, invalid_binary)
+                        with self.assertRaisesRegex(Tf.ErrorException, message):
+                            layer.Reload(True)
+                        self.assertEqual(layer_text(layer), before)
+
     def test_specular_materials(self):
         def open_with_stderr(path):
             return subprocess.run(

@@ -83,6 +83,8 @@ struct PbrFactors
     float thickness;
     float attenuationDistance;
     GfVec3f attenuationColor;
+    // KHR_materials_dispersion, 20 over the Abbe number; 0, its default, is none.
+    float dispersion;
     // KHR_materials_specular, 1 and white without it, which change nothing.
     float specular;
     GfVec3f specularColor;
@@ -136,6 +138,7 @@ pbrFactors(const fastgltf::Material& source)
                 ? GfVec3f(source.volume->attenuationColor[0], source.volume->attenuationColor[1],
                           source.volume->attenuationColor[2])
                 : GfVec3f(1),
+            float(source.dispersion),
             source.specular ? float(source.specular->specularFactor) : 1.0f,
             source.specular ? GfVec3f(source.specular->specularColorFactor[0],
                                       source.specular->specularColorFactor[1],
@@ -176,6 +179,13 @@ bool
 hasVolume(const PbrFactors& factors)
 {
     return hasTransmission(factors) && factors.thickness > 0.0f;
+}
+
+// glTF disperses only the light that a volume refracts, so a thin material has no use for it.
+bool
+hasDispersion(const PbrFactors& factors)
+{
+    return hasVolume(factors) && factors.dispersion > 0.0f;
 }
 
 // glTF disables the sheen layer at a black color factor, and an unlit material reflects nothing.
@@ -1068,6 +1078,8 @@ authorMtlx(const UsdShadeMaterial& material, const PbrFactors& factors, bool ver
     // distance attenuates nothing, and is left out, because gltf_pbr has no default for it.
     const bool volume = hasVolume(factors);
     const bool attenuation = volume && std::isfinite(factors.attenuationDistance);
+    // gltf_pbr's dispersion is glTF's, 20 over the Abbe number.
+    const bool dispersion = hasDispersion(factors);
     const auto attenuationDistance =
         attenuation ? surface.CreateInput(TfToken("attenuation_distance"), SdfValueTypeNames->Float)
                     : UsdShadeInput();
@@ -1133,6 +1145,8 @@ authorMtlx(const UsdShadeMaterial& material, const PbrFactors& factors, bool ver
              attenuationDistance.Set(factors.attenuationDistance) && attenuationColor &&
              attenuationColor.GetAttr().SetVariability(SdfVariabilityUniform) &&
              attenuationColor.Set(factors.attenuationColor))) &&
+           (!dispersion ||
+            setInput(surface, "dispersion", SdfValueTypeNames->Float, factors.dispersion)) &&
            alphaMode && alphaMode.GetAttr().SetVariability(SdfVariabilityUniform) &&
            alphaMode.Set(opaque ? 0 : (mask ? 1 : 2)) &&
            (opaque || setInput(surface, "alpha", SdfValueTypeNames->Float, factors.alpha)) &&
@@ -1596,6 +1610,12 @@ MaterialAuthor::Prepare(std::optional<std::size_t> materialIndex, std::size_t uv
                     "unlit",
                     index);
         }
+        if (source.unlit && source.dispersion != 0)
+        {
+            TF_WARN("glTF material %zu: KHR_materials_dispersion is ignored, because the material "
+                    "is unlit",
+                    index);
+        }
         if (source.unlit && specular)
         {
             TF_WARN("glTF material %zu: KHR_materials_specular is ignored, because the material "
@@ -1658,6 +1678,12 @@ MaterialAuthor::Prepare(std::optional<std::size_t> materialIndex, std::size_t uv
         {
             TF_WARN("glTF material %zu: UsdPreviewSurface has no volume; its network ignores "
                     "KHR_materials_volume",
+                    index);
+        }
+        if (hasDispersion(factors))
+        {
+            TF_WARN("glTF material %zu: UsdPreviewSurface has no dispersion; its network ignores "
+                    "KHR_materials_dispersion",
                     index);
         }
         if (textures.clearcoatNormal)

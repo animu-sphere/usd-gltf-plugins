@@ -1294,6 +1294,30 @@ def check_volume(renderer, report):
     qt[2].doneCurrent()
 
 
+def check_dispersion(renderer, report):
+    """Renders the volume check's thick quad with a dispersion. glTF would split the refracted
+    backdrop into colors, but MaterialX gltf_pbr 1.39 does not read its dispersion input, and Storm
+    does not refract, so in each path a dispersion is expected to look like the quad without one: the
+    authored input does not break the material."""
+    qt = offscreen_context(report, "dispersion")
+    if not qt:
+        return
+    extensions = ("KHR_materials_transmission", "KHR_materials_volume", "KHR_materials_dispersion")
+    for path in PATHS:
+
+        def render(name, dispersion):
+            material = {**pbr(**TRANSMISSIVE_WHITE), "extensions": {
+                "KHR_materials_transmission": {"transmissionFactor": 1},
+                "KHR_materials_volume": {"thicknessFactor": 1}, "KHR_materials_dispersion": dispersion}}
+            return render_before_backdrop(renderer, f"dispersion_{name}", path, material, (), extensions)
+
+        none = render("none", {})
+        report.same(f"{path} a dispersion of 1 draws as none", render("one", {"dispersion": 1}), none)
+        report.same(f"{path} an exaggerated dispersion draws as none", render("rutile", {"dispersion": 2.04}),
+                    none)
+    qt[2].doneCurrent()
+
+
 def compare_paths(report, name, renders, samples, tolerance):
     if not all(renders.values()):
         return
@@ -1320,7 +1344,7 @@ def main():
     for check in (check_reflections, check_lights, check_node_visibility, check_material_variants,
                   check_unlit, check_emissive_strength, check_ior,
                   check_specular, check_anisotropy, check_iridescence, check_sheen, check_clearcoat,
-                  check_transmission, check_volume, check_alpha_modes, check_base_color_textures,
+                  check_transmission, check_volume, check_dispersion, check_alpha_modes, check_base_color_textures,
                   check_pbr_textures, check_normal_textures, check_texture_transforms,
                   check_ktx2_textures, check_measurements):
         print(check.__name__.removeprefix("check_"), flush=True)

@@ -8,6 +8,11 @@ here.
 
 ## [Unreleased]
 
+### Added
+
+- Import `KHR_materials_dispersion` as the MaterialX `gltf_pbr` dispersion of a material with a
+  volume. See the [dispersion decision](docs/adr/0040-dispersion.md).
+
 ## [0.11.0] - 2026-11-16
 
 ### Added

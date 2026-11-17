@@ -186,6 +186,15 @@ material is drawn thin, as glTF's fallback is. UsdPreviewSurface has no volume, 
 the extension with a warning. A thickness of 0, a material without transmission and an unlit material
 author nothing. See [ADR 0019](../adr/0019-volume.md).
 
+## Dispersion
+
+A `KHR_materials_dispersion` value above 0, on a material whose volume is authored, is authored as
+MaterialX `dispersion`, which is glTF's 20 over the Abbe number. `gltf_pbr`'s graph does not read it,
+so the volume is drawn without dispersion, as glTF's fallback is. UsdPreviewSurface has no dispersion,
+so its network ignores the extension with a warning. A thin material and a material without
+transmission author nothing, because only a volume disperses, and an unlit material authors nothing,
+with a warning. See [ADR 0040](../adr/0040-dispersion.md).
+
 ## Diffuse transmission
 
 `KHR_materials_diffuse_transmission` is unsupported, because neither MaterialX `gltf_pbr` nor

@@ -43,10 +43,10 @@ ANIMATION_POINTER = "KHR_animation_pointer"
 VISIBILITY_POINTER = re.compile(r"/nodes/(0|[1-9][0-9]*)/extensions/KHR_node_visibility/visible")
 IMPLEMENTED_EXTENSIONS = {
     "EXT_texture_webp", DRACO, MESHOPT, "KHR_lights_punctual", "KHR_materials_anisotropy",
-    "KHR_materials_clearcoat", EMISSIVE_STRENGTH, "KHR_materials_ior", "KHR_materials_iridescence",
-    "KHR_materials_sheen", "KHR_materials_specular", "KHR_materials_transmission", "KHR_materials_unlit",
-    "KHR_materials_volume", MATERIAL_VARIANTS, "KHR_mesh_quantization", NODE_VISIBILITY, ANIMATION_POINTER,
-    "KHR_texture_basisu", "KHR_texture_transform",
+    "KHR_materials_clearcoat", "KHR_materials_dispersion", EMISSIVE_STRENGTH, "KHR_materials_ior",
+    "KHR_materials_iridescence", "KHR_materials_sheen", "KHR_materials_specular", "KHR_materials_transmission",
+    "KHR_materials_unlit", "KHR_materials_volume", MATERIAL_VARIANTS, "KHR_mesh_quantization", NODE_VISIBILITY,
+    ANIMATION_POINTER, "KHR_texture_basisu", "KHR_texture_transform",
 }
 PATHS = ("mtlx", "preview")
 CAMERA = "/SampleCheckCamera"
@@ -902,6 +902,9 @@ def check_material(check, asset, stage, path, material, has_colors, images):
     check_clearcoat(check, surface, pbr_surface, clearcoat if coated else None, textures, names, label)
     check_transmission(check, surface, pbr_surface, transmission if transmits else None, textures, label)
     check_volume(check, surface, pbr_surface, volume if thick else None, textures, label)
+    # glTF disperses only light that a volume refracts.
+    dispersion = material.get("extensions", {}).get("KHR_materials_dispersion", {}).get("dispersion", 0)
+    check_dispersion(check, surface, pbr_surface, dispersion if thick and dispersion > 0 else None, label)
     check_specular(check, surface, pbr_surface, specular, unlit, textures, label)
     check_sheen(check, surface, pbr_surface, sheen if sheened else None, textures, label)
     check_iridescence(check, surface, pbr_surface, iridescence if film else None, textures, label)
@@ -998,6 +1001,18 @@ def check_volume(check, surface, pbr_surface, volume, textures, label):
             check.expect(not attribute, f"{label} MaterialX authors {name} without an attenuation distance")
         elif check.expect(attribute, f"{label} MaterialX {name} is not authored"):
             check.close(attribute.Get(), expected, f"{label} MaterialX {name}")
+
+
+def check_dispersion(check, surface, pbr_surface, dispersion, label):
+    """The dispersion in MaterialX only, 20 over the Abbe number as in glTF; Preview has none.
+
+    `dispersion` is None for a material without a volume and a dispersion above 0."""
+    check.expect(not surface.GetInput("dispersion"), f"{label} Preview authors a dispersion")
+    authored = pbr_surface.GetInput("dispersion")
+    if dispersion is None:
+        check.expect(not authored, f"{label} MaterialX authors a dispersion it does not have")
+    elif check.expect(authored, f"{label} MaterialX dispersion is not authored"):
+        check.close(authored.Get(), dispersion, f"{label} MaterialX dispersion")
 
 
 def check_specular(check, surface, pbr_surface, specular, unlit, textures, label):
