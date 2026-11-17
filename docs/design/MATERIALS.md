@@ -186,6 +186,13 @@ material is drawn thin, as glTF's fallback is. UsdPreviewSurface has no volume, 
 the extension with a warning. A thickness of 0, a material without transmission and an unlit material
 author nothing. See [ADR 0019](../adr/0019-volume.md).
 
+## Diffuse transmission
+
+`KHR_materials_diffuse_transmission` is unsupported, because neither MaterialX `gltf_pbr` nor
+UsdPreviewSurface has an input for it. An optional one warns, and its material is authored as without
+the extension, an opaque base in both paths, without resolving its textures. A required one fails the
+import. See [ADR 0039](../adr/0039-diffuse-transmission.md).
+
 ## Other extensions
 
 Each other extension
