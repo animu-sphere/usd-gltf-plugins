@@ -6,9 +6,6 @@ implementation order, which investigation may change. Each feature follows the
 
 ## v0.13.0 — Core geometry gaps
 
-- Read sparse accessors wherever the importer reads accessor data, including base vertex
-  attributes, indices, skin data and animation, not only morph deltas and weight outputs. Verify
-  against SimpleSparseAccessor.
 - Evaluate morph target TANGENT deltas. UsdSkel blend shapes carry only point and normal offsets,
   so record in an ADR how a retained or generated tangent relates to a morphed mesh, then import
   AnimatedMorphCube by that decision.

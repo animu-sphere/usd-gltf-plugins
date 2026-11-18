@@ -2,6 +2,7 @@
 #include "gltfCore/accessor.h"
 
 #include <algorithm>
+#include <limits>
 
 namespace gltfCore
 {
@@ -64,6 +65,8 @@ readSparseView(const fastgltf::Asset& asset, std::size_t viewIndex, std::size_t 
     return true;
 }
 
+alignas(8) constexpr std::byte zeroElement[maxAccessorElementSize]{};
+
 } // namespace
 
 const std::byte*
@@ -74,14 +77,14 @@ AccessorData::Element(std::size_t index) const
     {
         return sparseValues.data() + (found - sparseIndices.begin()) * elementSize;
     }
-    return bytes.empty() ? nullptr : bytes.data() + index * stride;
+    return bytes.empty() ? zeroElement : bytes.data() + index * stride;
 }
 
 bool
 GetAccessorData(const fastgltf::Asset& asset, std::size_t index, fastgltf::AccessorType type,
                 fastgltf::ComponentType componentType, std::size_t elementSize, bool vertex,
                 AccessorData& result, std::string& error, const BufferReader& buffers,
-                bool normalized, bool allowSparse)
+                bool normalized)
 {
     if (index >= asset.accessors.size())
     {
@@ -91,14 +94,10 @@ GetAccessorData(const fastgltf::Asset& asset, std::size_t index, fastgltf::Acces
     const auto& accessor = asset.accessors[index];
     const auto componentSize = fastgltf::getComponentByteSize(componentType);
     if (accessor.type != type || accessor.componentType != componentType ||
-        accessor.normalized != normalized || accessor.count == 0 || !componentSize || !elementSize)
+        accessor.normalized != normalized || accessor.count == 0 || !componentSize ||
+        !elementSize || elementSize > maxAccessorElementSize)
     {
         error = "accessor has an invalid type, component type, normalization, or count";
-        return false;
-    }
-    if (!allowSparse && accessor.sparse)
-    {
-        error = "sparse accessors are not supported";
         return false;
     }
     result = {};
@@ -111,14 +110,20 @@ GetAccessorData(const fastgltf::Asset& asset, std::size_t index, fastgltf::Acces
             return false;
         }
     }
-    else if (!allowSparse)
-    {
-        error = "accessors without a bufferView are not supported";
-        return false;
-    }
     else if (accessor.byteOffset != 0)
     {
         error = "accessor without a bufferView has a byte offset";
+        return false;
+    }
+    else if (accessor.count > std::numeric_limits<std::size_t>::max() / elementSize)
+    {
+        error = "accessor without a bufferView has too many elements";
+        return false;
+    }
+    // Readers expand zeros into USD arrays, which the file does not pay for.
+    else if (!buffers.Reserve(accessor.count * elementSize, error))
+    {
+        error = "accessor without a bufferView: " + error;
         return false;
     }
     if (!accessor.sparse)

@@ -214,6 +214,18 @@ BufferReader::BufferReader(const fastgltf::Asset& asset, BufferLoader loadBuffer
 }
 
 bool
+BufferReader::Reserve(std::size_t bytes, std::string& error) const
+{
+    if (bytes > maxDecodedBytes - _decodedBytes)
+    {
+        error = "decoded buffer views and implicit accessor data exceed 512 MiB";
+        return false;
+    }
+    _decodedBytes += bytes;
+    return true;
+}
+
+bool
 BufferReader::GetView(const fastgltf::Asset& asset, std::size_t index,
                       std::span<const std::byte>& result, std::string& error) const
 {
@@ -251,7 +263,7 @@ BufferReader::GetView(const fastgltf::Asset& asset, std::size_t index,
     }
     if (view.byteLength > maxDecodedBytes - _decodedBytes)
     {
-        return fail("decoded buffer views exceed 512 MiB");
+        return fail("decoded buffer views and implicit accessor data exceed 512 MiB");
     }
     const auto& c = *view.meshoptCompression;
     if (c.byteLength < minimumEncodedSize(view))

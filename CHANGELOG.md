@@ -8,6 +8,12 @@ here.
 
 ## [Unreleased]
 
+### Added
+
+- Read sparse accessors and accessors without a bufferView wherever the importer reads accessor
+  data, including vertex attributes, indices, skins and animation, not only morph targets and
+  weights.
+
 ## [0.12.0] - 2026-11-17
 
 ### Added

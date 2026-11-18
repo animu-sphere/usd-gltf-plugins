@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <cstring>
 #include <iostream>
 #include <limits>
 #include <string>
@@ -150,6 +151,93 @@ checkMeshoptSharedView()
     return true;
 }
 
+bool
+checkSparse()
+{
+    // Three scalar floats 1, 2, 3, then a uint16 index 2 and its value 9 for the sparse part.
+    std::vector<std::byte> bytes(20);
+    const std::array<float, 4> floats = {1, 2, 3, 9};
+    std::memcpy(bytes.data(), floats.data(), 12);
+    bytes[12] = std::byte{2};
+    std::memcpy(bytes.data() + 16, &floats[3], 4);
+    fastgltf::Asset asset;
+    auto& buffer = asset.buffers.emplace_back();
+    buffer.byteLength = bytes.size();
+    buffer.data = fastgltf::sources::Vector{bytes};
+    for (const auto [offset, length] : {std::pair{0, 12}, std::pair{12, 2}, std::pair{16, 4}})
+    {
+        auto& view = asset.bufferViews.emplace_back();
+        view.bufferIndex = 0;
+        view.byteOffset = offset;
+        view.byteLength = length;
+    }
+    auto& accessor = asset.accessors.emplace_back();
+    accessor.bufferViewIndex = 0;
+    accessor.count = 3;
+    accessor.type = fastgltf::AccessorType::Scalar;
+    accessor.componentType = fastgltf::ComponentType::Float;
+    accessor.sparse.emplace();
+    accessor.sparse->count = 1;
+    accessor.sparse->indicesBufferView = 1;
+    accessor.sparse->indexComponentType = fastgltf::ComponentType::UnsignedShort;
+    accessor.sparse->valuesBufferView = 2;
+
+    const auto read =
+        [&](const gltfCore::BufferReader& buffers, std::array<float, 3>& values, std::string& error)
+    {
+        gltfCore::AccessorData result;
+        if (!gltfCore::GetAccessorData(asset, 0, fastgltf::AccessorType::Scalar,
+                                       fastgltf::ComponentType::Float, 4, false, result, error,
+                                       buffers))
+        {
+            return false;
+        }
+        for (std::size_t i = 0; i < values.size(); ++i)
+        {
+            std::memcpy(&values[i], result.Element(i), 4);
+        }
+        return true;
+    };
+    bool ok = true;
+    std::array<float, 3> values{};
+    std::string error;
+    if (!read({}, values, error) || values != std::array<float, 3>{1, 2, 9})
+    {
+        std::cerr << "sparse values did not replace the base: " << error << '\n';
+        ok = false;
+    }
+    asset.accessors[0].bufferViewIndex.reset();
+    if (!read({}, values, error) || values != std::array<float, 3>{0, 0, 9})
+    {
+        std::cerr << "an accessor without a bufferView did not read as zeros: " << error << '\n';
+        ok = false;
+    }
+    asset.accessors[0].sparse.reset();
+    if (!read({}, values, error) || values != std::array<float, 3>{0, 0, 0})
+    {
+        std::cerr << "a dense accessor without a bufferView did not read as zeros: " << error
+                  << '\n';
+        ok = false;
+    }
+
+    // Implicit data counts against one reader's budget, not per accessor.
+    const gltfCore::BufferReader buffers(asset);
+    asset.accessors[0].count = 100 * 1024 * 1024;
+    error.clear();
+    int accepted = 0;
+    while (accepted < 6 && read(buffers, values, error))
+    {
+        ++accepted;
+    }
+    if (accepted != 1 || error.find("512 MiB") == std::string::npos)
+    {
+        std::cerr << "implicit accessor data was not limited to 512 MiB per reader: " << error
+                  << '\n';
+        ok = false;
+    }
+    return ok;
+}
+
 } // namespace
 
 int
@@ -226,5 +314,6 @@ main()
     asset.accessors[0].normalized = false;
     ok = checkInterleavedBounds(asset) && ok;
     ok = checkMeshoptSharedView() && ok;
+    ok = checkSparse() && ok;
     return ok ? 0 : 1;
 }
