@@ -388,6 +388,46 @@ def append_view(document, binary, extension, data):
     return binary
 
 
+ACCESSOR_WIDTHS = {"SCALAR": 1, "VEC2": 2, "VEC3": 3, "VEC4": 4, "MAT4": 16}
+COMPONENT_SIZES = {5120: 1, 5121: 1, 5122: 2, 5123: 2, 5125: 4, 5126: 4}
+
+
+def sparse_accessor(document, binary, index, implicit):
+    """Returns a copy of a GLB document whose accessor `index` stores the same elements sparsely.
+    The base has no bufferView when `implicit`, and the sparse values replace its nonzero elements.
+    Otherwise the base is a copy whose first and last elements have their bytes inverted, and the
+    sparse values restore them."""
+    document = json.loads(json.dumps(document))
+    accessor = document["accessors"][index]
+    size = COMPONENT_SIZES[accessor["componentType"]] * ACCESSOR_WIDTHS[accessor["type"]]
+    view = document["bufferViews"][accessor["bufferView"]]
+    stride = view.get("byteStride", size)
+    start = view.get("byteOffset", 0) + accessor.get("byteOffset", 0)
+    count = accessor["count"]
+    elements = [binary[start + i * stride:start + i * stride + size] for i in range(count)]
+    accessor.pop("byteOffset", None)
+    if implicit:
+        rows = [i for i, element in enumerate(elements) if any(element)] or [0]
+        del accessor["bufferView"]
+    else:
+        rows = sorted({0, count - 1})
+        base = bytearray(binary[start:start + (count - 1) * stride + size])
+        for row in rows:
+            base[row * stride:row * stride + size] = bytes(b ^ 0xFF for b in elements[row])
+        binary = append_view(document, binary, "glb", bytes(base))
+        if "byteStride" in view:
+            document["bufferViews"][-1]["byteStride"] = view["byteStride"]
+        accessor["bufferView"] = len(document["bufferViews"]) - 1
+    index_type, code = (5121, "B") if implicit else (5125, "I")
+    binary = append_view(document, binary, "glb", struct.pack(f"<{len(rows)}{code}", *rows))
+    binary = append_view(document, binary, "glb", b"".join(elements[row] for row in rows))
+    views = len(document["bufferViews"])
+    accessor["sparse"] = {"count": len(rows),
+                          "indices": {"bufferView": views - 2, "componentType": index_type},
+                          "values": {"bufferView": views - 1}}
+    return document, binary
+
+
 def textured_document(extension, image, data):
     """A uv_document whose first primitive has a base color texture.
 
@@ -1948,6 +1988,96 @@ class FileFormatTest(unittest.TestCase):
                 self.assertEqual(layer_text(layer), before)
                 write_asset(path, document, binary)
                 self.assertTrue(layer.Reload(True))
+
+    def test_sparse_accessors_read_like_dense_data(self):
+        visibility, pointer = "KHR_node_visibility", "KHR_animation_pointer"
+
+        def visibility_document():
+            document, binary = animation_document("glb", [visibility_sampler()], [(0, None, "pointer")])
+            document["extensionsUsed"] = [visibility, pointer]
+            document["nodes"][1]["extensions"] = {visibility: {"visible": False}}
+            document["animations"][0]["channels"] = [visibility_channel(1)]
+            return document, binary
+
+        documents = {
+            "mesh": mesh_document("glb", index_type=5121),
+            "texture coordinates": uv_document("glb"),
+            "colors": color_document("glb", 5123, 4),
+            "quantized": quantized_document("glb", {
+                "POSITION": (5122, False, ((0, 0, 0), (1, 0, 0), (0, 1, 0))),
+                "NORMAL": (5120, True, ((0, 0, 127),) * 3),
+                "TANGENT": (5122, True, ((32767, 0, 0, 32767),) * 3),
+                "TEXCOORD_0": (5123, False, ((0, 0), (9, 0), (0, 9))),
+            }),
+            "skin": skin_document(False),
+            "morph": morph_document(),
+            "visibility": visibility_document(),
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "sparse.glb"
+            for name, (document, binary) in documents.items():
+                write_asset(path, document, binary)
+                layer = Sdf.Layer.FindOrOpen(str(path))
+                self.assertTrue(layer.Reload(True))
+                dense = layer_text(layer)
+                for index, accessor in enumerate(document["accessors"]):
+                    if "sparse" in accessor:
+                        continue
+                    for implicit in (False, True):
+                        with self.subTest(document=name, accessor=index, implicit=implicit):
+                            write_asset(path, *sparse_accessor(document, binary, index, implicit))
+                            self.assertTrue(layer.Reload(True))
+                            self.assertEqual(layer_text(layer), dense)
+
+    def test_sparse_accessor_failures_preserve_layer(self):
+        # The positions' sparse form replaces elements 1 and 2 over implicit zeros.
+        def mutate(change):
+            def apply(document, binary):
+                document, binary = sparse_accessor(document, binary, 0, True)
+                return document, change(document, binary) or binary
+            return apply
+
+        def sparse(**fields):
+            return lambda document, binary: document["accessors"][0]["sparse"].update(fields)
+
+        def part(name, **fields):
+            return lambda document, binary: document["accessors"][0]["sparse"][name].update(fields)
+
+        def rows(*values):
+            def change(document, binary):
+                binary = append_view(document, binary, "glb", bytes(values))
+                part("indices", bufferView=len(document["bufferViews"]) - 1)(document, binary)
+                return binary
+            return change
+
+        def accessor(**fields):
+            return lambda document, binary: document["accessors"][0].update(fields)
+
+        cases = {
+            "index out of range": (rows(1, 3), "out of range or not strictly increasing"),
+            "unordered indices": (rows(2, 1), "out of range or not strictly increasing"),
+            "repeated index": (rows(1, 1), "out of range or not strictly increasing"),
+            "count above the accessor's": (sparse(count=4), "invalid count"),
+            "signed index type": (part("indices", componentType=5122), "index component type"),
+            "values beyond their view": (part("values", byteOffset=4), "invalid bufferView"),
+            "indices with a stride": (lambda d, b: d["bufferViews"][d["accessors"][0]["sparse"]["indices"]
+                                                                   ["bufferView"]].update(byteStride=4),
+                                      "invalid bufferView"),
+            "offset without a bufferView": (accessor(byteOffset=4), "byte offset"),
+            "implicit data over the budget": (accessor(count=2 ** 31 - 1), "exceed 512 MiB"),
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "sparse.glb"
+            document, binary = mesh_document("glb")
+            write_asset(path, document, binary)
+            layer = Sdf.Layer.FindOrOpen(str(path))
+            before = layer_text(layer)
+            for name, (change, message) in cases.items():
+                with self.subTest(name=name):
+                    write_asset(path, *mutate(change)(document, binary))
+                    with self.assertRaisesRegex(Tf.ErrorException, message):
+                        layer.Reload(True)
+                    self.assertEqual(layer_text(layer), before)
 
     def test_factor_materials_and_bindings(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -58,9 +58,8 @@ readBindTransforms(const fastgltf::Asset& asset, const fastgltf::Skin& skin,
         {
             for (std::size_t column = 0; column < 4; ++column)
             {
-                const auto offset = i * data.stride + 4 * (4 * row + column);
                 const auto value =
-                    std::bit_cast<float>(ReadUnsigned(data.bytes.data() + offset, 4));
+                    std::bit_cast<float>(ReadUnsigned(data.Element(i) + 4 * (4 * row + column), 4));
                 if (!std::isfinite(value))
                 {
                     error = "inverse bind matrix is not finite";

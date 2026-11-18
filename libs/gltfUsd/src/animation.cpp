@@ -105,8 +105,7 @@ readTimes(const fastgltf::Asset& asset, std::size_t index, const gltfCore::Buffe
     times.resize(data.count);
     for (std::size_t i = 0; i < data.count; ++i)
     {
-        times[i] =
-            readComponent(data.bytes.data() + i * data.stride, fastgltf::ComponentType::Float);
+        times[i] = readComponent(data.Element(i), fastgltf::ComponentType::Float);
         if (!std::isfinite(times[i]) || times[i] < 0.0 || (i > 0 && times[i] <= times[i - 1]))
         {
             error = "input times are not finite, nonnegative and strictly increasing";
@@ -149,8 +148,7 @@ readVisibility(const fastgltf::Asset& asset, const gltfCore::BufferReader& buffe
     }
     for (std::size_t i = 0; i < data.count; ++i)
     {
-        samples.emplace_back(times[i] * TimeCodesPerSecond,
-                             data.bytes[i * data.stride] != std::byte{0});
+        samples.emplace_back(times[i] * TimeCodesPerSecond, *data.Element(i) != std::byte{0});
     }
     return true;
 }
@@ -220,7 +218,7 @@ readKeyframes(const fastgltf::Asset& asset, const gltfCore::BufferReader& buffer
     const auto elementsPerValue = weights ? width : 1;
     if (!gltfCore::GetAccessorData(asset, sampler.outputAccessor, type, componentType,
                                    (weights ? 1 : width) * componentSize, false, data, error,
-                                   buffers, quantized, weights))
+                                   buffers, quantized))
     {
         error = "output " + error;
         return false;
@@ -240,9 +238,7 @@ readKeyframes(const fastgltf::Asset& asset, const gltfCore::BufferReader& buffer
         for (std::size_t c = 0; c < width; ++c)
         {
             const auto* element = data.Element(weights ? i * width + c : i);
-            value[c] =
-                element ? readComponent(element + (weights ? 0 : c * componentSize), componentType)
-                        : 0.0;
+            value[c] = readComponent(element + (weights ? 0 : c * componentSize), componentType);
             if (!std::isfinite(value[c]))
             {
                 error = "output values are not finite";

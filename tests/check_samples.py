@@ -65,8 +65,6 @@ DIAGNOSTIC_CAUSES = {
     "unsupported morph target attribute": ("morph target attribute",),
     "which has a matrix": ("animated matrix",),
     "primitive mode": ("points or lines",),
-    "sparse accessors are not supported": ("sparse accessor",),
-    "without a bufferView are not supported": ("accessor without a bufferView",),
 }
 REQUIRED_DIAGNOSTIC = re.compile(r"unsupported required extensions: (.*)")
 
@@ -1800,10 +1798,6 @@ def rejection_causes(document):
         seen.add(index)
         node = nodes[index]
         pending += node.get("children", [])
-        if "skin" in node:
-            skin = document["skins"][node["skin"]]
-            if "inverseBindMatrices" in skin and "sparse" in document["accessors"][skin["inverseBindMatrices"]]:
-                causes.add("sparse accessor")
         if "mesh" in node:
             causes |= mesh_causes(document, document["meshes"][node["mesh"]])
     # Every animation is authored, but only on the selected scene.
@@ -1824,17 +1818,6 @@ def mesh_causes(document, mesh):
             for name in target:
                 if name not in ("POSITION", "NORMAL") or name not in primitive["attributes"]:
                     causes.add(f"morph target attribute {name}")
-        accessors = [*primitive.get("attributes", {}).values()]
-        if "indices" in primitive:
-            accessors.append(primitive["indices"])
-        # Compressed primitives keep their data in the extension, not a bufferView.
-        compressed = DRACO in primitive.get("extensions", {})
-        for index in accessors:
-            accessor = document["accessors"][index]
-            if "sparse" in accessor:
-                causes.add("sparse accessor")
-            elif "bufferView" not in accessor and not compressed:
-                causes.add("accessor without a bufferView")
     return causes
 
 

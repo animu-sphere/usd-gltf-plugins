@@ -51,6 +51,15 @@ The decoded bytes feed the existing buffer view and accessor paths, including an
 accessor reads. See the [meshopt decision](../adr/0034-meshopt-buffer-views.md) for the supported
 bitstreams, limits and fallback rules.
 
+Every accessor read applies the accessor's sparse substitution, so vertex attributes, indices,
+skins, animation and morph targets see the same values. An accessor without a bufferView reads as
+zeros outside its sparse indices. The file does not store those zeros, so their bytes count against
+the same 512 MiB budget as decoded meshopt views, and a small file cannot declare unbounded data.
+Sparse indices must be unsigned, strictly increasing and below the accessor's count, and their
+index and value views must hold every element without a byteStride or target. Compressed Draco accessors
+are never read this way: the uncompressed fallback of an optional strip must have bufferViews,
+because zeros would otherwise replace its compressed data.
+
 The GLB header's total length must match the input size. Chunk lengths must be
 multiples of four, fit within the file, and account for all bytes after the header
 together with their chunk headers.

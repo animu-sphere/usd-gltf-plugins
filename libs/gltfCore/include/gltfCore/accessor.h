@@ -22,9 +22,13 @@ struct AccessorData
     std::span<const std::byte> sparseValues;
     std::size_t elementSize = 0;
 
-    // For callers that opt into sparse and implicit-zero data. A null pointer denotes zero.
+    // The element's bytes after sparse substitution. An accessor without a bufferView reads as
+    // zeros outside its sparse indices.
     [[nodiscard]] const std::byte* Element(std::size_t index) const;
 };
+
+// The largest element GetAccessorData reads: a MAT4 of four-byte components.
+inline constexpr std::size_t maxAccessorElementSize = 64;
 
 using BufferLoader =
     std::function<bool(const fastgltf::Buffer&, std::span<const std::byte>&, std::string&)>;
@@ -43,6 +47,10 @@ class BufferReader
     [[nodiscard]] bool GetView(const fastgltf::Asset& asset, std::size_t index,
                                std::span<const std::byte>& result, std::string& error) const;
 
+    // Counts bytes the file does not store against the budget for decoded views, so that a small
+    // file cannot declare arbitrarily large data.
+    [[nodiscard]] bool Reserve(std::size_t bytes, std::string& error) const;
+
   private:
     const fastgltf::Asset* _asset = nullptr;
     BufferLoader _loadBuffer;
@@ -54,7 +62,6 @@ class BufferReader
                                    fastgltf::AccessorType type,
                                    fastgltf::ComponentType componentType, std::size_t elementSize,
                                    bool vertex, AccessorData& result, std::string& error,
-                                   const BufferReader& buffers = {}, bool normalized = false,
-                                   bool allowSparse = false);
+                                   const BufferReader& buffers = {}, bool normalized = false);
 
 } // namespace gltfCore

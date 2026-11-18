@@ -148,7 +148,8 @@ and samples the union of its weight channels' sample times. A node with no weigh
 chosen variant keeps its stated weights at every time. A variant selection that resolves to no
 variant leaves the blend shapes without an animation source.
 
-Target accessors may be dense, sparse, or have an implicit zero base. With
+Target accessors, like every other accessor, may be
+[sparse or without a bufferView](../architecture/IMPORT_PIPELINE.md#failure-policy). With
 `KHR_mesh_quantization`, POSITION deltas may use signed byte or short, normalized or not, and
 NORMAL deltas normalized signed byte or short. Animation outputs are scalar floats or normalized
 byte or short values, signed or unsigned, with one value per target per keyframe and an

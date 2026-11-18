@@ -177,8 +177,7 @@ readVectors(MeshAccessor source, VertexAttribute attribute, VtVec3fArray& values
     }
     gltfCore::AccessorData data;
     if (!gltfCore::GetAccessorData(asset, index, fastgltf::AccessorType::Vec3, format.type,
-                                   format.size * 3, true, data, error, buffers, format.normalized,
-                                   morphCount.has_value()))
+                                   format.size * 3, true, data, error, buffers, format.normalized))
     {
         return false;
     }
@@ -196,11 +195,6 @@ readVectors(MeshAccessor source, VertexAttribute attribute, VtVec3fArray& values
     for (std::size_t i = 0; i < data.count; ++i)
     {
         const auto* element = data.Element(i);
-        if (!element)
-        {
-            values[i] = GfVec3f(0);
-            continue;
-        }
         for (std::size_t component = 0; component < 3; ++component)
         {
             const float value = readRealComponent(element + component * format.size, format.size,
@@ -235,11 +229,11 @@ readTangents(MeshAccessor source, VtVec4fArray& values, std::string& error,
     values.resize(data.count);
     for (std::size_t i = 0; i < data.count; ++i)
     {
+        const auto* element = data.Element(i);
         for (std::size_t component = 0; component < 4; ++component)
         {
-            const float value =
-                readRealComponent(data.bytes.data() + i * data.stride + component * format.size,
-                                  format.size, format.type, format.normalized);
+            const float value = readRealComponent(element + component * format.size, format.size,
+                                                  format.type, format.normalized);
             if (!std::isfinite(value))
             {
                 error = "tangent contains a non-finite value";
@@ -275,11 +269,11 @@ readTexcoords(MeshAccessor source, VtVec2fArray& values, std::string& error,
     values.resize(data.count);
     for (std::size_t i = 0; i < data.count; ++i)
     {
+        const auto* element = data.Element(i);
         for (std::size_t component = 0; component < 2; ++component)
         {
-            const float value =
-                readRealComponent(data.bytes.data() + i * data.stride + component * format.size,
-                                  format.size, format.type, format.normalized);
+            const float value = readRealComponent(element + component * format.size, format.size,
+                                                  format.type, format.normalized);
             if (!std::isfinite(value))
             {
                 error = "texture coordinate contains a non-finite value";
@@ -351,11 +345,11 @@ readColors(MeshAccessor source, VtVec3fArray& colors, VtFloatArray& alpha, std::
     }
     for (std::size_t i = 0; i < data.count; ++i)
     {
+        const auto* element = data.Element(i);
         for (std::size_t component = 0; component < components; ++component)
         {
-            const float value =
-                readRealComponent(data.bytes.data() + i * data.stride + component * size, size,
-                                  type, type != fastgltf::ComponentType::Float);
+            const float value = readRealComponent(element + component * size, size, type,
+                                                  type != fastgltf::ComponentType::Float);
             if (!std::isfinite(value) || value < 0 || value > 1)
             {
                 error = "vertex color contains a non-finite or out-of-range value";
@@ -434,7 +428,7 @@ readIndices(const fastgltf::Asset& asset, std::size_t index, std::size_t pointCo
     values.resize(data.count);
     for (std::size_t i = 0; i < data.count; ++i)
     {
-        const auto value = ReadUnsigned(data.bytes.data() + i * data.stride, size);
+        const auto value = ReadUnsigned(data.Element(i), size);
         const auto reserved = size == 4 ? std::numeric_limits<std::uint32_t>::max()
                                         : (std::uint32_t(1) << (size * 8)) - 1;
         if (value >= pointCount || value == reserved)
@@ -926,13 +920,13 @@ readInfluenceSet(MeshAccessor jointSource, MeshAccessor weightSource,
     }
     for (std::size_t p = 0; p < pointCount; ++p)
     {
+        const auto* joint4 = joints.Element(p);
+        const auto* weight4 = values.Element(p);
         for (std::size_t c = 0; c < 4; ++c)
         {
-            const auto joint =
-                ReadUnsigned(joints.bytes.data() + p * joints.stride + c * jointSize, jointSize);
+            const auto joint = ReadUnsigned(joint4 + c * jointSize, jointSize);
             const auto weight =
-                readRealComponent(values.bytes.data() + p * values.stride + c * weightSize,
-                                  weightSize, weightType, quantized);
+                readRealComponent(weight4 + c * weightSize, weightSize, weightType, quantized);
             if (joint >= remap.size() || !std::isfinite(weight) || weight < 0.0f)
             {
                 error = "skin influence has an out-of-range joint or an invalid weight";

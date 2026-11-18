@@ -153,15 +153,33 @@ bool
 DecodeDracoPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& primitive,
                      const BufferReader& buffers, DecodedDracoPrimitive& result, std::string& error)
 {
-    if (!primitive.dracoCompression ||
-        (primitive.type == fastgltf::PrimitiveType::TriangleStrip &&
-         std::find(asset.extensionsRequired.begin(), asset.extensionsRequired.end(), Extension) ==
-             asset.extensionsRequired.end()))
+    result = {};
+    if (!primitive.dracoCompression)
     {
-        result = {};
         return true;
     }
     const auto& compression = *primitive.dracoCompression;
+    if (primitive.type == fastgltf::PrimitiveType::TriangleStrip &&
+        std::find(asset.extensionsRequired.begin(), asset.extensionsRequired.end(), Extension) ==
+            asset.extensionsRequired.end())
+    {
+        // An accessor without a bufferView would read as zeros instead of its compressed data.
+        const auto stored = [&](std::size_t index)
+        { return index >= asset.accessors.size() || asset.accessors[index].bufferViewIndex; };
+        bool fallback = !primitive.indicesAccessor || stored(*primitive.indicesAccessor);
+        for (const auto& mapping : compression.attributes)
+        {
+            const auto attribute = primitive.findAttribute(mapping.name);
+            fallback = fallback && (attribute == primitive.attributes.end() ||
+                                    stored(attribute->accessorIndex));
+        }
+        if (!fallback)
+        {
+            error = "KHR_draco_mesh_compression fallback has an accessor without a bufferView";
+            return false;
+        }
+        return true;
+    }
     if (primitive.type != fastgltf::PrimitiveType::Triangles)
     {
         error = "KHR_draco_mesh_compression supports only TRIANGLES";
