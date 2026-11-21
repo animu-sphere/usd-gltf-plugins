@@ -130,7 +130,8 @@ selects `Animation_0`; an asset without animations has none. See the
 
 A morphing primitive has a child `BlendShape_{targetIndex}` for each target in glTF order.
 `offsets` and `normalOffsets` carry POSITION and NORMAL deltas. A missing POSITION delta contributes
-zero. The primitive's `skel:blendShapeTargets` points to these children, paired with
+zero. TANGENT deltas are kept as the custom `vector3f[]` attribute `gltf:tangentOffsets` on the same
+child; see [Tangents](#tangents). The primitive's `skel:blendShapeTargets` points to these children, paired with
 `skel:blendShapes` tokens `Node_{nodeIndex}_Target_{targetIndex}`. Primitives on the same node use
 the same tokens. A second node that uses the mesh gets its own tokens and local targets.
 
@@ -151,13 +152,13 @@ variant leaves the blend shapes without an animation source.
 Target accessors, like every other accessor, may be
 [sparse or without a bufferView](../architecture/IMPORT_PIPELINE.md#failure-policy). With
 `KHR_mesh_quantization`, POSITION deltas may use signed byte or short, normalized or not, and
-NORMAL deltas normalized signed byte or short. Animation outputs are scalar floats or normalized
+NORMAL and TANGENT deltas normalized signed byte or short. Animation outputs are scalar floats or normalized
 byte or short values, signed or unsigned, with one value per target per keyframe and an
 incoming and outgoing group for CUBICSPLINE. Weights are used as supplied, including negative
 weights and weights above one.
 
-UsdSkel provides point and normal offsets. Other target attributes, including TANGENT, are rejected
-with a diagnostic. A morphing primitive without source normals leaves normals unauthored so a
+A NORMAL or TANGENT delta requires the same attribute on the primitive. Other target attributes are
+rejected with a diagnostic. A morphing primitive without source normals leaves normals unauthored so a
 consumer can derive them from the deformed points. The resulting shading depends on the consumer.
 
 Mesh primitives use float POSITION and optional float NORMAL, TANGENT, TEXCOORD_n
@@ -236,6 +237,10 @@ not change these values. When a material needs a frame and the mesh has no suppl
 the importer can author a mesh-local, face-varying `float4[]` primvar `gltf_generatedTangent`.
 Both primvars use `B = cross(N, T) * W`. See the
 [frame contract](../adr/0004-normal-textures-and-tangents.md#tangents) for selection and shading.
+
+Both primvars describe the base mesh. UsdSkel does not apply a morph target's `gltf:tangentOffsets`,
+nor skin either primvar, so a consumer that needs a deformed frame computes it. See the
+[morph tangent decision](../adr/0041-morph-target-tangents.md).
 
 ## Vertex colors
 

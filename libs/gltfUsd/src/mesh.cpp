@@ -464,34 +464,51 @@ unsupportedPrimitiveContent(const fastgltf::Primitive& primitive)
 bool
 authorMorphTargets(const fastgltf::Asset& asset, const fastgltf::Primitive& primitive,
                    const UsdGeomMesh& mesh, std::size_t pointCount, bool hasNormals,
-                   const gltfCore::BufferReader& buffers, std::string& error)
+                   bool hasTangents, const gltfCore::BufferReader& buffers, std::string& error)
 {
     SdfPathVector paths;
     for (std::size_t i = 0; i < primitive.targets.size(); ++i)
     {
-        VtVec3fArray offsets, normals;
+        VtVec3fArray offsets, normals, tangents;
         for (const auto& attribute : primitive.targets[i])
         {
-            const bool position = attribute.name == "POSITION";
-            if (!position && attribute.name != "NORMAL")
+            VtVec3fArray* values;
+            VertexAttribute kind;
+            bool hasBase = true;
+            if (attribute.name == "POSITION")
+            {
+                values = &offsets;
+                kind = VertexAttribute::Position;
+            }
+            else if (attribute.name == "NORMAL")
+            {
+                values = &normals;
+                kind = VertexAttribute::Normal;
+                hasBase = hasNormals;
+            }
+            else if (attribute.name == "TANGENT")
+            {
+                values = &tangents;
+                kind = VertexAttribute::Tangent;
+                hasBase = hasTangents;
+            }
+            else
             {
                 error = "unsupported morph target attribute " + attribute.name;
                 return false;
             }
-            auto& values = position ? offsets : normals;
-            if (!values.empty() || (!position && !hasNormals))
+            if (!values->empty() || !hasBase)
             {
                 error = "repeated or missing base attribute for morph target " + attribute.name;
                 return false;
             }
-            if (!readVectors({asset, attribute.accessorIndex},
-                             position ? VertexAttribute::Position : VertexAttribute::Normal, values,
-                             error, buffers, pointCount))
+            if (!readVectors({asset, attribute.accessorIndex}, kind, *values, error, buffers,
+                             pointCount))
             {
                 return false;
             }
         }
-        if (offsets.empty() && normals.empty())
+        if (offsets.empty() && normals.empty() && tangents.empty())
         {
             error = "morph target has no attributes";
             return false;
@@ -502,8 +519,13 @@ authorMorphTargets(const fastgltf::Asset& asset, const fastgltf::Primitive& prim
         {
             offsets.resize(pointCount, GfVec3f(0));
         }
+        // UsdSkel has no tangent offsets, so these are kept for consumers and not applied.
         if (!shape || !shape.CreateOffsetsAttr().Set(offsets) ||
-            (!normals.empty() && !shape.CreateNormalOffsetsAttr().Set(normals)))
+            (!normals.empty() && !shape.CreateNormalOffsetsAttr().Set(normals)) ||
+            (!tangents.empty() &&
+             !shape.GetPrim()
+                  .CreateAttribute(TfToken("gltf:tangentOffsets"), SdfValueTypeNames->Vector3fArray)
+                  .Set(tangents)))
         {
             error = "could not author USD blend shape";
             return false;
@@ -839,8 +861,8 @@ authorPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& primiti
             return false;
         }
     }
-    return authorMorphTargets(asset, primitive, mesh, points.size(), normal != nullptr, buffers,
-                              error);
+    return authorMorphTargets(asset, primitive, mesh, points.size(), normal != nullptr,
+                              tangent != nullptr, buffers, error);
 }
 
 // Collects the indices of a vertex attribute's numbered sets in set order.

@@ -529,6 +529,9 @@ def check_morph_targets(check, asset, prim, mesh, primitive, node_index, label):
         if "NORMAL" in target:
             check.close(shape.GetNormalOffsetsAttr().Get(), asset.accessor(target["NORMAL"]),
                         f"{label} target {i} normal offsets")
+        if "TANGENT" in target:
+            check.close(shape.GetPrim().GetAttribute("gltf:tangentOffsets").Get(),
+                        asset.accessor(target["TANGENT"]), f"{label} target {i} tangent offsets")
     skeleton = binding.GetInheritedSkeleton()
     if not check.expect(skeleton, f"{label} has no morph skeleton"):
         return
@@ -1816,7 +1819,7 @@ def mesh_causes(document, mesh):
             causes.add("points or lines")
         for target in primitive.get("targets", []):
             for name in target:
-                if name not in ("POSITION", "NORMAL") or name not in primitive["attributes"]:
+                if name not in ("POSITION", "NORMAL", "TANGENT") or name not in primitive["attributes"]:
                     causes.add(f"morph target attribute {name}")
     return causes
 
