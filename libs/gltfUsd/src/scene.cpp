@@ -234,7 +234,7 @@ authorMaterialVariants(const UsdStageRefPtr& stage, const SdfPath& root, const S
             const TfToken child("Primitive_" + std::to_string(primitiveIndex));
             for (const auto& placement : map.meshes[meshIndex])
             {
-                const auto mesh = UsdGeomMesh::Get(stage, placement.AppendChild(child));
+                const UsdGeomGprim mesh(stage->GetPrimAtPath(placement.AppendChild(child)));
                 std::string error;
                 if (!mesh || !binding.Author(mesh, error))
                 {

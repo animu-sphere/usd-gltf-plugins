@@ -99,6 +99,21 @@ light would add: Preview is a black metal of roughness 1, and `gltf_pbr` a black
 metallic-roughness, normal, occlusion and emissive properties are not authored. See
 [ADR 0015](../adr/0015-unlit.md).
 
+## Points and lines
+
+[Points and lines](SCENE_CONVENTIONS.md#points-and-lines) draw their material as glTF recommends:
+
+- Without NORMAL, they are unlit, and bound to a variant named with `_Unlit` (`DefaultUnlit` for the
+  default material). It is an unlit material as above, emitting the base color term plus the emissive
+  factor times its strength: a MaterialX `add` node, and in Preview the sum as the constant, the base
+  color texture's `bias` or the per-primitive `gltf_previewBaseColor` primvar. With an emissive
+  texture, the emission is left out with a warning.
+- With NORMAL, they are lit, without normal and clearcoat normal textures: a material with either is
+  bound as a variant named with `_NoNormalTexture`. With TANGENT too, glTF asks for the normal texture,
+  which neither network can draw on a point or line, and a warning says so.
+
+A `KHR_materials_unlit` material is bound unchanged. See [ADR 0042](../adr/0042-points-and-lines.md).
+
 ## Index of refraction
 
 A `KHR_materials_ior` value other than 1.5 is authored as the `ior` input of both UsdPreviewSurface and

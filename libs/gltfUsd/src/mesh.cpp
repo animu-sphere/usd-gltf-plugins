@@ -18,7 +18,9 @@
 #include "pxr/base/vt/array.h"
 #include "pxr/base/vt/value.h"
 #include "pxr/usd/sdf/types.h"
+#include "pxr/usd/usdGeom/basisCurves.h"
 #include "pxr/usd/usdGeom/mesh.h"
+#include "pxr/usd/usdGeom/points.h"
 #include "pxr/usd/usdGeom/primvarsAPI.h"
 #include "pxr/usd/usdGeom/tokens.h"
 #include "pxr/usd/usdGeom/xform.h"
@@ -369,23 +371,120 @@ readColors(MeshAccessor source, VtVec3fArray& colors, VtFloatArray& alpha, std::
 }
 
 bool
+isPointsOrLines(fastgltf::PrimitiveType type)
+{
+    return type == fastgltf::PrimitiveType::Points || type == fastgltf::PrimitiveType::Lines ||
+           type == fastgltf::PrimitiveType::LineLoop || type == fastgltf::PrimitiveType::LineStrip;
+}
+
+bool
 validateIndexCount(std::size_t count, fastgltf::PrimitiveType type, std::string& error)
 {
     const auto limit = std::size_t(std::numeric_limits<int>::max());
-    if (type == fastgltf::PrimitiveType::Triangles)
+    switch (type)
     {
+    case fastgltf::PrimitiveType::Points:
+        if (count < 1 || count > limit)
+        {
+            error = "point index count is invalid";
+            return false;
+        }
+        return true;
+    case fastgltf::PrimitiveType::Lines:
+        if (count < 2 || count > limit || count % 2 != 0)
+        {
+            error = "line index count is invalid";
+            return false;
+        }
+        return true;
+    case fastgltf::PrimitiveType::LineLoop:
+    case fastgltf::PrimitiveType::LineStrip:
+        if (count < 2 || count > limit)
+        {
+            error = "line strip or loop index count is invalid";
+            return false;
+        }
+        return true;
+    case fastgltf::PrimitiveType::Triangles:
         if (count < 3 || count > limit || count % 3 != 0)
         {
             error = "triangle index count is invalid";
             return false;
         }
+        return true;
+    default:
+        break;
     }
-    else if (count < 3 || count - 2 > limit / 3)
+    if (count < 3 || count - 2 > limit / 3)
     {
         error = "triangle strip or fan index count is invalid";
         return false;
     }
     return true;
+}
+
+// The values of each index in turn, since points and curves have no indices of their own.
+template <typename T>
+void
+gatherVertices(VtArray<T>& values, const VtIntArray& indices)
+{
+    if (values.empty())
+    {
+        return;
+    }
+    VtArray<T> gathered(indices.size());
+    for (std::size_t i = 0; i < indices.size(); ++i)
+    {
+        gathered[i] = values[indices[i]];
+    }
+    values = std::move(gathered);
+}
+
+// Defines the points or linear curves of a POINTS, LINES, LINE_LOOP or LINE_STRIP primitive, whose
+// vertices have already been gathered in index order.
+UsdGeomPointBased
+definePointsOrCurves(const UsdPrim& parent, const SdfPath& path, fastgltf::PrimitiveType type,
+                     const VtVec3fArray& points)
+{
+    const auto stage = parent.GetStage();
+    VtVec3fArray extent;
+    if (!UsdGeomPointBased::ComputeExtent(points, &extent))
+    {
+        return UsdGeomPointBased();
+    }
+    if (type == fastgltf::PrimitiveType::Points)
+    {
+        // glTF gives points no size in the scene, only a recommended one in viewport space.
+        auto geometry = UsdGeomPoints::Define(stage, path);
+        if (!geometry || !geometry.CreatePointsAttr().Set(points) ||
+            !geometry.CreateWidthsAttr().Set(VtFloatArray(1, 0.0f)) ||
+            !geometry.SetWidthsInterpolation(UsdGeomTokens->constant) ||
+            !geometry.CreateExtentAttr().Set(extent))
+        {
+            return UsdGeomPointBased();
+        }
+        return geometry;
+    }
+    VtIntArray counts;
+    if (type == fastgltf::PrimitiveType::Lines)
+    {
+        counts.assign(points.size() / 2, 2);
+    }
+    else
+    {
+        counts.assign(1, static_cast<int>(points.size()));
+    }
+    auto geometry = UsdGeomBasisCurves::Define(stage, path);
+    if (!geometry || !geometry.CreateTypeAttr().Set(UsdGeomTokens->linear) ||
+        !geometry.CreateWrapAttr().Set(type == fastgltf::PrimitiveType::LineLoop
+                                           ? UsdGeomTokens->periodic
+                                           : UsdGeomTokens->nonperiodic) ||
+        !geometry.CreateCurveVertexCountsAttr().Set(counts) ||
+        !geometry.CreatePointsAttr().Set(points) || !geometry.CreateExtentAttr().Set(extent))
+    {
+        return UsdGeomPointBased();
+    }
+    return geometry;
 }
 
 bool
@@ -441,29 +540,9 @@ readIndices(const fastgltf::Asset& asset, std::size_t index, std::size_t pointCo
     return true;
 }
 
-// Returns what a primitive uses that cannot be converted, or an empty string.
-std::string
-unsupportedPrimitiveContent(const fastgltf::Primitive& primitive)
-{
-    switch (primitive.type)
-    {
-    case fastgltf::PrimitiveType::Points:
-        return "primitive mode POINTS is not supported";
-    case fastgltf::PrimitiveType::Lines:
-        return "primitive mode LINES is not supported";
-    case fastgltf::PrimitiveType::LineLoop:
-        return "primitive mode LINE_LOOP is not supported";
-    case fastgltf::PrimitiveType::LineStrip:
-        return "primitive mode LINE_STRIP is not supported";
-    default:
-        break;
-    }
-    return {};
-}
-
 bool
 authorMorphTargets(const fastgltf::Asset& asset, const fastgltf::Primitive& primitive,
-                   const UsdGeomMesh& mesh, std::size_t pointCount, bool hasNormals,
+                   const UsdGeomPointBased& mesh, std::size_t pointCount, bool hasNormals,
                    bool hasTangents, const gltfCore::BufferReader& buffers, std::string& error)
 {
     SdfPathVector paths;
@@ -550,9 +629,10 @@ authorPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& primiti
                 const gltfCore::BufferReader& buffers, MaterialAuthor& materials,
                 const gltfCore::DecodedDracoPrimitive* decoded, VariantBindings& variantBindings)
 {
-    error = unsupportedPrimitiveContent(primitive);
-    if (!error.empty())
+    const bool pointsOrLines = isPointsOrLines(primitive.type);
+    if (pointsOrLines && !primitive.targets.empty())
     {
+        error = "morph targets on points and lines are not supported";
         return false;
     }
     const fastgltf::Attribute* position = nullptr;
@@ -689,7 +769,28 @@ authorPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& primiti
             indices[i] = static_cast<int>(i);
         }
     }
-    if (primitive.type != fastgltf::PrimitiveType::Triangles)
+    const auto path = parent.GetPath().AppendChild(TfToken("Primitive_" + std::to_string(index)));
+    UsdGeomPointBased geometry;
+    bool generateNormals = false;
+    if (pointsOrLines)
+    {
+        gatherVertices(points, indices);
+        gatherVertices(normals, indices);
+        gatherVertices(tangents, indices);
+        gatherVertices(colors, indices);
+        gatherVertices(alpha, indices);
+        for (auto& uvs : uvSets)
+        {
+            gatherVertices(uvs, indices);
+        }
+        geometry = definePointsOrCurves(parent, path, primitive.type, points);
+        if (!geometry)
+        {
+            error = "could not author USD points or curves";
+            return false;
+        }
+    }
+    else if (primitive.type != fastgltf::PrimitiveType::Triangles)
     {
         VtIntArray triangles((indices.size() - 2) * 3);
         for (std::size_t i = 0; i + 2 < indices.size(); ++i)
@@ -709,7 +810,10 @@ authorPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& primiti
         }
         indices = std::move(triangles);
     }
-    const bool generateNormals = !normal && primitive.targets.empty();
+    if (!pointsOrLines)
+    {
+        generateNormals = !normal && primitive.targets.empty();
+    }
     if (generateNormals)
     {
         normals.resize(indices.size() / 3);
@@ -729,19 +833,24 @@ authorPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& primiti
                              : GfVec3f(float(x / length), float(y / length), float(z / length));
         }
     }
-    auto mesh = UsdGeomMesh::Define(parent.GetStage(), parent.GetPath().AppendChild(TfToken(
-                                                           "Primitive_" + std::to_string(index))));
-    const VtIntArray counts(indices.size() / 3, 3);
-    VtVec3fArray extent;
-    if (!mesh || !mesh.CreatePointsAttr().Set(points) ||
-        !mesh.CreateFaceVertexCountsAttr().Set(counts) ||
-        !mesh.CreateFaceVertexIndicesAttr().Set(indices) ||
-        !mesh.CreateSubdivisionSchemeAttr().Set(UsdGeomTokens->none) ||
-        !UsdGeomPointBased::ComputeExtent(points, &extent) || !mesh.CreateExtentAttr().Set(extent))
+    if (!pointsOrLines)
     {
-        error = "could not author USD mesh";
-        return false;
+        auto mesh = UsdGeomMesh::Define(parent.GetStage(), path);
+        const VtIntArray counts(indices.size() / 3, 3);
+        VtVec3fArray extent;
+        if (!mesh || !mesh.CreatePointsAttr().Set(points) ||
+            !mesh.CreateFaceVertexCountsAttr().Set(counts) ||
+            !mesh.CreateFaceVertexIndicesAttr().Set(indices) ||
+            !mesh.CreateSubdivisionSchemeAttr().Set(UsdGeomTokens->none) ||
+            !UsdGeomPointBased::ComputeExtent(points, &extent) ||
+            !mesh.CreateExtentAttr().Set(extent))
+        {
+            error = "could not author USD mesh";
+            return false;
+        }
+        geometry = mesh;
     }
+    auto& mesh = geometry;
     if (!UsdShadeMaterialBindingAPI::Apply(mesh.GetPrim()))
     {
         error = "could not apply USD material binding API";
@@ -764,15 +873,29 @@ authorPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& primiti
         error = "could not author USD tangents";
         return false;
     }
+    // Points and lines are lit only with NORMAL, and never draw normal textures.
+    const auto use = !pointsOrLines ? MaterialUse::Full
+                     : normal       ? MaterialUse::WithoutNormalTextures
+                                    : MaterialUse::Unlit;
     // Compute these before flipping glTF UVs. A variant can select a normal map on another set.
     std::map<std::size_t, VtVec4fArray> generatedTangents;
     const auto prepareBinding =
         [&](std::optional<std::size_t> materialIndex, MaterialBinding& binding)
     {
         if (!materials.Prepare(materialIndex, uvSets.size(), color ? &colors : nullptr, alpha,
-                               binding, error))
+                               binding, error, use))
         {
             return false;
+        }
+        if (pointsOrLines)
+        {
+            if (normal && tangent && materialIndex && materials.HasNormalTextures(*materialIndex))
+            {
+                TF_WARN("glTF mesh %zu primitive %zu: normal textures are not drawn on points and "
+                        "lines, because neither network has a tangent frame for them",
+                        meshIndex, index);
+            }
+            return true;
         }
         if (materialIndex && (!tangent || !normal) && !normals.empty())
         {
@@ -967,6 +1090,11 @@ bindPrimitive(const fastgltf::Asset& asset, const fastgltf::Primitive& primitive
               const UsdPrim& prim, const MappedSkin& skin, const gltfCore::BufferReader& buffers,
               std::string& error, const gltfCore::DecodedDracoPrimitive* decoded)
 {
+    if (isPointsOrLines(primitive.type))
+    {
+        error = "skins on points and lines are not supported";
+        return false;
+    }
     std::vector<std::pair<std::size_t, const fastgltf::Attribute*>> joints, weights;
     if (!skinAccessors(primitive, "JOINTS_", joints, error) ||
         !skinAccessors(primitive, "WEIGHTS_", weights, error))

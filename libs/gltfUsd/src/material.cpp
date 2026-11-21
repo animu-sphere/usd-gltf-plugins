@@ -12,6 +12,7 @@
 #include "pxr/usd/ar/packageUtils.h"
 #include "pxr/usd/sdf/assetPath.h"
 #include "pxr/usd/sdf/types.h"
+#include "pxr/usd/usdGeom/mesh.h"
 #include "pxr/usd/usdGeom/primvarsAPI.h"
 #include "pxr/usd/usdGeom/tokens.h"
 #include "pxr/usd/usdShade/materialBindingAPI.h"
@@ -99,6 +100,9 @@ struct PbrFactors
     // KHR_materials_anisotropy: strength and counter-clockwise rotation in radians.
     float anisotropy;
     float anisotropyRotation;
+    // Added to the emitted base color of an unlit point or line without NORMAL, which glTF draws
+    // as the sum of its base color and emissive values.
+    GfVec3f unlitEmission = GfVec3f(0);
 };
 
 // glTF's default, and the default of both shaders' ior inputs.
@@ -240,6 +244,22 @@ mtlxColorInput(const PbrFactors& factors)
     return factors.unlit ? "emissive" : "base_color";
 }
 
+// Names a material bound for a use other than the full one.
+const char*
+materialUseSuffix(MaterialUse use)
+{
+    switch (use)
+    {
+    case MaterialUse::Full:
+        break;
+    case MaterialUse::WithoutNormalTextures:
+        return "_NoNormalTexture";
+    case MaterialUse::Unlit:
+        return "_Unlit";
+    }
+    return "";
+}
+
 // A UsdPreviewSurface threshold of 0 means no masking, whereas every fragment of
 // a glTF MASK material with cutoff 0 passes and is fully opaque.
 bool
@@ -255,7 +275,9 @@ previewUsesOpacity(const PbrFactors& factors)
 const char*
 previewColorPrimvar(const PbrFactors& factors)
 {
-    return factors.baseColor == GfVec3f(1) ? "displayColor" : "gltf_previewBaseColor";
+    return factors.baseColor == GfVec3f(1) && factors.unlitEmission == GfVec3f(0)
+               ? "displayColor"
+               : "gltf_previewBaseColor";
 }
 
 const char*
@@ -285,9 +307,10 @@ bool
 connectPreviewVertexColor(const UsdShadeNodeGraph& graph, UsdShadeShader& surface,
                           const PbrFactors& factors)
 {
-    const auto color = authorPrimvarReader(graph, "displayColorReader", "UsdPrimvarReader_float3",
-                                           "varname", previewColorPrimvar(factors), "fallback",
-                                           SdfValueTypeNames->Float3, factors.baseColor, "result");
+    const auto color =
+        authorPrimvarReader(graph, "displayColorReader", "UsdPrimvarReader_float3", "varname",
+                            previewColorPrimvar(factors), "fallback", SdfValueTypeNames->Float3,
+                            factors.baseColor + factors.unlitEmission, "result");
     if (!color || !surface.GetInput(TfToken(previewColorInput(factors))).ConnectToSource(color))
     {
         return false;
@@ -458,9 +481,11 @@ bool
 connectPreviewBaseColor(const UsdShadeNodeGraph& graph, UsdShadeShader& surface,
                         const PbrFactors& factors, const TextureInput& texture)
 {
+    const auto& emission = factors.unlitEmission;
     auto image = authorPreviewTexture(
         graph, "baseColorTexture", texture, "sRGB",
-        GfVec4f(factors.baseColor[0], factors.baseColor[1], factors.baseColor[2], factors.alpha));
+        GfVec4f(factors.baseColor[0], factors.baseColor[1], factors.baseColor[2], factors.alpha),
+        GfVec4f(emission[0], emission[1], emission[2], 0));
     return image &&
            connectPreviewOutput(image, "rgb", SdfValueTypeNames->Float3, surface,
                                 previewColorInput(factors)) &&
@@ -675,13 +700,14 @@ authorMtlxImageComponent(const UsdShadeNodeGraph& graph, const char* name,
     return setInput(extract, "index", SdfValueTypeNames->Int, index) ? output : UsdShadeOutput();
 }
 
-// Connects texture * vertex value * factor, leaving out the terms that are absent.
+// Connects texture * vertex value * factor + addend, leaving out the terms that are absent.
 template <typename T>
 bool
 connectMtlxInput(const UsdShadeNodeGraph& graph, UsdShadeShader& surface, const char* input,
                  UsdShadeOutput source, const UsdShadeOutput& vertex, const char* vertexName,
                  const char* factorName, const char* multiplyId, const SdfValueTypeName& type,
-                 const T& factor)
+                 const T& factor, const T& addend = T(0), const char* addName = nullptr,
+                 const char* addId = nullptr)
 {
     if (source && vertex)
     {
@@ -702,6 +728,10 @@ connectMtlxInput(const UsdShadeNodeGraph& graph, UsdShadeShader& surface, const 
     if (factor != T(1))
     {
         source = authorMtlxMultiply(graph, factorName, multiplyId, type, source, factor);
+    }
+    if (source && addend != T(0))
+    {
+        source = authorMtlxMultiply(graph, addName, addId, type, source, addend);
     }
     return source && surface.GetInput(TfToken(input)).ConnectToSource(source);
 }
@@ -759,7 +789,8 @@ connectMtlxInputs(const UsdShadeNodeGraph& graph, UsdShadeShader& surface,
     }
     return connectMtlxInput(graph, surface, mtlxColorInput(factors), imageColor, vertexColorValue,
                             "baseColorVertex", "baseColorFactor", "ND_multiply_color3",
-                            SdfValueTypeNames->Color3f, factors.baseColor) &&
+                            SdfValueTypeNames->Color3f, factors.baseColor, factors.unlitEmission,
+                            "emissiveAdd", "ND_add_color3") &&
            connectMtlxInput(graph, surface, "alpha", imageAlpha, vertexAlpha, "alphaVertex",
                             "alphaFactor", "ND_multiply_float", SdfValueTypeNames->Float,
                             factors.alpha);
@@ -1023,7 +1054,8 @@ authorPreview(const UsdShadeMaterial& material, const PbrFactors& factors, bool 
            setInput(surface, "roughness", SdfValueTypeNames->Float,
                     unlit ? 1.0f : factors.roughness) &&
            setInput(surface, "emissiveColor", SdfValueTypeNames->Color3f,
-                    unlit ? factors.baseColor : factors.emissive * factors.emissiveStrength) &&
+                    unlit ? factors.baseColor + factors.unlitEmission
+                          : factors.emissive * factors.emissiveStrength) &&
            (!ior || setInput(surface, "ior", SdfValueTypeNames->Float, *ior)) &&
            (!clearcoat ||
             (setInput(surface, "clearcoat", SdfValueTypeNames->Float, factors.clearcoat) &&
@@ -1125,7 +1157,7 @@ authorMtlx(const UsdShadeMaterial& material, const PbrFactors& factors, bool ver
              setInput(surface, "iridescence_thickness", SdfValueTypeNames->Float,
                       factors.iridescenceMaximum))) &&
            setInput(surface, "emissive", SdfValueTypeNames->Color3f,
-                    unlit ? factors.baseColor : factors.emissive) &&
+                    unlit ? factors.baseColor + factors.unlitEmission : factors.emissive) &&
            (!hasEmissiveStrength ||
             (emissiveStrength && emissiveStrength.GetAttr().SetVariability(SdfVariabilityUniform) &&
              emissiveStrength.Set(factors.emissiveStrength))) &&
@@ -1159,7 +1191,7 @@ authorMtlx(const UsdShadeMaterial& material, const PbrFactors& factors, bool ver
 }
 
 UsdShadeMaterial
-authorMaterial(const fastgltf::Material& source, const std::string& name,
+authorMaterial(const fastgltf::Material& source, const PbrFactors& factors, const std::string& name,
                const UsdStageRefPtr& stage, const SdfPath& scope, bool vertexColor = false,
                const MaterialTextures& textures = {})
 {
@@ -1168,7 +1200,6 @@ authorMaterial(const fastgltf::Material& source, const std::string& name,
     {
         return UsdShadeMaterial();
     }
-    const auto factors = pbrFactors(source);
     if (!authorPreview(material, factors, vertexColor, textures) ||
         !authorMtlx(material, factors, vertexColor, textures))
     {
@@ -1297,12 +1328,13 @@ void
 preparePreviewPrimvars(const PbrFactors& factors, const VtVec3fArray& colors,
                        const VtFloatArray& alpha, MaterialBinding& binding)
 {
-    if (factors.baseColor != GfVec3f(1))
+    if (factors.baseColor != GfVec3f(1) || factors.unlitEmission != GfVec3f(0))
     {
         binding.previewColors.resize(colors.size());
         for (std::size_t i = 0; i < colors.size(); ++i)
         {
-            binding.previewColors[i] = GfCompMult(colors[i], factors.baseColor);
+            binding.previewColors[i] =
+                GfCompMult(colors[i], factors.baseColor) + factors.unlitEmission;
         }
     }
     if (previewUsesOpacity(factors) && factors.alpha != 1.0f && !alpha.empty())
@@ -1320,9 +1352,17 @@ preparePreviewPrimvars(const PbrFactors& factors, const VtVec3fArray& colors,
 MaterialAuthor::MaterialAuthor(const fastgltf::Asset& asset, const std::string& sourcePath,
                                const gltfCore::BufferReader& buffers,
                                const pxr::UsdStageRefPtr& stage, const pxr::SdfPath& scope)
-    : _asset(asset), _sourcePath(sourcePath), _buffers(buffers), _stage(stage), _scope(scope),
-      _materials(asset.materials.size()), _vertexColorMaterials(asset.materials.size())
+    : _asset(asset), _sourcePath(sourcePath), _buffers(buffers), _stage(stage), _scope(scope)
 {
+}
+
+bool
+MaterialAuthor::HasNormalTextures(std::size_t index) const
+{
+    const auto& material = _asset.materials[index];
+    return !material.unlit && (material.normalTexture ||
+                               (material.clearcoat && material.clearcoat->clearcoatFactor > 0.0f &&
+                                material.clearcoat->clearcoatNormalTexture));
 }
 
 std::optional<std::size_t>
@@ -1354,11 +1394,11 @@ MaterialAuthor::TangentTexCoord(std::size_t index) const
 bool
 MaterialAuthor::Prepare(std::optional<std::size_t> materialIndex, std::size_t uvSetCount,
                         const pxr::VtVec3fArray* colors, const pxr::VtFloatArray& alpha,
-                        MaterialBinding& binding, std::string& error)
+                        MaterialBinding& binding, std::string& error, MaterialUse use)
 {
     if (!materialIndex)
     {
-        return PrepareDefault(colors != nullptr, binding, error);
+        return PrepareDefault(colors != nullptr, use, binding, error);
     }
     const auto index = *materialIndex;
     if (index >= _asset.materials.size())
@@ -1525,7 +1565,25 @@ MaterialAuthor::Prepare(std::optional<std::size_t> materialIndex, std::size_t uv
         error = "material iridescence thickness is non-finite or negative";
         return false;
     }
-    auto& material = colors ? _vertexColorMaterials[index] : _materials[index];
+    // An unlit material is unlit on points and lines too, and one without normal textures draws
+    // the same without them.
+    if (source.unlit || (use == MaterialUse::WithoutNormalTextures && !HasNormalTextures(index)))
+    {
+        use = MaterialUse::Full;
+    }
+    auto factors = pbrFactors(source);
+    if (use == MaterialUse::Unlit)
+    {
+        factors.unlit = true;
+        // The factor is the whole emission only without a texture to multiply it.
+        if (!source.emissiveTexture)
+        {
+            factors.unlitEmission = factors.emissive * factors.emissiveStrength;
+        }
+        // gltf_pbr's strength would scale the emitted base color too.
+        factors.emissiveStrength = 1.0f;
+    }
+    auto& material = _materials[{index, colors != nullptr, use}];
     if (!material)
     {
         const auto resolve = [&](const auto& info, std::optional<TextureInput>& texture)
@@ -1533,31 +1591,34 @@ MaterialAuthor::Prepare(std::optional<std::size_t> materialIndex, std::size_t uv
             return !info ||
                    resolveTexture(_asset, *info, _sourcePath, _buffers, texture.emplace(), error);
         };
-        // KHR_materials_unlit defines every other texture as a fallback for clients without it.
+        // KHR_materials_unlit defines every other texture as a fallback for clients without it,
+        // and an unlit point or line draws only its base color and emissive factor.
         // A clearcoat or transmission of factor 0 is disabled, and so is a volume without
         // transmission or thickness, so their textures are not read either. A specular weight of
         // 0 removes the reflection whatever its texture or color, and a black specular color
         // factor makes the color black whatever its texture. A black sheen color factor disables the
         // sheen layer, and a sheen roughness factor of 0 makes the roughness 0 whatever its texture.
         // An iridescence factor of 0 disables the film; equal thickness endpoints fix its thickness.
-        const auto factors = pbrFactors(source);
         const bool coated = hasClearcoat(factors);
         const bool transmits = hasTransmission(factors);
         const bool thick = hasVolume(factors);
-        const bool reflects = specular && !source.unlit && factors.specular > 0.0f;
+        const bool reflects = specular && !factors.unlit && factors.specular > 0.0f;
         const bool tinted = reflects && factors.specularColor != GfVec3f(0);
         const bool sheened = hasSheen(factors);
         const bool film = hasIridescence(factors);
         MaterialTextures textures;
         if (!resolve(pbr.baseColorTexture, textures.baseColor) ||
-            (!source.unlit && (!resolve(pbr.metallicRoughnessTexture, textures.metallicRoughness) ||
-                               !resolve(source.normalTexture, textures.normal) ||
-                               !resolve(source.occlusionTexture, textures.occlusion) ||
-                               !resolve(source.emissiveTexture, textures.emissive))) ||
+            (!factors.unlit &&
+             (!resolve(pbr.metallicRoughnessTexture, textures.metallicRoughness) ||
+              (use != MaterialUse::WithoutNormalTextures &&
+               !resolve(source.normalTexture, textures.normal)) ||
+              !resolve(source.occlusionTexture, textures.occlusion) ||
+              !resolve(source.emissiveTexture, textures.emissive))) ||
             (coated &&
              (!resolve(clearcoat->clearcoatTexture, textures.clearcoat) ||
               !resolve(clearcoat->clearcoatRoughnessTexture, textures.clearcoatRoughness) ||
-              !resolve(clearcoat->clearcoatNormalTexture, textures.clearcoatNormal))) ||
+              (use != MaterialUse::WithoutNormalTextures &&
+               !resolve(clearcoat->clearcoatNormalTexture, textures.clearcoatNormal)))) ||
             (transmits && !resolve(transmission->transmissionTexture, textures.transmission)) ||
             (thick && !resolve(volume->thicknessTexture, textures.thickness)) ||
             (reflects && !resolve(specular->specularTexture, textures.specular)) ||
@@ -1704,9 +1765,16 @@ MaterialAuthor::Prepare(std::optional<std::size_t> materialIndex, std::size_t uv
                     "colors; its network ignores COLOR_0",
                     index);
         }
-        material = authorMaterial(
-            source, "Material_" + std::to_string(index) + (colors ? "_VertexColor" : ""), _stage,
-            _scope, colors != nullptr, textures);
+        if (use == MaterialUse::Unlit && source.emissiveTexture)
+        {
+            TF_WARN("glTF material %zu: points and lines without NORMAL are drawn without the "
+                    "emission of an emissive texture",
+                    index);
+        }
+        material = authorMaterial(source, factors,
+                                  "Material_" + std::to_string(index) +
+                                      (colors ? "_VertexColor" : "") + materialUseSuffix(use),
+                                  _stage, _scope, colors != nullptr, textures);
         if (!material)
         {
             error = "could not author USD material";
@@ -1715,7 +1783,7 @@ MaterialAuthor::Prepare(std::optional<std::size_t> materialIndex, std::size_t uv
     }
     if (colors && !pbr.baseColorTexture)
     {
-        preparePreviewPrimvars(pbrFactors(source), *colors, alpha, binding);
+        preparePreviewPrimvars(factors, *colors, alpha, binding);
     }
     binding.material = material;
     binding.doubleSided = source.doubleSided;
@@ -1723,14 +1791,21 @@ MaterialAuthor::Prepare(std::optional<std::size_t> materialIndex, std::size_t uv
 }
 
 bool
-MaterialAuthor::PrepareDefault(bool hasVertexColor, MaterialBinding& binding, std::string& error)
+MaterialAuthor::PrepareDefault(bool hasVertexColor, MaterialUse use, MaterialBinding& binding,
+                               std::string& error)
 {
-    auto& material = hasVertexColor ? _defaultVertexColorMaterial : _defaultMaterial;
+    // The default material has no textures, and its emissive factor is black.
+    const bool unlit = use == MaterialUse::Unlit;
+    auto& material = _materials[{std::nullopt, hasVertexColor, unlit ? use : MaterialUse::Full}];
     if (!material)
     {
-        material =
-            authorMaterial(fastgltf::Material{}, hasVertexColor ? "DefaultVertexColor" : "Default",
-                           _stage, _scope, hasVertexColor);
+        const fastgltf::Material source;
+        auto factors = pbrFactors(source);
+        factors.unlit = unlit;
+        material = authorMaterial(source, factors,
+                                  std::string(hasVertexColor ? "DefaultVertexColor" : "Default") +
+                                      (unlit ? "Unlit" : ""),
+                                  _stage, _scope, hasVertexColor);
         if (!material)
         {
             error = "could not author default USD material";
@@ -1742,16 +1817,16 @@ MaterialAuthor::PrepareDefault(bool hasVertexColor, MaterialBinding& binding, st
 }
 
 bool
-MaterialBinding::Author(const pxr::UsdGeomMesh& mesh, std::string& error) const
+MaterialBinding::Author(const pxr::UsdGeomGprim& gprim, std::string& error) const
 {
     using namespace pxr;
-    if (!UsdShadeMaterialBindingAPI(mesh.GetPrim()).Bind(material) ||
-        !mesh.CreateDoubleSidedAttr().Set(doubleSided))
+    if (!UsdShadeMaterialBindingAPI(gprim.GetPrim()).Bind(material) ||
+        (gprim.GetPrim().IsA<UsdGeomMesh>() && !gprim.CreateDoubleSidedAttr().Set(doubleSided)))
     {
         error = "could not author USD material binding or sidedness";
         return false;
     }
-    const UsdGeomPrimvarsAPI primvars(mesh);
+    const UsdGeomPrimvarsAPI primvars(gprim);
     if ((!previewColors.empty() &&
          !primvars
               .CreatePrimvar(TfToken("gltf_previewBaseColor"), SdfValueTypeNames->Color3fArray,

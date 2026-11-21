@@ -989,12 +989,23 @@ def rigid(axis, degrees, position):
     return Gf.Matrix4d().SetRotate(Gf.Rotation(Gf.Vec3d(*axis), degrees)).SetTranslateOnly(Gf.Vec3d(*position))
 
 
-def topology_document(extension, mode, indices, external=False, normal=False, index_type=5123):
+EMISSIVE_STRENGTH = "KHR_materials_emissive_strength"
+
+
+def connected(shader_input):
+    """The shader that an input is connected to."""
+    return UsdShade.Shader(shader_input.GetConnectedSource()[0].GetPrim())
+
+
+def topology_document(extension, mode, indices, external=False, normal=False, index_type=5123, distinct=False):
+    """A primitive of five vertices. With `distinct`, vertex i has the UV (i / 4, 0.75) and the color
+    (i / 4, 0, 0), and otherwise all have (0.25, 0.75) and red."""
     vertices = (
         (0, 0, 0), (1, 0, 0), (0, 1, 0), (1, 1, 0), (0, 2, 0),
     )
-    binary = b"".join(struct.pack("<3f3f2f3f", *point, 0, 0, 1, 0.25, 0.75, 1, 0, 0)
-                      for point in vertices)
+    binary = b"".join(struct.pack("<3f3f2f3f", *point, 0, 0, 1, i / 4 if distinct else 0.25, 0.75,
+                                  i / 4 if distinct else 1, 0, 0)
+                      for i, point in enumerate(vertices))
     vertex_size = len(binary)
     if indices is not None:
         fmt = {5121: "B", 5123: "H", 5125: "I"}[index_type]
@@ -1917,6 +1928,244 @@ class FileFormatTest(unittest.TestCase):
                 self.assertAlmostEqual(
                     UsdGeom.PrimvarsAPI(mesh).GetPrimvar("gltf_colorAlpha").Get()[0], 64 / 255, places=6)
 
+    def test_points_and_lines(self):
+        vertices = [Gf.Vec3f(0, 0, 0), Gf.Vec3f(1, 0, 0), Gf.Vec3f(0, 1, 0), Gf.Vec3f(1, 1, 0), Gf.Vec3f(0, 2, 0)]
+        cases = (
+            # mode, indices or None for `count` vertices in order, prim type, curve vertex counts, wrap
+            (0, None, 5, "Points", None, None),
+            (0, [4, 1, 1], 5, "Points", None, None),
+            (1, None, 4, "BasisCurves", [2, 2], UsdGeom.Tokens.nonperiodic),
+            (1, [3, 0, 0, 4], 5, "BasisCurves", [2, 2], UsdGeom.Tokens.nonperiodic),
+            (2, [0, 1, 3, 2], 5, "BasisCurves", [4], UsdGeom.Tokens.periodic),
+            (2, None, 2, "BasisCurves", [2], UsdGeom.Tokens.periodic),
+            (3, None, 5, "BasisCurves", [5], UsdGeom.Tokens.nonperiodic),
+            (3, [2, 0], 5, "BasisCurves", [2], UsdGeom.Tokens.nonperiodic),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            for extension in ("gltf", "glb"):
+                for index_type in (5121, 5123, 5125):
+                    for case, (mode, indices, count, kind, counts, wrap) in enumerate(cases):
+                        if indices is None and index_type != 5123:
+                            continue
+                        for normal in (False, True):
+                            with self.subTest(extension=extension, index_type=index_type, case=case, normal=normal):
+                                path = root / f"points_lines_{index_type}_{case}_{normal}.{extension}"
+                                document, binary = topology_document(extension, mode, indices, normal=normal,
+                                                                     index_type=index_type, distinct=True)
+                                if indices is None:
+                                    for accessor in document["accessors"]:
+                                        accessor["count"] = count
+                                write_asset(path, document, binary if extension == "glb" else None)
+                                stage = Usd.Stage.Open(str(path))
+                                prim = stage.GetPrimAtPath("/Root/Scenes/Scene_0/Node_0/Mesh_0/Primitive_0")
+                                self.assertEqual(prim.GetTypeName(), kind)
+                                # Each element is the vertex of an index, in index order.
+                                order = indices if indices is not None else list(range(count))
+                                selected = [vertices[i] for i in order]
+                                geometry = UsdGeom.PointBased(prim)
+                                self.assertEqual(list(geometry.GetPointsAttr().Get()), selected)
+                                lower = Gf.Vec3f(*(min(point[axis] for point in selected) for axis in range(3)))
+                                upper = Gf.Vec3f(*(max(point[axis] for point in selected) for axis in range(3)))
+                                self.assertEqual(list(geometry.GetExtentAttr().Get()), [lower, upper])
+                                if kind == "Points":
+                                    points = UsdGeom.Points(prim)
+                                    self.assertEqual(list(points.GetWidthsAttr().Get()), [0.0])
+                                    self.assertEqual(points.GetWidthsInterpolation(), UsdGeom.Tokens.constant)
+                                else:
+                                    curves = UsdGeom.BasisCurves(prim)
+                                    self.assertEqual(curves.GetTypeAttr().Get(), UsdGeom.Tokens.linear)
+                                    self.assertEqual(curves.GetWrapAttr().Get(), wrap)
+                                    self.assertEqual(list(curves.GetCurveVertexCountsAttr().Get()), counts)
+                                    self.assertFalse(curves.GetWidthsAttr().HasAuthoredValue())
+                                if normal:
+                                    self.assertEqual(list(geometry.GetNormalsAttr().Get()),
+                                                     [Gf.Vec3f(0, 0, 1)] * len(order))
+                                    self.assertEqual(geometry.GetNormalsInterpolation(), UsdGeom.Tokens.vertex)
+                                else:
+                                    self.assertFalse(geometry.GetNormalsAttr().HasAuthoredValue())
+                                primvars = UsdGeom.PrimvarsAPI(prim)
+                                st = primvars.GetPrimvar("st")
+                                self.assertEqual(list(st.Get()), [Gf.Vec2f(i / 4, 0.25) for i in order])
+                                self.assertEqual(st.GetInterpolation(), UsdGeom.Tokens.vertex)
+                                color = primvars.GetPrimvar("displayColor")
+                                self.assertEqual(list(color.Get()), [Gf.Vec3f(i / 4, 0, 0) for i in order])
+                                self.assertEqual(color.GetInterpolation(), UsdGeom.Tokens.vertex)
+                                self.assertFalse(UsdGeom.Gprim(prim).GetDoubleSidedAttr().HasAuthoredValue())
+                                bound, _ = UsdShade.MaterialBindingAPI(prim).ComputeBoundMaterial()
+                                self.assertEqual(bound.GetPath().name,
+                                                 "DefaultVertexColor" if normal else "DefaultVertexColorUnlit")
+                                if not normal:
+                                    surface = UsdShade.Shader.Get(stage, f"{bound.GetPath()}/preview/surface")
+                                    self.assertEqual(surface.GetInput("diffuseColor").Get(), Gf.Vec3f(0))
+                                    reader = connected(surface.GetInput("emissiveColor"))
+                                    self.assertEqual(reader.GetInput("varname").Get(), "displayColor")
+
+    def test_point_and_line_materials(self):
+        def run(path):
+            return subprocess.run(
+                [sys.executable, "-c", "from pxr import Usd; import sys; assert Usd.Stage.Open(sys.argv[1])", str(path)],
+                capture_output=True, text=True, check=False,
+            )
+
+        image = {"uri": "data:image/png;base64," + base64.b64encode(PNG).decode()}
+        base, emission = Gf.Vec3f(0.5, 0.25, 1), Gf.Vec3f(0.5, 1, 0)
+        cases = (
+            # name, COLOR_0, NORMAL, TANGENT, material changes, bound material
+            ("unlit", False, False, False, {}, "Material_0_Unlit"),
+            ("unlit colors", True, False, False, {}, "Material_0_VertexColor_Unlit"),
+            ("unlit texture", False, False, False, {"base texture": True}, "Material_0_Unlit"),
+            ("unlit emissive texture", False, False, False, {"emissiveTexture": {"index": 0}}, "Material_0_Unlit"),
+            ("lit", True, True, False, {}, "Material_0_VertexColor"),
+            ("lit normal texture", False, True, False, {"normalTexture": {"index": 0}},
+             "Material_0_NoNormalTexture"),
+            ("lit normal texture and tangents", False, True, True, {"normalTexture": {"index": 0}},
+             "Material_0_NoNormalTexture"),
+            ("KHR_materials_unlit", True, False, False, {"unlit": True}, "Material_0_VertexColor"),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            for extension in ("gltf", "glb"):
+                for case, (name, colors, normal, tangent, changes, expected) in enumerate(cases):
+                    with self.subTest(extension=extension, name=name):
+                        document, binary = topology_document(extension, 1, [0, 1, 2, 3], normal=normal, distinct=True)
+                        primitive = document["meshes"][0]["primitives"][0]
+                        if not colors:
+                            del primitive["attributes"]["COLOR_0"]
+                        if tangent:
+                            binary = append_view(document, binary, extension, struct.pack("<20f", *(1, 0, 0, 1) * 5))
+                            document["accessors"].append({"bufferView": len(document["bufferViews"]) - 1,
+                                                          "componentType": 5126, "count": 5, "type": "VEC4"})
+                            primitive["attributes"]["TANGENT"] = len(document["accessors"]) - 1
+                        material = {"pbrMetallicRoughness": {"baseColorFactor": [*base, 1]},
+                                    "emissiveFactor": [0.25, 0.5, 0],
+                                    "extensions": {EMISSIVE_STRENGTH: {"emissiveStrength": 2}}}
+                        document["extensionsUsed"] = [EMISSIVE_STRENGTH]
+                        for key, value in changes.items():
+                            if key == "base texture":
+                                material["pbrMetallicRoughness"]["baseColorTexture"] = {"index": 0}
+                            elif key == "unlit":
+                                # glTF does not combine an emissive strength with an unlit material.
+                                material["extensions"] = {"KHR_materials_unlit": {}}
+                                document["extensionsUsed"] = ["KHR_materials_unlit"]
+                            else:
+                                material[key] = value
+                        document["materials"] = [material]
+                        document["images"] = [image]
+                        document["textures"] = [{"source": 0}]
+                        primitive["material"] = 0
+                        path = root / f"point_line_material_{case}.{extension}"
+                        write_asset(path, document, binary if extension == "glb" else None)
+                        result = run(path)
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertEqual("normal textures are not drawn on points and lines" in result.stderr,
+                                         tangent)
+                        self.assertEqual("without the emission of an emissive texture" in result.stderr,
+                                         "emissiveTexture" in changes)
+                        stage = Usd.Stage.Open(str(path))
+                        prim = stage.GetPrimAtPath("/Root/Scenes/Scene_0/Node_0/Mesh_0/Primitive_0")
+                        bound, _ = UsdShade.MaterialBindingAPI(prim).ComputeBoundMaterial()
+                        self.assertEqual(bound.GetPath().name, expected)
+                        material_path = bound.GetPath()
+                        surface = UsdShade.Shader.Get(stage, material_path.AppendPath("preview/surface"))
+                        pbr = UsdShade.Shader.Get(stage, material_path.AppendPath("mtlx/surface"))
+                        names = {child.GetName() for child in Usd.PrimRange(bound.GetPrim())}
+                        self.assertNotIn("normalTexture", names)
+                        self.assertNotIn("normalImage", names)
+                        primvars = UsdGeom.PrimvarsAPI(prim)
+                        if not expected.endswith("Unlit"):
+                            if name == "KHR_materials_unlit":
+                                self.assertEqual(Gf.Vec3f(pbr.GetInput("base_color").Get()), Gf.Vec3f(0))
+                            else:
+                                self.assertEqual(Gf.Vec3f(pbr.GetInput("base_color").Get()), base)
+                                self.assertEqual(pbr.GetInput("emissive_strength").Get(), 2)
+                            continue
+                        # The base color, times COLOR_0, plus the emissive factor without an emissive texture.
+                        added = Gf.Vec3f(0) if "emissiveTexture" in changes else emission
+                        self.assertEqual(surface.GetInput("diffuseColor").Get(), Gf.Vec3f(0))
+                        self.assertEqual(Gf.Vec3f(pbr.GetInput("base_color").Get()), Gf.Vec3f(0))
+                        self.assertEqual(pbr.GetInput("specular").Get(), 0)
+                        self.assertFalse(pbr.GetInput("emissive_strength"))
+                        self.assertNotIn("emissiveTexture", names)
+                        self.assertNotIn("emissiveImage", names)
+                        mtlx_emission = pbr.GetInput("emissive")
+                        if name == "unlit colors":
+                            self.assertEqual(list(primvars.GetPrimvar("gltf_previewBaseColor").Get()),
+                                             [Gf.CompMult(Gf.Vec3f(i / 4, 0, 0), base) + emission for i in range(4)])
+                            reader = connected(surface.GetInput("emissiveColor"))
+                            self.assertEqual(reader.GetInput("varname").Get(), "gltf_previewBaseColor")
+                            adder = connected(mtlx_emission)
+                            self.assertEqual(adder.GetShaderId(), "ND_add_color3")
+                            self.assertEqual(Gf.Vec3f(adder.GetInput("in2").Get()), emission)
+                            self.assertEqual(connected(adder.GetInput("in1")).GetShaderId(), "ND_multiply_color3")
+                        elif name == "unlit texture":
+                            texture = connected(surface.GetInput("emissiveColor"))
+                            self.assertEqual(texture.GetInput("scale").Get(), Gf.Vec4f(*base, 1))
+                            self.assertEqual(texture.GetInput("bias").Get(), Gf.Vec4f(*emission, 0))
+                            adder = connected(mtlx_emission)
+                            self.assertEqual(adder.GetShaderId(), "ND_add_color3")
+                            self.assertEqual(Gf.Vec3f(adder.GetInput("in2").Get()), emission)
+                        else:
+                            self.assertEqual(surface.GetInput("emissiveColor").Get(), base + added)
+                            self.assertFalse(mtlx_emission.HasConnectedSource())
+                            self.assertEqual(Gf.Vec3f(mtlx_emission.Get()), base + added)
+
+    def test_point_and_line_failures_preserve_layer(self):
+        def mutate(document, name):
+            primitive = document["meshes"][0]["primitives"][0]
+            if name == "odd lines":
+                document["accessors"][4]["count"] = 3
+            elif name == "short strip":
+                primitive["mode"] = 3
+                document["accessors"][4]["count"] = 1
+            elif name == "short loop":
+                primitive["mode"] = 2
+                document["accessors"][4]["count"] = 1
+            elif name == "index range":
+                document["accessors"][0]["count"] = 3
+                for index in range(1, 4):
+                    document["accessors"][index]["count"] = 3
+            elif name == "morph":
+                primitive["targets"] = [{"POSITION": 0}]
+            elif name == "skin":
+                document["nodes"] = [{"mesh": 0, "skin": 0}, {}]
+                document["scenes"][0]["nodes"] = [0, 1]
+                document["skins"] = [{"joints": [1]}]
+            elif name == "draco":
+                document["extensionsUsed"] = document["extensionsRequired"] = [DRACO]
+                primitive["extensions"] = {DRACO: {"bufferView": 0, "attributes": {"POSITION": 0}}}
+
+        cases = {
+            "odd lines": "line index count is invalid",
+            "short strip": "line strip or loop index count is invalid",
+            "short loop": "line strip or loop index count is invalid",
+            "index range": "index is out of range",
+            "morph": "morph targets on points and lines are not supported",
+            "skin": "skins on points and lines are not supported",
+            "draco": "KHR_draco_mesh_compression supports only TRIANGLES",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            for extension in ("gltf", "glb"):
+                path = pathlib.Path(directory) / f"lines.{extension}"
+                document, binary = topology_document(extension, 1, [0, 1, 2, 4])
+                write_asset(path, document, binary if extension == "glb" else None)
+                stage = Usd.Stage.Open(str(path))
+                layer = stage.GetRootLayer()
+                before = layer_text(layer)
+                for name, message in cases.items():
+                    with self.subTest(extension=extension, name=name):
+                        invalid, invalid_binary = topology_document(extension, 1, [0, 1, 2, 4])
+                        mutate(invalid, name)
+                        write_asset(path, invalid, invalid_binary if extension == "glb" else None)
+                        with self.assertRaisesRegex(Tf.ErrorException, message):
+                            layer.Reload(True)
+                        self.assertEqual(layer_text(layer), before)
+                        self.assertEqual(
+                            stage.GetPrimAtPath("/Root/Scenes/Scene_0/Node_0/Mesh_0/Primitive_0").GetTypeName(),
+                            "BasisCurves")
+                write_asset(path, document, binary if extension == "glb" else None)
+                self.assertTrue(layer.Reload(True))
+
     def test_mesh_failures_and_reload_preservation(self):
         def mutate(document, name):
             primitive = document["meshes"][0]["primitives"][0]
@@ -1956,7 +2205,9 @@ class FileFormatTest(unittest.TestCase):
             elif name == "attribute":
                 primitive["attributes"]["COLOR_1"] = 0
             elif name == "mode":
-                primitive["mode"] = 1
+                primitive["mode"] = 0
+                for other in document["meshes"][0]["primitives"]:
+                    other["targets"] = [{"POSITION": 0}]
 
         cases = {
             "accessor": "accessor index",
@@ -1973,7 +2224,7 @@ class FileFormatTest(unittest.TestCase):
             "stride": "bufferView",
             "material": "texture coordinate set the primitive does not have",
             "attribute": "unsupported or repeated vertex attribute",
-            "mode": "primitive mode LINES is not supported",
+            "mode": "morph targets on points and lines are not supported",
         }
         with tempfile.TemporaryDirectory() as directory:
             for extension in ("gltf", "glb"):

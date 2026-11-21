@@ -794,6 +794,138 @@ def check_unlit(renderer, report):
     qt[2].doneCurrent()
 
 
+def lines_document(mode, material, color=None, normal=False):
+    """A primitive whose bounds are the unit square, with points or horizontal lines packed closer than a pixel's
+    multisamples around its center, so that pixels there are covered entirely.
+
+    `mode` is a glTF mode for points or lines; `color` gives every vertex that COLOR_0."""
+    # The framing camera shows the square about 1360 pixels wide, so these are 0.3 pixels apart over 80.
+    rows = [0.47 + 0.06 * row / 270 for row in range(271)]
+    if mode == 0:
+        positions = [0, 0, 0, 1, 1, 0]
+        positions += [coordinate for y in rows for x in rows for coordinate in (x, y, 0)]
+    elif mode == 1:
+        positions = [0, 0, 0, 1, 1, 0]
+        positions += [coordinate for y in rows for coordinate in (0, y, 0, 1, y, 0)]
+    else:
+        # A strip and a loop zigzag across the band, from one corner of the square to the other.
+        positions = [0, 0, 0]
+        for row, y in enumerate(rows):
+            positions += [0, y, 0, 1, y, 0] if row % 2 == 0 else [1, y, 0, 0, y, 0]
+        positions += [1, 1, 0]
+    vertices = len(positions) // 3
+    data = struct.pack(f"<{len(positions)}f", *positions)
+    accessors = [{"bufferView": 0, "componentType": 5126, "count": vertices, "type": "VEC3",
+                  "min": [min(positions[0::3]), min(positions[1::3]), 0],
+                  "max": [max(positions[0::3]), max(positions[1::3]), 0]}]
+    views = [{"buffer": 0, "byteOffset": 0, "byteLength": len(data)}]
+    attributes = {"POSITION": 0}
+    extra = [("TEXCOORD_0", "VEC2", [0.5, 0.5] * vertices)]
+    if normal:
+        extra.append(("NORMAL", "VEC3", [0, 0, 1] * vertices))
+    if color:
+        extra.append(("COLOR_0", "VEC3", list(color) * vertices))
+    for name, kind, values in extra:
+        views.append({"buffer": 0, "byteOffset": len(data), "byteLength": len(values) * 4})
+        data += struct.pack(f"<{len(values)}f", *values)
+        accessors.append({"bufferView": len(views) - 1, "componentType": 5126, "count": vertices, "type": kind})
+        attributes[name] = len(accessors) - 1
+    primitive = {"attributes": attributes, "mode": mode}
+    if material is not None:
+        primitive["material"] = 0
+    document = {"asset": {"version": "2.0"}, "scene": 0, "scenes": [{"nodes": [0]}], "nodes": [{"mesh": 0}],
+                "meshes": [{"primitives": [primitive]}], "accessors": accessors, "bufferViews": views,
+                "buffers": [{"byteLength": len(data),
+                             "uri": "data:application/octet-stream;base64," + base64.b64encode(data).decode()}]}
+    if material is not None:
+        document["materials"] = [material]
+    return document
+
+
+def drawn_color(image, window=60):
+    """The most common color, other than the black background, in a window at the image's center.
+
+    A point or line covers some pixels fully and others in part, and the full ones share one color."""
+    counts = {}
+    left, top = image.width() // 2 - window // 2, image.height() // 2 - window // 2
+    for y in range(top, top + window):
+        for x in range(left, left + window):
+            pixel = image.pixelColor(x, y)
+            rgb = (pixel.red(), pixel.green(), pixel.blue())
+            if max(rgb) > 8:
+                counts[rgb] = counts.get(rgb, 0) + 1
+    if not counts:
+        return (0, 0, 0, 255)
+    return (*max(counts, key=counts.get), 255)
+
+
+def check_points_and_lines(renderer, report):
+    """Renders points and lines without NORMAL, which glTF draws unlit as their base color, times COLOR_0, plus
+    their emissive factor, in darkness and under a light; and lines with NORMAL, which a light changes."""
+    qt = offscreen_context(report, "points and lines")
+    if not qt:
+        return
+    extension = "KHR_materials_emissive_strength"
+    material = {**pbr(baseColorFactor=[0.5, 0.25, 0.75, 1], metallicFactor=0), "emissiveFactor": [0.125, 0.25, 0],
+                "extensions": {extension: {"emissiveStrength": 2}}}
+
+    for path in PATHS:
+
+        def render(name, mode, material, color=None, normal=False, images=(), light=None):
+            document = lines_document(mode, material, color, normal)
+            if material and "extensions" in material:
+                document["extensionsUsed"] = [extension]
+            if images:
+                document["images"] = [{"uri": "data:image/png;base64," + base64.b64encode(png(c)).decode()}
+                                      for c in images]
+                document["textures"] = [{"source": 0}]
+            if light:
+                document["extensionsUsed"] = [*document.get("extensionsUsed", []), "KHR_lights_punctual"]
+                document["extensions"] = {"KHR_lights_punctual": {"lights": [light]}}
+                document["nodes"].append({"translation": [0.5, 0.5, 1],
+                                          "extensions": {"KHR_lights_punctual": {"light": 0}}})
+                document["scenes"][0]["nodes"].append(1)
+            asset = renderer.output / f"lines_{name}.gltf"
+            asset.write_text(json.dumps(document), encoding="utf-8")
+            _, stage = renderer.session(f"lines_{name}", asset, path, None)
+            image = engine_image(stage, [], Gf.Vec4f(0, 0, 0, 1))
+            image.save(str(renderer.output / f"lines_{name}_{path}.png"))
+            return drawn_color(image)
+
+        light = {"type": "point", "intensity": ILLUMINANCE * 4}
+        # Without gamma correction, a pixel is the linear value: 0.5 + 0.125 * 2, 0.25 + 0.25 * 2 and 0.75.
+        summed = (191, 191, 191, 255)
+        for mode, kind in ((1, "lines"), (2, "loop"), (3, "strip")):
+            report.same(f"{path} {kind} without NORMAL and material are white", render(f"default_{mode}", mode, None),
+                        (255, 255, 255, 255))
+            report.same(f"{path} {kind} without NORMAL show base color plus emission",
+                        render(f"summed_{mode}", mode, material), summed)
+        # Storm draws a point of width 0 on one multisample of a pixel, however close the points, so white points
+        # measure the coverage that scales every other color.
+        white = render("default_0", 0, None)
+        report.expect(f"{path} points without NORMAL and material are gray or white",
+                      white[0] == white[1] == white[2] >= 32, f"{white}")
+        coverage = white[0] / 255
+        report.same(f"{path} points without NORMAL show base color plus emission, at the coverage of white points",
+                    render("summed_0", 0, material), (*(round(c * coverage) for c in summed[:3]), 255))
+        report.same(f"{path} a light does not change lines without NORMAL",
+                    render("summed_lit", 1, material, light=light), summed)
+        # COLOR_0 multiplies the base color only: 0.5 * 0.5 + 0.25, 0.25 * 1 + 0.5 and 0.75 * 0.5.
+        report.same(f"{path} COLOR_0 multiplies the base color of lines without NORMAL",
+                    render("colors", 1, material, color=(0.5, 1, 0.5)), (128, 191, 96, 255))
+        # An sRGB image of 188 reads as 0.503, times the factor, plus the emission.
+        textured = {**material, "pbrMetallicRoughness": {**material["pbrMetallicRoughness"],
+                                                         "baseColorTexture": {"index": 0}}}
+        report.same(f"{path} a base color image of lines without NORMAL adds the emission",
+                    render("image", 1, textured, images=[(188, 188, 188, 255)]),
+                    (round((0.503 * 0.5 + 0.25) * 255), round((0.503 * 0.25 + 0.5) * 255),
+                     round(0.503 * 0.75 * 255), 255))
+        report.different(f"{path} a light changes lines with NORMAL",
+                         render("normal_lit", 1, material, normal=True, light=light),
+                         render("normal_dark", 1, material, normal=True))
+    qt[2].doneCurrent()
+
+
 def check_emissive_strength(renderer, report):
     """Compare factor and texture emission against linear, factor-only controls in darkness."""
     qt = offscreen_context(report, "emissive strength")
@@ -1342,7 +1474,7 @@ def main():
     report = Report(arguments.verbose)
     renderer = Renderer(output, plugin, report)
     for check in (check_reflections, check_lights, check_node_visibility, check_material_variants,
-                  check_unlit, check_emissive_strength, check_ior,
+                  check_unlit, check_points_and_lines, check_emissive_strength, check_ior,
                   check_specular, check_anisotropy, check_iridescence, check_sheen, check_clearcoat,
                   check_transmission, check_volume, check_dispersion, check_alpha_modes, check_base_color_textures,
                   check_pbr_textures, check_normal_textures, check_texture_transforms,
