@@ -8,6 +8,8 @@ here.
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-11-21
+
 ### Added
 
 - Read sparse accessors and accessors without a bufferView wherever the importer reads accessor
