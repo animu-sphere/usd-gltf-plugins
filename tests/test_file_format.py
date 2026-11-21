@@ -671,6 +671,23 @@ def morph_document(static=False):
     return document, binary
 
 
+def morph_tangent_document(extension, delta=(5120, True, ((127, 0, -128),) * 3)):
+    """A triangle with a float frame. Its first target moves only tangents, and its second moves
+    positions and tangents, with the tangent deltas in the given format."""
+    document, binary = quantized_document(extension, {
+        "POSITION": FLOAT_POSITIONS,
+        "NORMAL": (5126, False, ((0, 0, 1),) * 3),
+        "TANGENT": (5126, False, ((1, 0, 0, -1),) * 3),
+        "first": (5126, False, ((0, 0.5, 0), (0, -0.5, 0), (0.25, 0, 1))),
+        "offsets": (5126, False, ((0, 0, 1),) * 3),
+        "second": delta,
+    })
+    primitive = document["meshes"][0]["primitives"][0]
+    attributes = primitive["attributes"]
+    primitive["targets"] = [{"TANGENT": attributes.pop("first")},
+                            {"POSITION": attributes.pop("offsets"), "TANGENT": attributes.pop("second")}]
+    return document, binary
+
 def quaternion(axis, degrees):
     """A unit quaternion, x, y, z, w as glTF orders it."""
     length = math.sqrt(sum(c * c for c in axis))
@@ -2011,6 +2028,7 @@ class FileFormatTest(unittest.TestCase):
             }),
             "skin": skin_document(False),
             "morph": morph_document(),
+            "morph tangents": morph_tangent_document("glb"),
             "visibility": visibility_document(),
         }
         with tempfile.TemporaryDirectory() as directory:
@@ -7183,7 +7201,9 @@ assert layer.ExportToString() == Path(sys.argv[3]).read_text(encoding="utf-8")
             return d["meshes"][0]["primitives"][0]["targets"][0]
 
         cases = {
-            "unsupported target": (lambda d: target(d).update(TANGENT=0), "morph target attribute TANGENT"),
+            "unsupported target": (lambda d: target(d).update(TEXCOORD_0=0), "morph target attribute TEXCOORD_0"),
+            "tangent without a base": (lambda d: target(d).update(TANGENT=target(d)["POSITION"]),
+                                       "missing base attribute for morph target TANGENT"),
             "different counts": (lambda d: d["meshes"][0]["primitives"][1]["targets"].pop(),
                                  "different morph target counts"),
             "node weights": (lambda d: d["nodes"][1].update(weights=[1]), "morph weight count"),
@@ -7222,6 +7242,67 @@ assert layer.ExportToString() == Path(sys.argv[3]).read_text(encoding="utf-8")
                         self.assertTrue(stage.GetPrimAtPath("/Root/Scenes/Scene_0/Node_0/Mesh_0/Primitive_0"))
                 write_asset(path, document, binary)
                 self.assertTrue(layer.Reload(True))
+
+
+    def test_morph_tangent_offsets(self):
+        # UsdSkel does not apply these offsets, so gltf_tangent keeps the base frame.
+        prim_path = "/Root/Scenes/Scene_0/Node_0/Mesh_0/Primitive_0"
+        with tempfile.TemporaryDirectory() as directory:
+            for extension in ("gltf", "glb"):
+                for component_type, rows in ((5120, ((127, 0, -128),) * 3), (5122, ((0, -32767, 32767),) * 3),
+                                             (5126, ((1, 0, -1),) * 3)):
+                    with self.subTest(extension=extension, component_type=component_type):
+                        delta = (component_type, component_type != 5126, rows)
+                        path = pathlib.Path(directory) / f"tangents_{component_type}.{extension}"
+                        write_asset(path, *morph_tangent_document(extension, delta))
+                        stage = Usd.Stage.Open(str(path))
+                        prim = stage.GetPrimAtPath(prim_path)
+                        self.assertEqual(list(UsdGeom.PrimvarsAPI(prim).GetPrimvar("gltf_tangent").Get()),
+                                         [Gf.Vec4f(1, 0, 0, -1)] * 3)
+                        first = UsdSkel.BlendShape.Get(stage, f"{prim_path}/BlendShape_0")
+                        second = UsdSkel.BlendShape.Get(stage, f"{prim_path}/BlendShape_1")
+                        self.assertEqual(list(first.GetOffsetsAttr().Get()), [Gf.Vec3f(0)] * 3)
+                        self.assertFalse(first.GetNormalOffsetsAttr().HasAuthoredValue())
+                        self.assertEqual(list(second.GetOffsetsAttr().Get()), [Gf.Vec3f(0, 0, 1)] * 3)
+                        attribute = first.GetPrim().GetAttribute("gltf:tangentOffsets")
+                        self.assertEqual(attribute.GetTypeName(), Sdf.ValueTypeNames.Vector3fArray)
+                        self.assertTrue(attribute.IsCustom())
+                        self.assertEqual(list(attribute.Get()),
+                                         [Gf.Vec3f(0, 0.5, 0), Gf.Vec3f(0, -0.5, 0), Gf.Vec3f(0.25, 0, 1)])
+                        expected = [Gf.Vec3f(*(decoded_component(component_type, delta[1], c) for c in row))
+                                    for row in rows]
+                        self.assertEqual(list(second.GetPrim().GetAttribute("gltf:tangentOffsets").Get()),
+                                         expected)
+                        self.assertTrue(stage.GetRootLayer().Reload(True))
+
+    def test_morph_tangent_failures_preserve_layer(self):
+        def change(**fields):
+            return lambda d: d["accessors"][d["meshes"][0]["primitives"][0]["targets"][1]["TANGENT"]].update(fields)
+
+        cases = {
+            "unsigned delta": (change(componentType=5121), "accessor has an invalid type"),
+            "unnormalized delta": (change(normalized=False), "accessor has an invalid type"),
+            "four components": (change(type="VEC4"), "accessor has an invalid type"),
+            "count": (change(count=2), "morph target accessor count"),
+        }
+        prim_path = "/Root/Scenes/Scene_0/Node_0/Mesh_0/Primitive_0"
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "tangents.glb"
+            write_asset(path, *morph_tangent_document("glb"))
+            stage = Usd.Stage.Open(str(path))
+            layer = stage.GetRootLayer()
+            before = layer_text(layer)
+            for name, (mutate, message) in cases.items():
+                with self.subTest(case=name):
+                    document, binary = morph_tangent_document("glb")
+                    mutate(document)
+                    write_asset(path, document, binary)
+                    with self.assertRaisesRegex(Tf.ErrorException, message):
+                        layer.Reload(True)
+                    self.assertEqual(layer_text(layer), before)
+                    self.assertTrue(stage.GetPrimAtPath(prim_path))
+                    write_asset(path, *morph_tangent_document("glb"))
+                    self.assertTrue(layer.Reload(True))
 
     def test_cameras(self):
         # Each camera prim, its glTF camera, and the rotation and position of its node without scale.

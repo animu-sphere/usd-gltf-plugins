@@ -13,6 +13,8 @@ here.
 - Read sparse accessors and accessors without a bufferView wherever the importer reads accessor
   data, including vertex attributes, indices, skins and animation, not only morph targets and
   weights.
+- Import morph target TANGENT deltas, kept on each blend shape as `gltf:tangentOffsets`, which
+  UsdSkel does not apply. See the [morph tangent decision](docs/adr/0041-morph-target-tangents.md).
 
 ## [0.12.0] - 2026-11-17
 

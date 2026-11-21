@@ -6,10 +6,6 @@ implementation order, which investigation may change. Each feature follows the
 
 ## v0.13.0 — Core geometry gaps
 
-- Evaluate morph target TANGENT deltas. UsdSkel blend shapes carry only point and normal offsets,
-  so record in an ADR how a retained or generated tangent relates to a morphed mesh, then import
-  AnimatedMorphCube by that decision.
-
 ### Release criteria
 
 - No Khronos sample file is rejected for sparse accessors or morph target TANGENT deltas, and the
