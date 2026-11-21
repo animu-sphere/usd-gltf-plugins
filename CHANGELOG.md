@@ -8,6 +8,8 @@ here.
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-11-21
+
 ### Added
 
 - Import POINTS as `UsdGeomPoints`, and LINES, LINE_STRIP and LINE_LOOP as linear
