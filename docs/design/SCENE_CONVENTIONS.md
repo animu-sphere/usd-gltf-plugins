@@ -12,7 +12,7 @@ implemented.
     /Scene_0                   Xform, or SkelRoot; the selected scene
       /Node_0                  Xform
         /Mesh_0                Xform
-          /Primitive_0         Mesh
+          /Primitive_0         Mesh, or Points or BasisCurves for points and lines
         /Camera_0              Camera
         /Light_0               SphereLight or DistantLight
         /Node_1                Xform
@@ -167,6 +167,28 @@ may be interleaved. Indices are glTF unsigned byte, unsigned short or unsigned i
 USD subdivision is disabled and winding remains right-handed; strips and fans are
 expanded into triangles, including degenerate triangles, with alternating strip
 winding. Absent normals on primitives without morph targets are generated per face for flat shading.
+
+## Points and lines
+
+A `POINTS` primitive is a `UsdGeomPoints`, and a `LINES`, `LINE_STRIP` or `LINE_LOOP` primitive a
+linear `UsdGeomBasisCurves`, at the same `Primitive_{index}` path as a mesh:
+
+| glTF mode | Curves | `wrap` |
+| --- | --- | --- |
+| `LINES` | One of 2 vertices per index pair | `nonperiodic` |
+| `LINE_STRIP` | One of every index | `nonperiodic` |
+| `LINE_LOOP` | One of every index | `periodic`, which adds the closing segment |
+
+Neither has indices, so element `k` of `points`, `normals` and every primvar is the vertex
+`indices[k]`, and a repeated index repeats its values. Points need at least one index, lines a
+non-zero even number, and strips and loops at least two. Attributes use the formats and names of a
+mesh, vertex-interpolated. Normals are authored only from NORMAL, and decide the
+[material](MATERIALS.md#points-and-lines). `doubleSided` is not authored.
+
+glTF defines no size for either. Points have the constant `widths` 0, so they have no size in the
+scene, and Storm draws them at its smallest point size. Curves have no `widths`, so Storm draws them
+one pixel wide. Morph targets, skins and Draco compression on points and lines fail with a
+diagnostic. See the [decision record](../adr/0042-points-and-lines.md).
 
 ## Quantized attributes
 

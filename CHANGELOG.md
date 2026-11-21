@@ -8,6 +8,13 @@ here.
 
 ## [Unreleased]
 
+### Added
+
+- Import POINTS as `UsdGeomPoints`, and LINES, LINE_STRIP and LINE_LOOP as linear
+  `UsdGeomBasisCurves`. Without NORMAL they are drawn unlit, as their base color plus their emissive
+  factor; with it, lit without normal textures. See the
+  [points and lines decision](docs/adr/0042-points-and-lines.md).
+
 ## [0.13.0] - 2026-11-21
 
 ### Added

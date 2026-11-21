@@ -64,8 +64,11 @@ DIAGNOSTIC_CAUSES = {
     "missing base attribute for morph target": ("morph target attribute",),
     "unsupported morph target attribute": ("morph target attribute",),
     "which has a matrix": ("animated matrix",),
-    "primitive mode": ("points or lines",),
+    "on points and lines are not supported": ("points or lines with", "skinned points or lines"),
+    "supports only TRIANGLES": ("points or lines with Draco",),
 }
+# glTF modes drawn as points and linear curves.
+POINTS_AND_LINES = (0, 1, 2, 3)
 REQUIRED_DIAGNOSTIC = re.compile(r"unsupported required extensions: (.*)")
 
 COMPONENTS = {5120: numpy.int8, 5121: numpy.uint8, 5122: numpy.int16, 5123: numpy.uint16, 5125: numpy.uint32,
@@ -410,25 +413,65 @@ def canonical_triangles(triangles):
                        axis=1)
 
 
+def primitive_type(primitive):
+    """The USD prim type that a glTF primitive's mode is authored as."""
+    mode = primitive.get("mode", 4)
+    return "Points" if mode == 0 else "BasisCurves" if mode in POINTS_AND_LINES else "Mesh"
+
+
+def check_points_or_curves(check, asset, prim, primitive, positions, label):
+    """Compares the topology of points or linear curves, and returns the vertex of each element."""
+    from pxr import UsdGeom
+
+    mode = primitive.get("mode", 4)
+    order = asset.accessor(primitive["indices"]).reshape(-1).astype(numpy.int64) if "indices" in primitive \
+        else numpy.arange(len(positions), dtype=numpy.int64)
+    if mode == 0:
+        points = UsdGeom.Points(prim)
+        widths = points.GetWidthsAttr().Get()
+        check.expect(widths is not None and list(widths) == [0.0]
+                     and points.GetWidthsInterpolation() == UsdGeom.Tokens.constant,
+                     f"{label} does not have the constant width 0")
+        return order
+    curves = UsdGeom.BasisCurves(prim)
+    counts = list(curves.GetCurveVertexCountsAttr().Get() or [])
+    expected = [2] * (len(order) // 2) if mode == 1 else [len(order)]
+    wrap = UsdGeom.Tokens.periodic if mode == 2 else UsdGeom.Tokens.nonperiodic
+    check.expect(counts == expected, f"{label} curve vertex counts differ")
+    check.expect(curves.GetTypeAttr().Get() == UsdGeom.Tokens.linear and curves.GetWrapAttr().Get() == wrap,
+                 f"{label} is not a linear {wrap} curve")
+    check.expect(not curves.GetWidthsAttr().HasAuthoredValue(), f"{label} authors widths")
+    return order
+
+
 def check_primitive(check, asset, prim, primitive, label):
     from pxr import UsdGeom
 
-    mesh = UsdGeom.Mesh(prim)
+    mesh = UsdGeom.PointBased(prim)
     attributes = primitive["attributes"]
     positions = asset.attribute(primitive, "POSITION")
-    check.close(mesh.GetPointsAttr().Get(), positions, f"{label} points")
+    if primitive.get("mode", 4) in POINTS_AND_LINES:
+        # Points and curves have no indices, so each element is the vertex of an index.
+        order = check_points_or_curves(check, asset, prim, primitive, positions, label)
+    else:
+        order = numpy.s_[:]
+    check.close(mesh.GetPointsAttr().Get(), positions[order], f"{label} points")
 
-    counts = numpy.asarray(mesh.GetFaceVertexCountsAttr().Get())
-    check.expect(bool(numpy.all(counts == 3)), f"{label} has a face that is not a triangle")
-    authored = numpy.asarray(mesh.GetFaceVertexIndicesAttr().Get(), numpy.int64).reshape(-1, 3)
-    triangles = expected_triangles(asset, primitive, len(positions))
-    check.expect(numpy.array_equal(canonical_triangles(authored), canonical_triangles(triangles)),
-                 f"{label} triangles differ")
+    if primitive.get("mode", 4) not in POINTS_AND_LINES:
+        mesh = UsdGeom.Mesh(prim)
+        counts = numpy.asarray(mesh.GetFaceVertexCountsAttr().Get())
+        check.expect(bool(numpy.all(counts == 3)), f"{label} has a face that is not a triangle")
+        authored = numpy.asarray(mesh.GetFaceVertexIndicesAttr().Get(), numpy.int64).reshape(-1, 3)
+        triangles = expected_triangles(asset, primitive, len(positions))
+        check.expect(numpy.array_equal(canonical_triangles(authored), canonical_triangles(triangles)),
+                     f"{label} triangles differ")
 
     normals = mesh.GetNormalsAttr().Get()
     if "NORMAL" in attributes:
-        check.close(normals, asset.attribute(primitive, "NORMAL"), f"{label} normals",
+        check.close(normals, asset.attribute(primitive, "NORMAL")[order], f"{label} normals",
                     absolute=asset.octahedral_normal_step(primitive))
+    elif primitive.get("mode", 4) in POINTS_AND_LINES:
+        check.expect(not normals, f"{label} authors normals for points or lines without NORMAL")
     elif primitive.get("targets"):
         check.expect(not normals, f"{label} authors normals for a morph target without base normals")
     else:
@@ -437,15 +480,15 @@ def check_primitive(check, asset, prim, primitive, label):
     primvars = UsdGeom.PrimvarsAPI(prim)
     sets = sorted(int(name[9:]) for name in attributes if name.startswith("TEXCOORD_"))
     for number in sets:
-        values = numpy.array(asset.attribute(primitive, f"TEXCOORD_{number}"), numpy.float64)
+        values = numpy.array(asset.attribute(primitive, f"TEXCOORD_{number}")[order], numpy.float64)
         values[:, 1] = 1.0 - values[:, 1]
         name = "st" if number == 0 else f"st{number}"
         check.close(primvars.GetPrimvar(name).Get(), values, f"{label} {name}")
     if "TANGENT" in attributes:
-        check.close(primvars.GetPrimvar("gltf_tangent").Get(), asset.attribute(primitive, "TANGENT"),
+        check.close(primvars.GetPrimvar("gltf_tangent").Get(), asset.attribute(primitive, "TANGENT")[order],
                     f"{label} tangents")
     if "COLOR_0" in attributes:
-        colors = asset.attribute(primitive, "COLOR_0")
+        colors = asset.attribute(primitive, "COLOR_0")[order]
         check.close(primvars.GetPrimvar("displayColor").Get(), colors[:, :3], f"{label} displayColor")
         if colors.shape[1] == 4:
             check.close(primvars.GetPrimvar("gltf_colorAlpha").Get(), colors[:, 3], f"{label} gltf_colorAlpha")
@@ -453,20 +496,40 @@ def check_primitive(check, asset, prim, primitive, label):
     return check_material_binding(check, asset, prim, primitive, primitive.get("material"), label)
 
 
+def material_use(primitive, material):
+    """Which variant of a material a primitive draws: points and lines are unlit without NORMAL, and never draw
+    normal textures."""
+    if primitive.get("mode", 4) not in POINTS_AND_LINES or "KHR_materials_unlit" in material.get("extensions", {}):
+        return ""
+    if "NORMAL" not in primitive["attributes"]:
+        return "Unlit"
+    coat = material.get("extensions", {}).get("KHR_materials_clearcoat", {})
+    if material.get("normalTexture") or (coat.get("clearcoatFactor", 0) > 0 and coat.get("clearcoatNormalTexture")):
+        return "NoNormalTexture"
+    return ""
+
+
 def check_material_binding(check, asset, prim, primitive, index, label):
     from pxr import UsdGeom, UsdShade
 
     material = asset.json["materials"][index] if index is not None else {}
     has_colors = "COLOR_0" in primitive["attributes"]
+    use = material_use(primitive, material)
     suffix = "VertexColor" if has_colors else ""
-    name = f"Material_{index}{'_' + suffix if suffix else ''}" if index is not None else f"Default{suffix}"
+    if index is not None:
+        name = f"Material_{index}{'_' + suffix if suffix else ''}{'_' + use if use else ''}"
+    else:
+        name = f"Default{suffix}{use}"
     bound, _ = UsdShade.MaterialBindingAPI(prim).ComputeBoundMaterial()
     expected = f"/Root/Materials/{name}"
     actual = str(bound.GetPath()) if bound else None
     check.expect(actual == expected, f"{label} is bound to {actual}, expected {expected}")
-    check.expect(bool(UsdGeom.Mesh(prim).GetDoubleSidedAttr().Get()) == bool(material.get("doubleSided")),
-                 f"{label} doubleSided differs")
-    return expected, material, has_colors
+    sided = UsdGeom.Gprim(prim).GetDoubleSidedAttr()
+    if prim.IsA(UsdGeom.Mesh):
+        check.expect(bool(sided.Get()) == bool(material.get("doubleSided")), f"{label} doubleSided differs")
+    else:
+        check.expect(not sided.HasAuthoredValue(), f"{label} authors doubleSided without faces")
+    return expected, material, has_colors, use
 
 
 def check_material_variants(check, stage, asset, primitives, materials):
@@ -500,10 +563,10 @@ def check_material_variants(check, stage, asset, primitives, materials):
             for path, primitive, mapped in mappings:
                 prim = stage.GetPrimAtPath(path)
                 if check.expect(prim, f"{path} missing after selecting {choice}"):
-                    bound, material, has_colors = check_material_binding(
+                    bound, *found = check_material_binding(
                         check, asset, prim, primitive, mapped.get(index, primitive.get("material")),
                         f"{path} in {choice}")
-                    materials[bound] = (material, has_colors)
+                    materials[bound] = tuple(found)
         variants.ClearVariantSelection()
 
 
@@ -700,8 +763,11 @@ def check_texture(check, asset, stage, material_path, key, info, label, images):
     return preview
 
 
-def check_material(check, asset, stage, path, material, has_colors, images):
-    """Compares a bound material's Preview factors and both networks' textures with the glTF."""
+def check_material(check, asset, stage, path, material, has_colors, use, images):
+    """Compares a bound material's Preview factors and both networks' textures with the glTF.
+
+    `use` is "Unlit" for the variant drawn on points and lines without NORMAL, and "NoNormalTexture" for the one
+    drawn on points and lines with it."""
     from pxr import Usd, UsdShade
 
     label = path.rsplit("/", 1)[1]
@@ -717,6 +783,8 @@ def check_material(check, asset, stage, path, material, has_colors, images):
     pbr = material.get("pbrMetallicRoughness", {})
     textures = {}
     clearcoat = material.get("extensions", {}).get("KHR_materials_clearcoat")
+    if use == "NoNormalTexture" and clearcoat:
+        clearcoat = {key: value for key, value in clearcoat.items() if key != "clearcoatNormalTexture"}
     transmission = material.get("extensions", {}).get("KHR_materials_transmission")
     volume = material.get("extensions", {}).get("KHR_materials_volume")
     specular = material.get("extensions", {}).get("KHR_materials_specular")
@@ -744,8 +812,14 @@ def check_material(check, asset, stage, path, material, has_colors, images):
         return material
 
     infos = {key: owner(key).get(key) for key in SLOTS}
-    # An unlit material uses only its base color; the rest are fallbacks, which are not authored.
-    unlit = "KHR_materials_unlit" in material.get("extensions", {})
+    if use == "NoNormalTexture" and infos["normalTexture"]:
+        check.expect(not stage.GetPrimAtPath(f"{path}/preview/normalTexture")
+                     and not stage.GetPrimAtPath(f"{path}/mtlx/normalImage"),
+                     f"{label} is drawn on points or lines but authors its normal texture")
+        infos["normalTexture"] = None
+    # An unlit material uses only its base color; the rest are fallbacks, which are not authored. Points and
+    # lines without NORMAL add their emissive factor, when no texture multiplies it.
+    unlit = "KHR_materials_unlit" in material.get("extensions", {}) or use == "Unlit"
     if unlit:
         for key in SLOTS.keys() - {"baseColorTexture"}:
             if infos[key]:
@@ -829,12 +903,15 @@ def check_material(check, asset, stage, path, material, has_colors, images):
         if value is not None:
             check.close(value, expected, f"{label} Preview {description}")
 
-    def scale(key, channels, expected, description):
+    def scale(key, channels, expected, description, name="scale"):
         shader = textures.get(key)
         if shader:
-            values = shader.GetInput("scale").Get()
+            values = shader.GetInput(name).Get() if shader.GetInput(name) else (0, 0, 0, 0)
             check.close([values[channel] for channel in channels], expected, f"{label} Preview {description}")
 
+    added = [0.0, 0.0, 0.0]
+    if use == "Unlit" and "emissiveTexture" not in material:
+        added = [channel * emissive_strength for channel in emissive]
     if unlit:
         # The base color is emitted, by a black metal in Preview and a dielectric without specular in MaterialX.
         factor("diffuseColor", (0, 0, 0), "unlit diffuse color")
@@ -842,16 +919,26 @@ def check_material(check, asset, stage, path, material, has_colors, images):
         factor("roughness", 1, "unlit roughness")
         if infos["baseColorTexture"]:
             scale("baseColorTexture", (0, 1, 2), base[:3], "base color scale")
+            scale("baseColorTexture", (0, 1, 2, 3), [*added, 0], "emission bias", "bias")
             emitted = connected_shader(surface.GetInput("emissiveColor"))
             image = textures.get("baseColorTexture")
             check.expect(emitted and image and emitted.GetPath() == image.GetPath(),
                          f"{label} Preview does not emit its base color texture")
         elif not has_colors:
-            factor("emissiveColor", base[:3], "unlit base color")
+            factor("emissiveColor", numpy.add(base[:3], added), "unlit base color")
         for name, expected in (("base_color", (0, 0, 0)), ("metallic", 0), ("specular", 0)):
             value = pbr_surface.GetInput(name).Get() if pbr_surface.GetInput(name) else None
             if check.expect(value is not None, f"{label} MaterialX unlit {name} is not authored"):
                 check.close(value, expected, f"{label} MaterialX unlit {name}")
+        if use == "Unlit":
+            mtlx_emission = pbr_surface.GetInput("emissive")
+            if not mtlx_emission.HasConnectedSource():
+                check.close(mtlx_emission.Get(), numpy.add(base[:3], added), f"{label} MaterialX unlit emission")
+            elif any(added):
+                adder = connected_shader(mtlx_emission)
+                check.expect(adder and adder.GetShaderId() == "ND_add_color3", f"{label} MaterialX adds no emission")
+                if adder:
+                    check.close(adder.GetInput("in2").Get(), added, f"{label} MaterialX added emission")
     else:
         if infos["baseColorTexture"]:
             scale("baseColorTexture", (0, 1, 2), base[:3], "base color scale")
@@ -895,7 +982,7 @@ def check_material(check, asset, stage, path, material, has_colors, images):
             check_occlusion(check, textures.get("occlusionTexture"), strength, label)
 
     strength_input = pbr_surface.GetInput("emissive_strength")
-    if numpy.float32(emissive_strength) == 1:
+    if numpy.float32(emissive_strength) == 1 or use == "Unlit":
         check.expect(not strength_input, f"{label} MaterialX authors the default emissive strength")
     elif check.expect(strength_input, f"{label} MaterialX emissive strength is not authored"):
         check.close(strength_input.Get(), emissive_strength, f"{label} MaterialX emissive strength")
@@ -1574,14 +1661,15 @@ def check_meaning(stage, asset):
                 expected_paths.add(mesh_path)
                 label = f"mesh {mesh_index} primitive {number}"
                 mesh_prim = stage.GetPrimAtPath(mesh_path)
-                if check.expect(mesh_prim and mesh_prim.IsA(UsdGeom.Mesh), f"{mesh_path} is not a Mesh"):
+                kind = primitive_type(primitive)
+                if check.expect(mesh_prim and mesh_prim.GetTypeName() == kind, f"{mesh_path} is not a {kind}"):
                     check.expect(UsdGeom.Imageable(mesh_prim).ComputeVisibility() == expected_visibility,
                                  f"{mesh_path} does not have the expected visibility {expected_visibility}")
-                    bound, material, has_colors = check_primitive(check, asset, mesh_prim, primitive, label)
+                    bound, *found = check_primitive(check, asset, mesh_prim, primitive, label)
                     if primitive.get("targets"):
                         check_morph_targets(check, asset, mesh_prim, document["meshes"][mesh_index],
                                             primitive, index, label)
-                    materials[bound] = (material, has_colors)
+                    materials[bound] = tuple(found)
                     primitives[mesh_path] = primitive
                     if "skin" in node:
                         placements.append((mesh_prim, primitive, index, node["skin"]))
@@ -1621,7 +1709,7 @@ def check_meaning(stage, asset):
     if placements:
         check_skinning(check, stage, asset, plan, node_paths, placements)
     check_material_variants(check, stage, asset, primitives, materials)
-    actual = {str(prim.GetPath()) for prim in stage.Traverse() if prim.IsA(UsdGeom.Mesh)}
+    actual = {str(prim.GetPath()) for prim in stage.Traverse() if prim.IsA(UsdGeom.Gprim)}
     check.expect(actual == expected_paths, f"{len(actual)} meshes authored, expected {len(expected_paths)}")
     cameras = {str(prim.GetPath()) for prim in stage.Traverse() if prim.IsA(UsdGeom.Camera)}
     check.expect(cameras == expected_cameras, f"{len(cameras)} cameras authored, expected {len(expected_cameras)}")
@@ -1629,8 +1717,8 @@ def check_meaning(stage, asset):
     check.expect(authored_lights == expected_lights,
                  f"{len(authored_lights)} lights authored, expected {len(expected_lights)}")
     images = {}
-    for path, (material, has_colors) in sorted(materials.items()):
-        check_material(check, asset, stage, path, material, has_colors, images)
+    for path, (material, has_colors, use) in sorted(materials.items()):
+        check_material(check, asset, stage, path, material, has_colors, use, images)
     return check.mismatches, len(expected_paths)
 
 
@@ -1802,7 +1890,10 @@ def rejection_causes(document):
         node = nodes[index]
         pending += node.get("children", [])
         if "mesh" in node:
-            causes |= mesh_causes(document, document["meshes"][node["mesh"]])
+            mesh = document["meshes"][node["mesh"]]
+            causes |= mesh_causes(document, mesh)
+            if "skin" in node and any(p.get("mode", 4) in POINTS_AND_LINES for p in mesh.get("primitives", [])):
+                causes.add("skinned points or lines")
     # Every animation is authored, but only on the selected scene.
     for animation in document.get("animations", []):
         for channel in animation.get("channels", []):
@@ -1815,8 +1906,11 @@ def rejection_causes(document):
 def mesh_causes(document, mesh):
     causes = set()
     for primitive in mesh.get("primitives", []):
-        if primitive.get("mode", 4) not in (4, 5, 6):
-            causes.add("points or lines")
+        if primitive.get("mode", 4) in POINTS_AND_LINES:
+            if primitive.get("targets"):
+                causes.add("points or lines with morph targets")
+            if DRACO in primitive.get("extensions", {}):
+                causes.add("points or lines with Draco")
         for target in primitive.get("targets", []):
             for name in target:
                 if name not in ("POSITION", "NORMAL", "TANGENT") or name not in primitive["attributes"]:
