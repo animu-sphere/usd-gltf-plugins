@@ -13,6 +13,8 @@ implemented.
       /Node_0                  Xform
         /Mesh_0                Xform
           /Primitive_0         Mesh, or Points or BasisCurves for points and lines
+        /Instances             PointInstancer, for a node with GPU instancing
+          /Mesh_1              Xform, its prototype
         /Camera_0              Camera
         /Light_0               SphereLight or DistantLight
         /Node_1                Xform
@@ -45,6 +47,7 @@ conversion order, and copied below the others. See the [mesh sharing decision](.
 | Node | `Node_{nodeIndex}` |
 | Mesh | `Mesh_{meshIndex}` |
 | Mesh primitive | `Primitive_{primitiveIndex}`, the index within its mesh |
+| Instances of a node's mesh | `Instances`, with the mesh below it |
 | Camera | `Camera_{cameraIndex}` |
 | Light | `Light_{lightIndex}` |
 | Material | `Material_{materialIndex}` |
@@ -189,6 +192,28 @@ glTF defines no size for either. Points have the constant `widths` 0, so they ha
 scene, and Storm draws them at its smallest point size. Curves have no `widths`, so Storm draws them
 one pixel wide. Morph targets, skins and Draco compression on points and lines fail with a
 diagnostic. See the [decision record](../adr/0042-points-and-lines.md).
+
+## GPU instancing
+
+A node with `EXT_mesh_gpu_instancing` and a mesh has a `UsdGeomPointInstancer` named `Instances` in
+place of its `Mesh_{index}`, with the mesh as its only prototype, `Instances/Mesh_{index}`. Storm draws
+the prototype only through the instancer, once per instance, and not at the node.
+
+| glTF | USD |
+| --- | --- |
+| Instance count | `protoIndices`, 0 for each instance |
+| `TRANSLATION` | `positions`; the origin for each instance without it |
+| `ROTATION`, float or normalized byte or short | `orientationsf`, normalized; not authored without it |
+| `SCALE` | `scales`; not authored without it |
+
+The instancer has no transform, so each instance applies in the node's space, before the node's
+transform, animation and visibility, as glTF composes them. The node's camera, light and children are
+not instanced. `extent` bounds the instances. The extension is supported optional or required.
+
+Attribute counts must match, values must be finite, and a ROTATION must have unit length within the
+node tolerance plus its format's rounding. Custom `_` attributes, skins and morph targets on an instanced
+node fail with a diagnostic. On a node without a mesh, the extension is ignored with a warning. See the
+[decision record](../adr/0043-gpu-instancing.md).
 
 ## Quantized attributes
 

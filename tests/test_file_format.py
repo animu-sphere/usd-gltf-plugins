@@ -1044,6 +1044,65 @@ def topology_document(extension, mode, indices, external=False, normal=False, in
     return document, binary
 
 
+INSTANCING = "EXT_mesh_gpu_instancing"
+# Three instances, with x, y, z, w quaternions as glTF orders them.
+INSTANCE_TRANSLATIONS = ((0, 0, 0), (1, 2, 3), (-4, 0, 0.5))
+INSTANCE_ROTATIONS = ((0, 0, 0, 1), tuple(quaternion((1, 0, 0), 90)), tuple(quaternion((0, 1, 1), 120)))
+INSTANCE_SCALES = ((1, 1, 1), (2, 0.5, 1), (1, 1, 3))
+
+
+def instance_rotation_data(component_type):
+    """The rotations in a format, and the unit quaternions they decode to."""
+    if component_type == 5126:
+        return struct.pack("<12f", *itertools.chain(*INSTANCE_ROTATIONS)), INSTANCE_ROTATIONS
+    scale, code = {5120: (127, "b"), 5122: (32767, "h")}[component_type]
+    stored = [[round(c * scale) for c in q] for q in INSTANCE_ROTATIONS]
+    decoded = []
+    for q in stored:
+        values = [max(c / scale, -1.0) for c in q]
+        length = math.sqrt(sum(c * c for c in values))
+        decoded.append(tuple(c / length for c in values))
+    return struct.pack(f"<12{code}", *itertools.chain(*stored)), decoded
+
+
+def instancing_document(extension, attributes=("TRANSLATION", "ROTATION", "SCALE"), rotation_type=5126):
+    """Node 0 draws mesh 0 three times; its child, node 1, draws the mesh once. Node 2 has instances
+    but no mesh. Returns the binary for both formats."""
+    document, binary = mesh_document("glb")
+    document["extensionsUsed"] = [INSTANCING]
+    document["scenes"] = [{"nodes": [0, 2]}]
+    document["nodes"] = [
+        {"mesh": 0, "translation": [0, 0, -1], "rotation": quaternion((0, 1, 0), 90), "scale": [2, 1, 1],
+         "children": [1], "extensions": {INSTANCING: {"attributes": {}}}},
+        {"mesh": 0, "translation": [5, 0, 0]},
+        {"translation": [0, 3, 0], "extensions": {INSTANCING: {"attributes": {}}}},
+    ]
+    rotations, _ = instance_rotation_data(rotation_type)
+    data = {
+        "TRANSLATION": (struct.pack("<9f", *itertools.chain(*INSTANCE_TRANSLATIONS)), 5126, False, "VEC3"),
+        "ROTATION": (rotations, rotation_type, rotation_type != 5126, "VEC4"),
+        "SCALE": (struct.pack("<9f", *itertools.chain(*INSTANCE_SCALES)), 5126, False, "VEC3"),
+    }
+    for name in attributes:
+        values, component_type, normalized, kind = data[name]
+        binary = append_view(document, binary, extension, values)
+        accessor = {"bufferView": len(document["bufferViews"]) - 1, "componentType": component_type,
+                    "count": 3, "type": kind}
+        if normalized:
+            accessor["normalized"] = True
+        for node in (0, 2):
+            document["nodes"][node]["extensions"][INSTANCING]["attributes"][name] = len(document["accessors"])
+        document["accessors"].append(accessor)
+    return document, binary
+
+
+def instance_matrix(translation, rotation, scale):
+    """An instance's transform, composed as glTF does, for row vectors."""
+    x, y, z, w = rotation
+    return (Gf.Matrix4d().SetScale(Gf.Vec3d(*scale)) * Gf.Matrix4d().SetRotate(Gf.Quatd(w, Gf.Vec3d(x, y, z)))
+            * Gf.Matrix4d().SetTranslate(Gf.Vec3d(*translation)))
+
+
 class FileFormatTest(unittest.TestCase):
     def test_material_variants(self):
         cases = [
@@ -2163,6 +2222,206 @@ class FileFormatTest(unittest.TestCase):
                         self.assertEqual(
                             stage.GetPrimAtPath("/Root/Scenes/Scene_0/Node_0/Mesh_0/Primitive_0").GetTypeName(),
                             "BasisCurves")
+                write_asset(path, document, binary if extension == "glb" else None)
+                self.assertTrue(layer.Reload(True))
+
+    def test_gpu_instancing(self):
+        prefix = "/Root/Scenes/Scene_0"
+        # USD bounds each instance by the corners of its prototype's extent, not by its points.
+        corners_of_box = [Gf.Vec3d(x, y, 0) for x in (0, 1) for y in (0, 1)]
+        cases = [
+            ("all", ("TRANSLATION", "ROTATION", "SCALE"), 5126, False),
+            ("byte", ("TRANSLATION", "ROTATION", "SCALE"), 5120, True),
+            ("short", ("ROTATION", "SCALE"), 5122, False),
+            ("translation", ("TRANSLATION",), 5126, True),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            for extension in ("gltf", "glb"):
+                for name, attributes, rotation_type, required in cases:
+                    with self.subTest(extension=extension, case=name):
+                        path = pathlib.Path(directory) / f"instancing_{name}.{extension}"
+                        document, binary = instancing_document(extension, attributes, rotation_type)
+                        if required:
+                            document["extensionsRequired"] = [INSTANCING]
+                        write_asset(path, document, binary if extension == "glb" else None)
+                        stage = Usd.Stage.Open(str(path))
+                        node = stage.GetPrimAtPath(f"{prefix}/Node_0")
+                        self.assertEqual(node.GetTypeName(), "Xform")
+                        self.assertEqual(node.GetChildrenNames(), ["Instances", "Node_1"])
+                        instancer = UsdGeom.PointInstancer(node.GetChild("Instances"))
+                        self.assertTrue(instancer)
+                        prototype = f"{prefix}/Node_0/Instances/Mesh_0"
+                        self.assertEqual(instancer.GetPrototypesRel().GetTargets(), [Sdf.Path(prototype)])
+                        self.assertEqual(list(instancer.GetProtoIndicesAttr().Get()), [0, 0, 0])
+                        self.assertEqual(stage.GetPrimAtPath(prototype).GetTypeName(), "Xform")
+                        self.assertEqual(
+                            [child.GetTypeName() for child in stage.GetPrimAtPath(prototype).GetChildren()],
+                            ["Mesh", "Mesh"])
+
+                        # Absent attributes are not authored, and positions default to the origin.
+                        translations = INSTANCE_TRANSLATIONS if "TRANSLATION" in attributes else [(0, 0, 0)] * 3
+                        _, decoded = instance_rotation_data(rotation_type)
+                        rotations = decoded if "ROTATION" in attributes else [(0, 0, 0, 1)] * 3
+                        scales = INSTANCE_SCALES if "SCALE" in attributes else [(1, 1, 1)] * 3
+                        self.assertEqual(list(instancer.GetPositionsAttr().Get()),
+                                         [Gf.Vec3f(*t) for t in translations])
+                        self.assertEqual(instancer.GetOrientationsfAttr().HasAuthoredValue(), "ROTATION" in attributes)
+                        self.assertFalse(instancer.GetOrientationsAttr().HasAuthoredValue())
+                        self.assertEqual(instancer.GetScalesAttr().HasAuthoredValue(), "SCALE" in attributes)
+                        if "ROTATION" in attributes:
+                            for actual, (x, y, z, w) in zip(instancer.GetOrientationsfAttr().Get(), rotations):
+                                self.assertAlmostEqual(actual.GetReal(), w, places=6)
+                                for axis, value in enumerate((x, y, z)):
+                                    self.assertAlmostEqual(actual.GetImaginary()[axis], value, places=6)
+
+                        # Each instance applies before the node's world transform.
+                        world = gltf_local(document["nodes"][0])
+                        instancer_world = UsdGeom.XformCache().GetLocalToWorldTransform(instancer.GetPrim())
+                        transforms = instancer.ComputeInstanceTransformsAtTime(Usd.TimeCode.Default(),
+                                                                               Usd.TimeCode.Default())
+                        self.assertEqual(len(transforms), 3)
+                        corners = []
+                        for actual, t, r, s in zip(transforms, translations, rotations, scales):
+                            expected = instance_matrix(t, r, s)
+                            self.assertTrue(Gf.IsClose(actual * instancer_world, expected * world, 1e-5))
+                            corners += [expected.Transform(point) for point in corners_of_box]
+                        lower = Gf.Vec3d(*(min(corner[axis] for corner in corners) for axis in range(3)))
+                        upper = Gf.Vec3d(*(max(corner[axis] for corner in corners) for axis in range(3)))
+                        extent = instancer.GetExtentAttr().Get()
+                        self.assertTrue(Gf.IsClose(Gf.Vec3d(extent[0]), lower, 1e-5))
+                        self.assertTrue(Gf.IsClose(Gf.Vec3d(extent[1]), upper, 1e-5))
+                        # Bounds count the prototype only through its instances, as Hydra draws it.
+                        bounds = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_])
+                        box = bounds.ComputeLocalBound(instancer.GetPrim()).ComputeAlignedRange()
+                        self.assertTrue(Gf.IsClose(box.GetMin(), lower, 1e-5))
+                        self.assertTrue(Gf.IsClose(box.GetMax(), upper, 1e-5))
+
+                        # The child is not instanced, and draws its copy of the mesh once.
+                        child = stage.GetPrimAtPath(f"{prefix}/Node_0/Node_1/Mesh_0")
+                        self.assertEqual(child.GetTypeName(), "Xform")
+                        for primitive in (0, 1):
+                            self.assertEqual(
+                                stage.GetAttributeAtPath(f"{prototype}/Primitive_{primitive}.points").Get(),
+                                child.GetChild(f"Primitive_{primitive}").GetAttribute("points").Get())
+                        self.assertEqual(stage.GetPrimAtPath(f"{prefix}/Node_2").GetChildrenNames(), [])
+
+    def test_gpu_instancing_on_a_node_without_a_mesh_warns(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "instancing.gltf"
+            document, _ = instancing_document("gltf")
+            write_asset(path, document)
+            result = subprocess.run(
+                [sys.executable, "-c",
+                 "from pxr import Usd; import sys; "
+                 "s = Usd.Stage.Open(sys.argv[1]); "
+                 "assert s.GetPrimAtPath('/Root/Scenes/Scene_0/Node_0/Instances')",
+                 str(path)],
+                capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(re.findall(r"glTF node \d+: EXT_mesh_gpu_instancing applies only to a mesh; ignored",
+                                        result.stderr),
+                             ["glTF node 2: EXT_mesh_gpu_instancing applies only to a mesh; ignored"])
+            self.assertNotIn("optional extension", result.stderr)
+
+    def test_gpu_instancing_with_material_variants_and_animation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for extension in ("gltf", "glb"):
+                with self.subTest(extension=extension):
+                    path = pathlib.Path(directory) / f"instanced_variants.{extension}"
+                    document, binary = material_variants_document("glb")
+                    document["extensionsUsed"].append(INSTANCING)
+                    binary = append_view(document, binary, extension,
+                                         struct.pack("<6f", *INSTANCE_TRANSLATIONS[1], *INSTANCE_TRANSLATIONS[2]))
+                    document["nodes"][0]["extensions"] = {INSTANCING: {"attributes": {
+                        "TRANSLATION": len(document["accessors"])}}}
+                    document["accessors"].append({"bufferView": len(document["bufferViews"]) - 1,
+                                                  "componentType": 5126, "count": 2, "type": "VEC3"})
+                    write_asset(path, document, binary if extension == "glb" else None)
+                    stage = Usd.Stage.Open(str(path))
+                    root = stage.GetDefaultPrim()
+                    stage.SetEditTarget(stage.GetSessionLayer())
+                    self.assertTrue(root.GetVariantSet("animation").SetVariantSelection("Animation_1"))
+                    # The animated node moves its instances.
+                    instancer = stage.GetPrimAtPath("/Root/Scenes/Scene_0/Node_0/Instances")
+                    self.assertEqual(instancer.GetTypeName(), "PointInstancer")
+                    self.assertEqual(UsdGeom.XformCache(24).GetLocalToWorldTransform(instancer).ExtractTranslation(),
+                                     Gf.Vec3d(0, 3, 0))
+                    variants = root.GetVariantSet("materialVariant")
+                    for selection, material in (("Original", "Material_0_VertexColor"),
+                                                ("Variant_0_Red_Blue", "Material_1_VertexColor"),
+                                                ("Variant_1_Red_Blue", "Material_2_VertexColor")):
+                        self.assertTrue(variants.SetVariantSelection(selection))
+                        for group in ("Node_0/Instances/Mesh_0", "Node_1/Mesh_0"):
+                            mesh = stage.GetPrimAtPath(f"/Root/Scenes/Scene_0/{group}/Primitive_0")
+                            bound, _ = UsdShade.MaterialBindingAPI(mesh).ComputeBoundMaterial()
+                            self.assertEqual(str(bound.GetPath()), f"/Root/Materials/{material}")
+
+    def test_gpu_instancing_failures_preserve_layer(self):
+        def patch(document, binary, name, offset, value):
+            """Replaces the float at `offset` in the view of the node's attribute `name`."""
+            accessor = document["accessors"][document["nodes"][0]["extensions"][INSTANCING]["attributes"][name]]
+            start = document["bufferViews"][accessor["bufferView"]]["byteOffset"] + offset
+            return binary[:start] + struct.pack("<f", value) + binary[start + 4:]
+
+        def mutate(document, binary, name):
+            attributes = document["nodes"][0]["extensions"][INSTANCING]["attributes"]
+            accessors = document["accessors"]
+            if name == "counts":
+                accessors[attributes["SCALE"]]["count"] = 2
+            elif name == "custom":
+                attributes["_ID"] = attributes["SCALE"]
+            elif name == "unknown":
+                attributes["WEIGHT"] = attributes["SCALE"]
+            elif name == "translation type":
+                accessors[attributes["TRANSLATION"]]["type"] = "VEC2"
+            elif name == "unsigned rotation":
+                accessors[attributes["ROTATION"]].update(componentType=5121, normalized=True)
+            elif name == "rotation length":
+                binary = patch(document, binary, "ROTATION", 12, 0.5)
+            elif name == "non-finite":
+                binary = patch(document, binary, "TRANSLATION", 0, math.inf)
+            elif name == "skin":
+                document["nodes"][0]["skin"] = 0
+                document["skins"] = [{"joints": [2]}]
+            elif name == "morph":
+                for primitive in document["meshes"][0]["primitives"]:
+                    primitive["targets"] = [{"POSITION": 0}]
+            return binary
+
+        cases = {
+            "counts": "instance attribute counts differ",
+            "custom": "custom instance attributes are not supported: _ID",
+            "unknown": "unsupported or repeated instance attribute: WEIGHT",
+            "translation type": "TRANSLATION: accessor has an invalid type",
+            "unsigned rotation": "ROTATION: accessor has an invalid type",
+            "rotation length": "ROTATION 0 is not a unit quaternion",
+            "non-finite": "TRANSLATION contains a non-finite value",
+            "skin": "skins on instanced meshes are not supported",
+            "morph": "morph targets on instanced meshes are not supported",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            for extension in ("gltf", "glb"):
+                path = pathlib.Path(directory) / f"instancing.{extension}"
+                document, binary = instancing_document(extension)
+                write_asset(path, document, binary if extension == "glb" else None)
+                stage = Usd.Stage.Open(str(path))
+                layer = stage.GetRootLayer()
+                before = layer_text(layer)
+                for name, message in cases.items():
+                    with self.subTest(extension=extension, name=name):
+                        invalid, invalid_binary = instancing_document(extension)
+                        invalid_binary = mutate(invalid, invalid_binary, name)
+                        if extension == "gltf":
+                            invalid["buffers"][0]["uri"] = "data:application/octet-stream;base64," + (
+                                base64.b64encode(invalid_binary).decode())
+                        write_asset(path, invalid, invalid_binary if extension == "glb" else None)
+                        with self.assertRaisesRegex(Tf.ErrorException, message):
+                            layer.Reload(True)
+                        self.assertEqual(layer_text(layer), before)
+                        self.assertEqual(
+                            stage.GetPrimAtPath("/Root/Scenes/Scene_0/Node_0/Instances").GetTypeName(),
+                            "PointInstancer")
                 write_asset(path, document, binary if extension == "glb" else None)
                 self.assertTrue(layer.Reload(True))
 

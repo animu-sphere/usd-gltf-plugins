@@ -25,8 +25,11 @@ struct MappedNode
     std::optional<std::size_t> parent;
     // Empty after skin placement for a joint without a prim.
     pxr::SdfPath path;
-    // The path of the node's mesh, or empty for a node without one.
+    // The path of the node's mesh, or empty for a node without one. Below `instancer` when the node
+    // has EXT_mesh_gpu_instancing, as its prototype.
     pxr::SdfPath mesh;
+    // The node's UsdGeomPointInstancer, or empty for a node without instances.
+    pxr::SdfPath instancer;
     // Per-placement morph bindings, in source target order.
     pxr::VtTokenArray blendShapes;
     pxr::VtFloatArray morphWeights;

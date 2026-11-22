@@ -111,6 +111,11 @@ MapScene(const fastgltf::Asset& asset, std::size_t sceneIndex, const pxr::SdfPat
         mapped.path = parentPath.AppendChild(TfToken("Node_" + std::to_string(index)));
         // Gf matrices use row vectors, so the parent's transform applies last.
         mapped.world = parent ? mapped.local * map.nodes[*parent].world : mapped.local;
+        if (!node.instancingAttributes.empty() && !node.meshIndex)
+        {
+            TF_WARN("glTF node %zu: EXT_mesh_gpu_instancing applies only to a mesh; ignored",
+                    index);
+        }
         if (node.meshIndex)
         {
             if (*node.meshIndex >= asset.meshes.size())
@@ -118,11 +123,26 @@ MapScene(const fastgltf::Asset& asset, std::size_t sceneIndex, const pxr::SdfPat
                 TF_RUNTIME_ERROR("glTF mesh index %zu is out of range", *node.meshIndex);
                 return std::nullopt;
             }
-            mapped.mesh =
-                mapped.path.AppendChild(TfToken("Mesh_" + std::to_string(*node.meshIndex)));
-            map.meshes[*node.meshIndex].push_back(mapped.mesh);
             const auto& mesh = asset.meshes[*node.meshIndex];
             const auto count = mesh.primitives.empty() ? 0 : mesh.primitives.front().targets.size();
+            const TfToken meshName("Mesh_" + std::to_string(*node.meshIndex));
+            if (node.instancingAttributes.empty())
+            {
+                mapped.mesh = mapped.path.AppendChild(meshName);
+            }
+            else
+            {
+                // The extension defines nothing for skins or morph targets on instances.
+                if (node.skinIndex || count != 0)
+                {
+                    TF_RUNTIME_ERROR("glTF node %zu: %s on instanced meshes are not supported",
+                                     index, node.skinIndex ? "skins" : "morph targets");
+                    return std::nullopt;
+                }
+                mapped.instancer = mapped.path.AppendChild(TfToken("Instances"));
+                mapped.mesh = mapped.instancer.AppendChild(meshName);
+            }
+            map.meshes[*node.meshIndex].push_back(mapped.mesh);
             const auto& weights = node.weights.empty() ? mesh.weights : node.weights;
             if (!weights.empty() && weights.size() != count)
             {

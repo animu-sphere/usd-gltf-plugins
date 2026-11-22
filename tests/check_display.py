@@ -103,7 +103,15 @@ class Render:
 
     def sample(self, mesh, point=(0.5, 0.5)):
         """Returns the mean RGBA around a point, in 8-bit display values."""
-        x, y = self.pixel(mesh, point)
+        return self.sample_pixel(*self.pixel(mesh, point))
+
+    def sample_world(self, point):
+        """Returns the mean RGBA around the pixel of a point in world space."""
+        ndc = (self.frustum.ComputeViewMatrix() * self.frustum.ComputeProjectionMatrix()).Transform(Gf.Vec3d(*point))
+        return self.sample_pixel(round((ndc[0] + 1) / 2 * self.image.width()),
+                                 round((1 - ndc[1]) / 2 * self.image.height()))
+
+    def sample_pixel(self, x, y):
         colors = [self.image.pixelColor(x + dx, y + dy)
                   for dx in range(-SAMPLE_RADIUS, SAMPLE_RADIUS + 1) for dy in range(-SAMPLE_RADIUS, SAMPLE_RADIUS + 1)]
         return tuple(round(sum(getattr(c, channel)() for c in colors) / len(colors))
@@ -794,6 +802,60 @@ def check_unlit(renderer, report):
     qt[2].doneCurrent()
 
 
+def check_gpu_instancing(renderer, report):
+    """Draws a unit quad of unlit red twice through EXT_mesh_gpu_instancing, below a node that scales X by 2,
+    and twice without it. Each instance's transform applies before the node's, so the second instance, scaled
+    by 2 in X, turned a quarter about Z and moved by (3, 2, 0), covers x 5 to 7 and y 2 to 4. Two quads without
+    instances, at (8, 0) and (0, 7), are drawn once each."""
+    qt = offscreen_context(report, "GPU instancing")
+    if not qt:
+        return
+    extension = "EXT_mesh_gpu_instancing"
+    document = quad_document([{**pbr(baseColorFactor=[1, 0, 0, 1]), "extensions": {"KHR_materials_unlit": {}}}])
+    document["extensionsUsed"] = [extension, "KHR_materials_unlit"]
+    half = math.sqrt(0.5)
+    data = (struct.pack("<6f", 0, 2, 0, 3, 2, 0) + struct.pack("<8f", 0, 0, 0, 1, 0, 0, half, half)
+            + struct.pack("<6f", 1, 1, 1, 2, 1, 1))
+    document["buffers"].append({"byteLength": len(data),
+                                "uri": "data:application/octet-stream;base64," + base64.b64encode(data).decode()})
+    view = len(document["bufferViews"])
+    document["bufferViews"] += [{"buffer": 1, "byteOffset": 0, "byteLength": 24},
+                                {"buffer": 1, "byteOffset": 24, "byteLength": 32},
+                                {"buffer": 1, "byteOffset": 56, "byteLength": 24}]
+    accessor = len(document["accessors"])
+    document["accessors"] += [{"bufferView": view + i, "componentType": 5126, "count": 2, "type": kind}
+                              for i, kind in enumerate(("VEC3", "VEC4", "VEC3"))]
+    document["nodes"] = [
+        {"mesh": 0, "translation": [1, 0, 0], "scale": [2, 1, 1], "extensions": {extension: {"attributes": {
+            "TRANSLATION": accessor, "ROTATION": accessor + 1, "SCALE": accessor + 2}}}},
+        {"mesh": 0, "translation": [8, 0, 0]},
+        {"mesh": 0, "translation": [0, 7, 0]},
+    ]
+    # The quads without instances also widen the frame to where wrong placements would be.
+    document["scenes"][0]["nodes"] = [0, 1, 2]
+    asset = renderer.output / "gpu_instancing.gltf"
+    asset.write_text(json.dumps(document), encoding="utf-8")
+    red, black = (255, 0, 0, 255), (0, 0, 0, 255)
+    expected = [
+        ("the first instance", (2, 2.5), red),
+        ("the second instance", (6, 3), red),
+        ("the second instance's turned corner", (5.25, 3.75), red),
+        ("a quad without instances", (8.5, 0.5), red),
+        ("another quad without instances", (0.5, 7.5), red),
+        ("the node's own placement of the mesh", (2, 0.5), black),
+        ("the second instance unturned", (9, 2.5), black),
+        ("the second instance with the node's transform applied first", (2.5, 6), black),
+    ]
+    for path in PATHS:
+        _, stage = renderer.session("gpu_instancing", asset, path, None)
+        image = engine_image(stage, [], Gf.Vec4f(0, 0, 0, 1))
+        image.save(str(renderer.output / f"gpu_instancing_{path}.png"))
+        render = Render(f"gpu_instancing {path}", image, stage)
+        for label, (x, y), color in expected:
+            report.same(f"{path} {label} at ({x:g}, {y:g})", render.sample_world((x, y, 0)), color)
+    qt[2].doneCurrent()
+
+
 def lines_document(mode, material, color=None, normal=False):
     """A primitive whose bounds are the unit square, with points or horizontal lines packed closer than a pixel's
     multisamples around its center, so that pixels there are covered entirely.
@@ -1474,7 +1536,7 @@ def main():
     report = Report(arguments.verbose)
     renderer = Renderer(output, plugin, report)
     for check in (check_reflections, check_lights, check_node_visibility, check_material_variants,
-                  check_unlit, check_points_and_lines, check_emissive_strength, check_ior,
+                  check_unlit, check_points_and_lines, check_gpu_instancing, check_emissive_strength, check_ior,
                   check_specular, check_anisotropy, check_iridescence, check_sheen, check_clearcoat,
                   check_transmission, check_volume, check_dispersion, check_alpha_modes, check_base_color_textures,
                   check_pbr_textures, check_normal_textures, check_texture_transforms,

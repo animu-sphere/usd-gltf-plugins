@@ -27,6 +27,7 @@ add_library(gltfUsd STATIC
     "${USD_GLTF_REPOSITORY_ROOT}/third_party/mikktspace/mikktspace.c"
     src/animation.cpp
     src/camera.cpp
+    src/instancing.cpp
     src/light.cpp
     src/material.cpp
     src/mesh.cpp

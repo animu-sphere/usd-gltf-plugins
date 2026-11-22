@@ -40,9 +40,10 @@ EMISSIVE_STRENGTH = "KHR_materials_emissive_strength"
 MATERIAL_VARIANTS = "KHR_materials_variants"
 NODE_VISIBILITY = "KHR_node_visibility"
 ANIMATION_POINTER = "KHR_animation_pointer"
+INSTANCING = "EXT_mesh_gpu_instancing"
 VISIBILITY_POINTER = re.compile(r"/nodes/(0|[1-9][0-9]*)/extensions/KHR_node_visibility/visible")
 IMPLEMENTED_EXTENSIONS = {
-    "EXT_texture_webp", DRACO, MESHOPT, "KHR_lights_punctual", "KHR_materials_anisotropy",
+    "EXT_texture_webp", INSTANCING, DRACO, MESHOPT, "KHR_lights_punctual", "KHR_materials_anisotropy",
     "KHR_materials_clearcoat", "KHR_materials_dispersion", EMISSIVE_STRENGTH, "KHR_materials_ior",
     "KHR_materials_iridescence", "KHR_materials_sheen", "KHR_materials_specular", "KHR_materials_transmission",
     "KHR_materials_unlit", "KHR_materials_volume", MATERIAL_VARIANTS, "KHR_mesh_quantization", NODE_VISIBILITY,
@@ -66,6 +67,8 @@ DIAGNOSTIC_CAUSES = {
     "which has a matrix": ("animated matrix",),
     "on points and lines are not supported": ("points or lines with", "skinned points or lines"),
     "supports only TRIANGLES": ("points or lines with Draco",),
+    "on instanced meshes are not supported": ("instanced skin", "instanced morph targets"),
+    "custom instance attributes are not supported": ("custom instance attribute",),
 }
 # glTF modes drawn as points and linear curves.
 POINTS_AND_LINES = (0, 1, 2, 3)
@@ -1348,6 +1351,40 @@ def check_animated_world_transforms(check, stage, asset, node_paths, channels, e
                              f"{path} animation {index} at {seconds:g}s: relative world transform error {error:.3g}")
 
 
+def mesh_group(node, path):
+    """The path of a node's mesh: the prototype of its point instancer when it has instances."""
+    instanced = INSTANCING in node.get("extensions", {})
+    return f"{path}/Instances/Mesh_{node['mesh']}" if instanced else f"{path}/Mesh_{node['mesh']}"
+
+
+def check_instances(check, stage, asset, node, path, label):
+    """Compares a node's point instancer with its EXT_mesh_gpu_instancing attributes."""
+    from pxr import UsdGeom
+
+    attributes = node["extensions"][INSTANCING]["attributes"]
+    instancer = UsdGeom.PointInstancer(stage.GetPrimAtPath(f"{path}/Instances"))
+    if not check.expect(instancer, f"{label} has no point instancer"):
+        return
+    check.expect([str(target) for target in instancer.GetPrototypesRel().GetTargets()] == [mesh_group(node, path)],
+                 f"{label} instances another prototype")
+    values = {name: asset.accessor(index) for name, index in attributes.items()}
+    count = len(next(iter(values.values())))
+    check.expect(list(instancer.GetProtoIndicesAttr().Get() or []) == [0] * count, f"{label} instance count differs")
+    translations = values.get("TRANSLATION", numpy.zeros((count, 3)))
+    check.close(instancer.GetPositionsAttr().Get(), translations, f"{label} positions")
+    if "ROTATION" in values:
+        rotations = values["ROTATION"].astype(numpy.float64)
+        rotations /= numpy.linalg.norm(rotations, axis=1)[:, None]
+        authored = [(*q.GetImaginary(), q.GetReal()) for q in instancer.GetOrientationsfAttr().Get() or []]
+        check.close(authored, rotations, f"{label} orientations")
+    else:
+        check.expect(not instancer.GetOrientationsfAttr().HasAuthoredValue(), f"{label} authors orientations")
+    if "SCALE" in values:
+        check.close(instancer.GetScalesAttr().Get(), values["SCALE"], f"{label} scales")
+    else:
+        check.expect(not instancer.GetScalesAttr().HasAuthoredValue(), f"{label} authors scales")
+
+
 def target_pointer(target):
     return target.get("extensions", {}).get(ANIMATION_POINTER, {}).get("pointer", "")
 
@@ -1398,7 +1435,7 @@ def check_animated_visibility(check, stage, document, node_paths, animated, chan
             attachments = []
             if "mesh" in nodes[node]:
                 mesh = nodes[node]["mesh"]
-                attachments.extend(f"{path}/Mesh_{mesh}/Primitive_{p}"
+                attachments.extend(f"{mesh_group(nodes[node], path)}/Primitive_{p}"
                                    for p in range(len(document["meshes"][mesh]["primitives"])))
             light = nodes[node].get("extensions", {}).get("KHR_lights_punctual")
             if light:
@@ -1656,8 +1693,10 @@ def check_meaning(stage, asset):
             check.close(numpy.array(cache.GetLocalToWorldTransform(prim)), world, f"Node_{index} world transform")
         if "mesh" in node:
             mesh_index = node["mesh"]
+            if INSTANCING in node.get("extensions", {}):
+                check_instances(check, stage, asset, node, path, f"Node_{index} instances")
             for number, primitive in enumerate(document["meshes"][mesh_index]["primitives"]):
-                mesh_path = f"{path}/Mesh_{mesh_index}/Primitive_{number}"
+                mesh_path = f"{mesh_group(node, path)}/Primitive_{number}"
                 expected_paths.add(mesh_path)
                 label = f"mesh {mesh_index} primitive {number}"
                 mesh_prim = stage.GetPrimAtPath(mesh_path)
@@ -1894,6 +1933,14 @@ def rejection_causes(document):
             causes |= mesh_causes(document, mesh)
             if "skin" in node and any(p.get("mode", 4) in POINTS_AND_LINES for p in mesh.get("primitives", [])):
                 causes.add("skinned points or lines")
+            instancing = node.get("extensions", {}).get(INSTANCING)
+            if instancing:
+                if "skin" in node:
+                    causes.add("instanced skin")
+                if any(p.get("targets") for p in mesh.get("primitives", [])):
+                    causes.add("instanced morph targets")
+                if any(name.startswith("_") for name in instancing.get("attributes", {})):
+                    causes.add("custom instance attribute")
     # Every animation is authored, but only on the selected scene.
     for animation in document.get("animations", []):
         for channel in animation.get("channels", []):
