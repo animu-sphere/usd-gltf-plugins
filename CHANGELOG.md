@@ -8,6 +8,8 @@ here.
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-11-23
+
 ### Added
 
 - Animate material properties through `KHR_animation_pointer`: the factors, alpha cutoff, normal

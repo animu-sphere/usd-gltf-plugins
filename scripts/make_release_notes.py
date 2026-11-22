@@ -21,6 +21,8 @@ MANIFEST_VERSION = re.compile(r"^plugin:\s*$.*?^\s+version:\s*(\S+)", re.M | re.
 LIBRARY_VERSION = re.compile(r"^library:\s*$.*?^\s+version:\s*(\S+)", re.M | re.S)
 REQUIRED_VERSION = re.compile(r"^\s+version:\s*(\"[^\"]*\")", re.M)
 REPOSITORY = "https://github.com/animu-sphere/usd-gltf-plugins"
+# A link target relative to the repository root, which the release page would resolve elsewhere.
+RELATIVE_LINK = re.compile(r"\]\((?![A-Za-z][A-Za-z0-9+.-]*:|#|/)([^)\s]+)\)")
 
 NOTES = """# usd-gltf-plugins {tag}
 
@@ -138,8 +140,10 @@ def main():
     if arguments.out:
         checksums = arguments.checksums.read_text(encoding="utf-8").strip() if arguments.checksums else ""
         ref = tag if arguments.tag else "main"
+        blob = f"{REPOSITORY}/blob/{ref}"
+        changes = RELATIVE_LINK.sub(lambda link: f"]({blob}/{link[1]})", changes)
         notes = NOTES.format(tag=tag, version=version, source=tag[1:], changes=changes, checksums=checksums,
-                             blob=f"{REPOSITORY}/blob/{ref}")
+                             blob=blob)
         arguments.out.write_text(notes, encoding="utf-8", newline="\n")
     return 0
 
