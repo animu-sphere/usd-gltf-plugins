@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include "animation.h"
+
 #include "gltfCore/accessor.h"
 
 #include <fastgltf/types.hpp>
@@ -11,6 +13,7 @@
 
 #include <cstddef>
 #include <map>
+#include <memory>
 #include <optional>
 #include <string>
 #include <tuple>
@@ -44,12 +47,19 @@ struct MaterialBinding
     [[nodiscard]] bool Author(const pxr::UsdGeomGprim& gprim, std::string& error) const;
 };
 
+// A USD material made from a glTF material that an animation changes.
+struct AnimatedMaterial;
+
 class MaterialAuthor
 {
   public:
+    // `animation` says which material properties animations change, and must outlive this.
     MaterialAuthor(const fastgltf::Asset& asset, const std::string& sourcePath,
                    const gltfCore::BufferReader& buffers, const pxr::UsdStageRefPtr& stage,
-                   const pxr::SdfPath& scope);
+                   const pxr::SdfPath& scope, const AnimationPlan& animation);
+    ~MaterialAuthor();
+    MaterialAuthor(const MaterialAuthor&) = delete;
+    MaterialAuthor& operator=(const MaterialAuthor&) = delete;
 
     [[nodiscard]] std::optional<std::size_t> TangentTexCoord(std::size_t index) const;
 
@@ -63,6 +73,15 @@ class MaterialAuthor
                                MaterialBinding& binding, std::string& error,
                                MaterialUse use = MaterialUse::Full);
 
+    // After every material is prepared, samples each animation's values of the inputs of animated
+    // materials, and removes the stated values of the inputs that any animation changes from the
+    // current edit target, since a value there would be stronger than the variants'.
+    [[nodiscard]] bool SampleAnimations(std::string& error);
+
+    // Authors, in the current edit target, the stated values of every input that any animation
+    // changes and this animation's time samples.
+    [[nodiscard]] bool AuthorAnimation(std::size_t animationIndex, std::string& error) const;
+
   private:
     [[nodiscard]] bool PrepareDefault(bool hasVertexColor, MaterialUse use,
                                       MaterialBinding& binding, std::string& error);
@@ -72,6 +91,8 @@ class MaterialAuthor
     const gltfCore::BufferReader& _buffers;
     pxr::UsdStageRefPtr _stage;
     pxr::SdfPath _scope;
+    const AnimationPlan& _animation;
+    std::vector<std::unique_ptr<AnimatedMaterial>> _animated;
     // Keyed by material index, or none for the default material, whether the primitive has
     // vertex colors, and the use.
     std::map<std::tuple<std::optional<std::size_t>, bool, MaterialUse>, pxr::UsdShadeMaterial>

@@ -8,6 +8,20 @@ here.
 
 ## [Unreleased]
 
+### Added
+
+- Animate material properties through `KHR_animation_pointer`: the factors, alpha cutoff, normal
+  scale and occlusion strength of the core material and of each supported material extension, and
+  the offset, rotation and scale of `KHR_texture_transform` on every texture slot, as time samples
+  in the `animation` variants of both shader networks. See the
+  [animated material properties decision](docs/adr/0044-animated-material-properties.md).
+
+### Changed
+
+- A material input that any animation changes has its value only inside the `animation` variants,
+  and a texture transform that an animation changes is authored even where its stated fields are
+  all defaults.
+
 ## [0.15.0] - 2026-11-22
 
 ### Added

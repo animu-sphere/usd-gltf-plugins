@@ -738,7 +738,7 @@ def animation_document(extension, samplers, channels, more_animations=(), nodes=
         data = struct.pack("<%d%s" % (len(values), ANIMATION_FORMATS[component_type]), *values)
         document["bufferViews"].append({"buffer": 0, "byteOffset": len(binary), "byteLength": len(data)})
         binary += data
-        width = {"SCALAR": 1, "VEC3": 3, "VEC4": 4}[accessor_type]
+        width = {"SCALAR": 1, "VEC2": 2, "VEC3": 3, "VEC4": 4}[accessor_type]
         document["accessors"].append({
             "bufferView": len(document["bufferViews"]) - 1, "componentType": component_type,
             "count": len(values) // width, "type": accessor_type, **kwargs,
@@ -824,6 +824,41 @@ def visibility_channel(node, sampler=0):
 
 def visibility_sampler(times=(0, 1), values=(0, 1)):
     return {"input": times, "output": values, "interpolation": "STEP", "type": "SCALAR", "componentType": 5121}
+
+
+def pointer_channel(sampler, pointer):
+    return {"sampler": sampler, "target": {"path": "pointer", "extensions": {
+        "KHR_animation_pointer": {"pointer": pointer}}}}
+
+
+MATERIAL_POINTER = "/materials/0/"
+BASE_COLOR_TRANSFORM = "pbrMetallicRoughness/baseColorTexture/extensions/KHR_texture_transform/"
+
+
+def material_animation_document(extension, samplers, pointers, more_animations=()):
+    """animation_document's nodes, whose first primitive has TEXCOORD_0 and material 0 and a PNG
+    texture, with an animation whose channels are (sampler, pointer) pairs."""
+    document, binary = animation_document("glb", samplers, [], more_animations=more_animations)
+    document["animations"][0]["channels"] = [pointer_channel(sampler, pointer) for sampler, pointer in pointers]
+    binary = append_view(document, binary, extension, struct.pack("<6f", 0, 0, 1, 0, 0, 1))
+    document["accessors"].append({"bufferView": len(document["bufferViews"]) - 1, "componentType": 5126,
+                                  "count": 3, "type": "VEC2"})
+    primitive = document["meshes"][0]["primitives"][0]
+    primitive["attributes"]["TEXCOORD_0"] = len(document["accessors"]) - 1
+    primitive["material"] = 0
+    binary = append_view(document, binary, extension, PNG)
+    document["images"] = [{"bufferView": len(document["bufferViews"]) - 1, "mimeType": "image/png"}]
+    document["textures"] = [{"source": 0}]
+    document["extensionsUsed"] = ["KHR_animation_pointer", "KHR_texture_transform", "KHR_materials_clearcoat"]
+    document["materials"] = [{"pbrMetallicRoughness": {"baseColorTexture": {"index": 0}}}]
+    return document, binary if extension == "glb" else None
+
+
+def stage_samples(layer):
+    """The number of time samples of material inputs in a layer."""
+    stage = Usd.Stage.Open(layer)
+    return sum(attribute.GetNumTimeSamples() for prim in stage.Traverse() if prim.IsA(UsdShade.Shader)
+               for attribute in prim.GetAttributes())
 
 
 def skin_document(split_roots):
@@ -8346,6 +8381,240 @@ assert layer.ExportToString() == Path(sys.argv[3]).read_text(encoding="utf-8")
                 with self.assertRaisesRegex(Tf.ErrorException, "unsupported KHR_animation_pointer target /nodes/1/translation"):
                     layer.Reload(True)
                 self.assertEqual(layer_text(layer), before)
+
+    def test_animated_material_properties(self):
+        red, green, blue = [1, 0, 0, 1], [0, 1, 0, 0.5], [0, 0, 1, 1]
+        samplers = [
+            {"input": [0, 1, 2], "output": red + green + blue, "type": "VEC4"},
+            {"input": [0, 2], "output": [0, math.pi], "type": "SCALAR"},
+            {"input": [0, 1], "output": [0, 1], "type": "SCALAR", "interpolation": "STEP"},
+            # In, value and out of each keyframe.
+            {"input": [0, 1], "output": [0, 0.25, 4, 0, 0.75, 0], "type": "SCALAR", "interpolation": "CUBICSPLINE"},
+            {"input": [0, 2], "output": [0, 1], "type": "SCALAR"},
+            {"input": [0, 2], "output": [0, 0, 0, 255, 128, 0], "componentType": 5121, "normalized": True},
+        ]
+        pointers = [(0, MATERIAL_POINTER + "pbrMetallicRoughness/baseColorFactor"),
+                    (1, MATERIAL_POINTER + BASE_COLOR_TRANSFORM + "rotation"),
+                    (2, MATERIAL_POINTER + "pbrMetallicRoughness/metallicFactor"),
+                    (3, MATERIAL_POINTER + "pbrMetallicRoughness/roughnessFactor"),
+                    (4, MATERIAL_POINTER + "extensions/KHR_materials_clearcoat/clearcoatFactor"),
+                    (5, MATERIAL_POINTER + "emissiveFactor")]
+        translation = {"input": [0, 1], "output": [0, 0, 0, 2, 0, 0]}
+        base = "/Root/Materials/Material_0/"
+
+        def color(seconds):
+            keys = (red, green, blue)
+            k = min(int(seconds), 1)
+            u = seconds - k
+            return [a + (b - a) * u for a, b in zip(keys[k], keys[k + 1])]
+
+        with tempfile.TemporaryDirectory() as directory:
+            for extension in ("gltf", "glb"):
+                with self.subTest(extension=extension):
+                    document, binary = material_animation_document(
+                        extension, samplers, pointers, more_animations=[([translation], [(0, 0, "translation")])])
+                    document["materials"] = [{
+                        "alphaMode": "BLEND",
+                        "pbrMetallicRoughness": {
+                            "baseColorFactor": [0.5, 0.5, 0.5, 1], "metallicFactor": 0.5, "roughnessFactor": 0.5,
+                            "baseColorTexture": {"index": 0, "extensions": {"KHR_texture_transform": {}}}},
+                        "extensions": {"KHR_materials_clearcoat": {}},
+                    }]
+                    path = pathlib.Path(directory) / f"material.{extension}"
+                    write_asset(path, document, binary)
+                    stage = Usd.Stage.Open(str(path))
+                    attribute = stage.GetAttributeAtPath
+
+                    self.assertEqual(stage.GetEndTimeCode(), 48)
+                    scales = (attribute(base + "preview/baseColorTexture.inputs:scale"),)
+                    factors = (attribute(base + "mtlx/baseColorFactor.inputs:in2"),
+                               attribute(base + "mtlx/alphaFactor.inputs:in2"))
+                    self.assertEqual(scales[0].Get(), Gf.Vec4f(0.5, 0.5, 0.5, 1))
+                    for seconds in (0, 0.25, 0.5, 1, 1.75, 2, 3):
+                        expected = color(min(seconds, 2))
+                        self.assertTrue(Gf.IsClose(scales[0].Get(seconds * 24), Gf.Vec4f(*expected), 1e-6), seconds)
+                        self.assertTrue(Gf.IsClose(factors[0].Get(seconds * 24), Gf.Vec3f(*expected[:3]), 1e-6))
+                        self.assertAlmostEqual(factors[1].Get(seconds * 24), expected[3], places=6)
+
+                    # A transform of all defaults is authored, because its rotation is animated, and the
+                    # translation that the rotation moves stays within 1e-4 of its curve.
+                    rotation = attribute(base + "preview/baseColorTextureTransform.inputs:rotation")
+                    moved = attribute(base + "preview/baseColorTextureTransform.inputs:translation")
+                    amount = attribute(base + "mtlx/baseColorImageRotate.inputs:amount")
+                    added = attribute(base + "mtlx/baseColorImageTranslate.inputs:in2")
+                    self.assertEqual(rotation.GetTimeSamples(), [0, 48])
+                    self.assertGreater(len(moved.GetTimeSamples()), 10)
+                    for seconds in (0, 0.3, 0.77, 1, 1.5, 2):
+                        radians = math.pi * seconds / 2
+                        self.assertAlmostEqual(rotation.Get(seconds * 24), math.degrees(radians), places=3)
+                        self.assertAlmostEqual(amount.Get(seconds * 24), -math.degrees(radians), places=3)
+                        for value in (moved.Get(seconds * 24), added.Get(seconds * 24)):
+                            self.assertAlmostEqual(value[0], math.sin(radians), delta=1e-4)
+                            self.assertAlmostEqual(value[1], 1 - math.cos(radians), delta=1e-4)
+
+                    for shader in ("preview", "mtlx"):
+                        metallic = attribute(base + shader + "/surface.inputs:metallic")
+                        self.assertEqual(metallic.Get(), 0.5)
+                        self.assertEqual(metallic.Get(0), 0)
+                        self.assertEqual(metallic.Get(23.9999), 0)
+                        self.assertEqual(metallic.Get(24), 1)
+                        roughness = attribute(base + shader + "/surface.inputs:roughness")
+                        for u in (0.1, 0.25, 0.5, 0.9):
+                            self.assertAlmostEqual(roughness.Get(u * 24), hermite([0.25], [4], [0], [0.75], 1, u)[0],
+                                                   delta=1e-4 * 1.2)
+                        # A clearcoat of 0 is authored, because an animation changes it.
+                        clearcoat = attribute(base + shader + "/surface.inputs:clearcoat")
+                        self.assertEqual(clearcoat.Get(), 0)
+                        self.assertAlmostEqual(clearcoat.Get(24), 0.5, places=6)
+                    self.assertTrue(Gf.IsClose(attribute(base + "mtlx/surface.inputs:emissive").Get(48),
+                                               Gf.Vec3f(1, 128 / 255, 0), 1e-6))
+                    self.assertTrue(Gf.IsClose(attribute(base + "preview/surface.inputs:emissiveColor").Get(24),
+                                               Gf.Vec3f(0.5, 64 / 255, 0), 1e-6))
+
+                    # Animated inputs have no value outside the variants, and others keep theirs.
+                    layer = stage.GetRootLayer()
+                    self.assertFalse(layer.GetAttributeAtPath(base + "preview/baseColorTexture.inputs:scale")
+                                     .HasDefaultValue())
+                    self.assertFalse(layer.GetAttributeAtPath(base + "mtlx/surface.inputs:metallic").HasDefaultValue())
+                    self.assertTrue(layer.GetAttributeAtPath(base + "mtlx/surface.inputs:alpha_mode").HasDefaultValue())
+
+                    stage.SetEditTarget(stage.GetSessionLayer())
+                    self.assertTrue(stage.GetDefaultPrim().GetVariantSet("animation").SetVariantSelection("Animation_1"))
+                    for animated in (scales[0], rotation, moved, attribute(base + "mtlx/surface.inputs:metallic")):
+                        self.assertEqual(animated.GetTimeSamples(), [])
+                    self.assertEqual(scales[0].Get(24), Gf.Vec4f(0.5, 0.5, 0.5, 1))
+                    self.assertEqual(moved.Get(24), Gf.Vec2f(0, 0))
+
+    def test_animated_material_failures_preserve_layer(self):
+        pointer = "KHR_animation_pointer"
+        factor = MATERIAL_POINTER + "pbrMetallicRoughness/baseColorFactor"
+        sampler = {"input": [0, 1], "output": [0, 0, 0, 1, 1, 1, 1, 1], "type": "VEC4"}
+        with tempfile.TemporaryDirectory() as directory:
+            for extension in ("gltf", "glb"):
+                path = pathlib.Path(directory) / f"material.{extension}"
+
+                def fixture(samplers=(sampler,), pointers=((0, factor),), required=False, materials=None):
+                    document, binary = material_animation_document(extension, list(samplers), list(pointers))
+                    document["extensionsUsed"].append("KHR_materials_ior")
+                    if materials is not None:
+                        document["materials"] = materials
+                    if required:
+                        document["extensionsRequired"] = [pointer]
+                    write_asset(path, document, binary)
+
+                fixture()
+                layer = Sdf.Layer.FindOrOpen(str(path))
+                before = layer_text(layer)
+                for arguments, message in (
+                    ({"samplers": [{**sampler, "output": [0, 0, 0, 1, 1.5, 1, 1, 1]}]}, "out of range"),
+                    ({"samplers": [{**sampler, "type": "VEC3", "output": [0] * 6}]}, "output"),
+                    # An integer that is not normalized is its own value.
+                    ({"samplers": [{**sampler, "componentType": 5121, "output": [0, 0, 0, 255, 255, 255, 255, 255]}]},
+                     "out of range"),
+                    ({"pointers": [(0, "/materials/9/pbrMetallicRoughness/baseColorFactor")]}, "invalid index"),
+                    ({"pointers": [(0, "/materials/00/pbrMetallicRoughness/baseColorFactor")]}, "invalid index"),
+                    ({"pointers": [(0, MATERIAL_POINTER + BASE_COLOR_TRANSFORM + "offset")]},
+                     "is in an object that the asset does not have"),
+                    ({"pointers": [(0, MATERIAL_POINTER + "extensions/KHR_materials_ior/ior")],
+                      "samplers": [{**sampler, "type": "SCALAR", "output": [1.5, 2]}]},
+                     "is in an object that the asset does not have"),
+                    ({"samplers": [sampler, {**sampler, "output": [0] * 8}], "pointers": [(0, factor), (1, factor)]},
+                     "same material property"),
+                ):
+                    with self.subTest(extension=extension, message=message, arguments=str(arguments)[:60]):
+                        fixture(**arguments)
+                        with self.assertRaisesRegex(Tf.ErrorException, message):
+                            layer.Reload(True)
+                        self.assertEqual(layer_text(layer), before)
+
+                ior = {"input": [0, 1], "output": [1.5, 0], "type": "SCALAR"}
+                mask = [{"alphaMode": "MASK", "pbrMetallicRoughness": {"baseColorTexture": {"index": 0}}}]
+                cutoff = {"input": [0, 1], "output": [0.5, 0], "type": "SCALAR"}
+                for arguments, message in (
+                    ({"pointers": [(0, MATERIAL_POINTER + "doubleSided")]}, "unsupported KHR_animation_pointer target"),
+                    ({"samplers": [ior], "pointers": [(0, MATERIAL_POINTER + "extensions/KHR_materials_ior/ior")],
+                      "materials": [{"extensions": {"KHR_materials_ior": {}}}]}, "ior of 0"),
+                    ({"samplers": [cutoff], "pointers": [(0, MATERIAL_POINTER + "alphaCutoff")], "materials": mask},
+                     "alpha cutoff of 0"),
+                ):
+                    with self.subTest(extension=extension, message=message):
+                        fixture(**arguments)
+                        self.assertTrue(layer.Reload(True))
+                        self.assertEqual(stage_samples(layer), 0)
+                        fixture(**arguments, required=True)
+                        with self.assertRaisesRegex(Tf.ErrorException, message):
+                            layer.Reload(True)
+
+    def test_animated_material_channels_without_effect(self):
+        pointer = "KHR_animation_pointer"
+        factor = MATERIAL_POINTER + "pbrMetallicRoughness/baseColorFactor"
+        sampler = {"input": [0, 1], "output": [0, 0, 0, 1, 1, 1, 1, 1], "type": "VEC4"}
+        scalar = {"input": [0, 1], "output": [0, 1], "type": "SCALAR"}
+        diffuse = "KHR_materials_diffuse_transmission"
+        with tempfile.TemporaryDirectory() as directory:
+            for extension in ("gltf", "glb"):
+                with self.subTest(extension=extension):
+                    path = pathlib.Path(directory) / f"material.{extension}"
+
+                    def write(document, binary, target):
+                        if extension == "gltf":
+                            document["buffers"][0]["uri"] = ("data:application/octet-stream;base64," +
+                                                             base64.b64encode(binary).decode())
+                        write_asset(target, document, binary if extension == "glb" else None)
+
+                    document, binary = material_animation_document(
+                        "glb", [sampler, scalar],
+                        [(0, factor), (0, factor), (1, MATERIAL_POINTER + "pbrMetallicRoughness/metallicFactor"),
+                         (1, "/materials/1/extensions/" + diffuse + "/diffuseTransmissionFactor")])
+                    document["extensionsUsed"] += ["KHR_materials_unlit", diffuse]
+                    document["extensionsRequired"] = [pointer]
+                    document["materials"] = [
+                        {"pbrMetallicRoughness": {"baseColorTexture": {"index": 0}},
+                         "extensions": {"KHR_materials_unlit": {}}},
+                        {"extensions": {diffuse: {}}},
+                    ]
+                    document["meshes"][0]["primitives"][1]["material"] = 1
+                    write(document, binary, path)
+                    result = subprocess.run(
+                        [sys.executable, "-c",
+                         "from pxr import Usd; import sys; assert Usd.Stage.Open(sys.argv[1])", str(path)],
+                        capture_output=True, text=True, check=False,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIn("repeats another channel", result.stderr)
+                    self.assertIn("changes nothing that conversion authors", result.stderr)
+                    self.assertIn("belongs to an extension that conversion ignores", result.stderr)
+                    stage = Usd.Stage.Open(str(path))
+                    self.assertEqual(stage.GetAttributeAtPath(
+                        "/Root/Materials/Material_0/mtlx/baseColorFactor.inputs:in2").GetTimeSamples(), [0, 24])
+                    self.assertEqual(stage.GetAttributeAtPath(
+                        "/Root/Materials/Material_0/mtlx/surface.inputs:metallic").GetTimeSamples(), [])
+
+                    # Preview multiplies the stated factor into each vertex color primvar, which the
+                    # animation does not change, and MaterialX multiplies the animated factor.
+                    document["materials"] = [{"pbrMetallicRoughness": {}}]
+                    del document["meshes"][0]["primitives"][1]["material"]
+                    document["animations"][0]["channels"] = [pointer_channel(0, factor)]
+                    primitive = document["meshes"][0]["primitives"][0]
+                    binary = append_view(document, binary, "glb", struct.pack("<9f", *([0.5, 0.5, 0.5] * 3)))
+                    document["accessors"].append({"bufferView": len(document["bufferViews"]) - 1,
+                                                  "componentType": 5126, "count": 3, "type": "VEC3"})
+                    primitive["attributes"]["COLOR_0"] = len(document["accessors"]) - 1
+                    path = path.with_name(f"colors.{extension}")
+                    write(document, binary, path)
+                    result = subprocess.run(
+                        [sys.executable, "-c",
+                         "from pxr import Usd; import sys; assert Usd.Stage.Open(sys.argv[1])", str(path)],
+                        capture_output=True, text=True, check=False,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIn("keeps the stated base color factor", result.stderr)
+                    stage = Usd.Stage.Open(str(path))
+                    material = "/Root/Materials/Material_0_VertexColor/"
+                    self.assertEqual(stage.GetAttributeAtPath(material + "mtlx/baseColorFactor.inputs:in2")
+                                     .GetTimeSamples(), [0, 24])
+                    self.assertEqual(stage.GetAttributeAtPath(material + "preview/surface.inputs:diffuseColor")
+                                     .GetTimeSamples(), [])
 
     def test_external_buffers_and_reload(self):
         with tempfile.TemporaryDirectory() as directory:

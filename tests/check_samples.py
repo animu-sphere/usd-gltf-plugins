@@ -60,6 +60,39 @@ MAXIMUM_MISMATCHES = 6
 TOLERANCE = 1e-5
 OPTIONAL_WARNING = re.compile(r"glTF optional extension '(.*)' is not supported")
 POINTER_WARNING = re.compile(r"glTF animation (\d+) channel (\d+): unsupported KHR_animation_pointer target .+; channel ignored")
+MATERIAL_POINTER = re.compile(r"/materials/(0|[1-9][0-9]*)/(.+)")
+# The material properties of the Object Model that the plugin animates, after /materials/{index}/.
+MATERIAL_FACTORS = {
+    "pbrMetallicRoughness/baseColorFactor", "pbrMetallicRoughness/metallicFactor",
+    "pbrMetallicRoughness/roughnessFactor", "emissiveFactor", "alphaCutoff", "normalTexture/scale",
+    "occlusionTexture/strength", "extensions/KHR_materials_emissive_strength/emissiveStrength",
+    "extensions/KHR_materials_ior/ior", "extensions/KHR_materials_clearcoat/clearcoatFactor",
+    "extensions/KHR_materials_clearcoat/clearcoatRoughnessFactor",
+    "extensions/KHR_materials_clearcoat/clearcoatNormalTexture/scale",
+    "extensions/KHR_materials_transmission/transmissionFactor", "extensions/KHR_materials_volume/thicknessFactor",
+    "extensions/KHR_materials_volume/attenuationDistance", "extensions/KHR_materials_volume/attenuationColor",
+    "extensions/KHR_materials_dispersion/dispersion", "extensions/KHR_materials_specular/specularFactor",
+    "extensions/KHR_materials_specular/specularColorFactor", "extensions/KHR_materials_sheen/sheenColorFactor",
+    "extensions/KHR_materials_sheen/sheenRoughnessFactor", "extensions/KHR_materials_iridescence/iridescenceFactor",
+    "extensions/KHR_materials_iridescence/iridescenceIor",
+    "extensions/KHR_materials_iridescence/iridescenceThicknessMinimum",
+    "extensions/KHR_materials_iridescence/iridescenceThicknessMaximum",
+    "extensions/KHR_materials_anisotropy/anisotropyStrength", "extensions/KHR_materials_anisotropy/anisotropyRotation",
+}
+# The texture slots whose KHR_texture_transform the plugin animates, by their path in a material.
+MATERIAL_SLOTS = {
+    "pbrMetallicRoughness/baseColorTexture": "baseColorTexture",
+    "pbrMetallicRoughness/metallicRoughnessTexture": "metallicRoughnessTexture",
+    "normalTexture": "normalTexture", "occlusionTexture": "occlusionTexture", "emissiveTexture": "emissiveTexture",
+    **{f"extensions/KHR_materials_{extension}/{key}": key for extension, keys in (
+        ("clearcoat", ("clearcoatTexture", "clearcoatRoughnessTexture", "clearcoatNormalTexture")),
+        ("transmission", ("transmissionTexture",)), ("volume", ("thicknessTexture",)),
+        ("specular", ("specularTexture", "specularColorTexture")),
+        ("sheen", ("sheenColorTexture", "sheenRoughnessTexture")),
+        ("iridescence", ("iridescenceTexture", "iridescenceThicknessTexture")),
+        ("anisotropy", ("anisotropyTexture",))) for key in keys},
+}
+TRANSFORM_FIELDS = ("offset", "rotation", "scale")
 # The text of a rejection, and the causes that make it a fitting one.
 DIAGNOSTIC_CAUSES = {
     "missing base attribute for morph target": ("morph target attribute",),
@@ -665,20 +698,26 @@ def specified_uv(transform, u, v):
     return cosine * u + sine * v + offset[0], -sine * u + cosine * v + offset[1]
 
 
-def preview_st(node, st):
-    """What UsdTransform2d computes, as its specification defines it."""
-    rotation = math.radians(node.GetInput("rotation").Get())
-    scale, translation = node.GetInput("scale").Get(), node.GetInput("translation").Get()
+def preview_st(node, st, time=None):
+    """What UsdTransform2d computes, as its specification defines it, at a time code or by default."""
+    from pxr import Usd
+
+    time = Usd.TimeCode.Default() if time is None else time
+    rotation = math.radians(node.GetInput("rotation").Get(time))
+    scale, translation = node.GetInput("scale").Get(time), node.GetInput("translation").Get(time)
     s, t = st[0] * scale[0], st[1] * scale[1]
     return (math.cos(rotation) * s - math.sin(rotation) * t + translation[0],
             math.sin(rotation) * s + math.cos(rotation) * t + translation[1])
 
 
-def mtlx_st(nodes, st):
+def mtlx_st(nodes, st, time=None):
     """What the MaterialX nodes compute. rotate2d's formula is that of its GLSL implementation."""
+    from pxr import Usd
+
+    time = Usd.TimeCode.Default() if time is None else time
     scale, rotate, translate = nodes
-    factor, amount = scale.GetInput("in2").Get(), math.radians(rotate.GetInput("amount").Get())
-    offset = translate.GetInput("in2").Get()
+    factor, amount = scale.GetInput("in2").Get(time), math.radians(rotate.GetInput("amount").Get(time))
+    offset = translate.GetInput("in2").Get(time)
     s, t = st[0] * factor[0], st[1] * factor[1]
     return (math.cos(amount) * s + math.sin(amount) * t + offset[0],
             -math.sin(amount) * s + math.cos(amount) * t + offset[1])
@@ -728,7 +767,9 @@ def check_texture(check, asset, stage, material_path, key, info, label, images):
     primvar = "st" if number == 0 else f"st{number}"
     reader = None if mtlx_only else connected_shader(preview.GetInput("st"))
     mtlx_reader = connected_shader(mtlx.GetInput("texcoord"))
-    if not is_identity(transform):
+    # A transform of all defaults is authored when an animation changes it.
+    animated = mtlx_reader and mtlx_reader.GetShaderId() == "ND_add_vector2"
+    if not is_identity(transform) or animated:
         if not mtlx_only and check.expect(reader and reader.GetShaderId() == "UsdTransform2d",
                                           f"{label} {slot} Preview has no transform"):
             check_transform(check, transform, lambda st, node=reader: preview_st(node, st),
@@ -1389,6 +1430,149 @@ def target_pointer(target):
     return target.get("extensions", {}).get(ANIMATION_POINTER, {}).get("pointer", "")
 
 
+def material_target(pointer):
+    """(material, property path) of a pointer to a factor, (material, slot key, field) of one to a
+    texture transform, or None for a pointer the plugin does not animate."""
+    match = MATERIAL_POINTER.fullmatch(pointer)
+    if not match:
+        return None
+    material, rest = int(match[1]), match[2]
+    if rest in MATERIAL_FACTORS:
+        return material, rest, None
+    for path, key in MATERIAL_SLOTS.items():
+        for field in TRANSFORM_FIELDS:
+            if rest == f"{path}/extensions/KHR_texture_transform/{field}":
+                return material, key, field
+    return None
+
+
+def ignored_material_pointer(pointer):
+    """Whether the plugin skips the pointer with the warning of an extension that it ignores."""
+    match = MATERIAL_POINTER.fullmatch(pointer)
+    return bool(match) and match[2].startswith("extensions/KHR_materials_diffuse_transmission/")
+
+
+def material_copies(stage, material):
+    """The USD materials made from one glTF material: its own and those for vertex colors and uses."""
+    scope = stage.GetPrimAtPath("/Root/Materials")
+    name = f"Material_{material}"
+    return [child for child in (scope.GetChildren() if scope else [])
+            if child.GetName() == name or child.GetName().startswith(name + "_")]
+
+
+def query_times(times):
+    """Each keyframe, points inside each segment, and times outside the range."""
+    query = {float(times[0]) - 1, float(times[-1]) + 1}
+    for k, t in enumerate(times):
+        query.add(float(t))
+        if k + 1 < len(times):
+            query.update(float(t + (times[k + 1] - t) * f) for f in (0.25, 0.5, 0.75))
+    return sorted(query)
+
+
+def check_material_channels(check, stage, asset, animation, index):
+    """Compares the material inputs that an animation changes with glTF's values over time: base color
+    factors and texture transforms, which the Khronos samples animate, in every USD material made from
+    the glTF material. Returns the last keyframe of the channels on materials that the scene uses."""
+    from pxr import UsdShade
+
+    materials = asset.json.get("materials", [])
+    end = None
+    transforms = {}
+    factors = []
+    for number, channel in enumerate(animation["channels"]):
+        target = channel["target"]
+        found = target.get("path") == "pointer" and material_target(target_pointer(target))
+        if not found or not material_copies(stage, found[0]):
+            continue
+        sampler = animation["samplers"][channel["sampler"]]
+        times = asset.accessor(sampler["input"])[:, 0].astype(numpy.float64)
+        values = asset.accessor(sampler["output"]).astype(numpy.float64)
+        interpolation = sampler.get("interpolation", "LINEAR")
+        end = max(end or 0.0, float(times[-1]))
+        material, prop, field = found
+        if field:
+            fields = transforms.setdefault((material, prop), {})
+            if field not in fields:  # A repeated channel changes nothing.
+                fields[field] = times, values, interpolation
+        else:
+            factors.append((number, material, prop, times, values, interpolation))
+
+    def info_of(material, key):
+        source = materials[material]
+        for container in (source, source.get("pbrMetallicRoughness", {}),
+                          *source.get("extensions", {}).values()):
+            if isinstance(container, dict) and key in container:
+                return container[key]
+        return None
+
+    for (material, key), fields in sorted(transforms.items()):
+        info = info_of(material, key)
+        stated = transform_of(info or {})
+        times = numpy.unique(numpy.concatenate([channel[0] for channel in fields.values()]))
+        slot = SLOTS.get(key, "clearcoatNormal")
+        for copy in material_copies(stage, material):
+            label = f"animation {index} {copy.GetName()} {slot} transform"
+            path = copy.GetPath()
+            preview = UsdShade.Shader(stage.GetPrimAtPath(path.AppendPath(f"preview/{slot}TextureTransform")))
+            nodes = [UsdShade.Shader(stage.GetPrimAtPath(path.AppendPath(f"mtlx/{slot}Image{step}")))
+                     for step in ("Scale", "Rotate", "Translate")]
+            if not all(nodes):
+                # A texture that this use does not read, such as a normal map on a line.
+                check.expect(not preview, f"{label} is authored in Preview only")
+                continue
+            for seconds in query_times(times):
+                transform = dict(stated)
+                for field, (field_times, values, interpolation) in fields.items():
+                    value = sampled(field_times, values, interpolation, "textureTransform", seconds)
+                    transform[field] = float(value[0]) if field == "rotation" else [float(v) for v in value]
+                code = seconds * TIME_CODES_PER_SECOND
+                # The plugin samples a moving translation within 1e-4 of its curve.
+                for u, v in ((0.0, 0.0), (1.0, 0.0), (0.25, 0.75)):
+                    expected = specified_uv(transform, u, v)
+                    expected = (expected[0], 1 - expected[1])
+                    if preview:
+                        check.close(preview_st(preview, (u, 1 - v), code), expected,
+                                    f"{label} Preview at {seconds:g}s", absolute=2e-4)
+                    check.close(mtlx_st(nodes, (u, 1 - v), code), expected,
+                                f"{label} MaterialX at {seconds:g}s", absolute=2e-4)
+
+    for number, material, prop, times, values, interpolation in factors:
+        if prop != "pbrMetallicRoughness/baseColorFactor":
+            continue  # No Khronos sample animates another factor; the file format tests cover them.
+        source = materials[material]
+        textured = "baseColorTexture" in source.get("pbrMetallicRoughness", {})
+        uses_alpha = source.get("alphaMode", "OPAQUE") != "OPAQUE"
+        unlit = "KHR_materials_unlit" in source.get("extensions", {})
+        for copy in material_copies(stage, material):
+            label = f"animation {index} channel {number} {copy.GetName()} base color"
+            path = str(copy.GetPath())
+            colors = copy.GetName().endswith("_VertexColor") or copy.GetName().endswith("_Unlit")
+            if textured:
+                inputs = [(f"{path}/preview/baseColorTexture.inputs:scale", slice(0, 4)),
+                          (f"{path}/mtlx/baseColorFactor.inputs:in2", slice(0, 3))]
+                if uses_alpha:
+                    inputs.append((f"{path}/mtlx/alphaFactor.inputs:in2", slice(3, 4)))
+            elif unlit or colors:
+                continue  # Compared through the file format tests.
+            else:
+                inputs = [(f"{path}/preview/surface.inputs:diffuseColor", slice(0, 3)),
+                          (f"{path}/mtlx/surface.inputs:base_color", slice(0, 3))]
+                if uses_alpha:
+                    inputs += [(f"{path}/preview/surface.inputs:opacity", slice(3, 4)),
+                               (f"{path}/mtlx/surface.inputs:alpha", slice(3, 4))]
+            for name, components in inputs:
+                attribute = stage.GetAttributeAtPath(name)
+                if not check.expect(attribute and attribute.GetNumTimeSamples() > 0, f"{label}: {name} is not animated"):
+                    continue
+                for seconds in query_times(times):
+                    expected = sampled(times, values, interpolation, "baseColorFactor", seconds)[components]
+                    actual = attribute.Get(seconds * TIME_CODES_PER_SECOND)
+                    actual = [actual] if isinstance(actual, float) else list(actual)
+                    check.close(actual, expected, f"{label}: {name} at {seconds:g}s", absolute=2e-4)
+    return end
+
+
 def check_animated_visibility(check, stage, document, node_paths, animated, channels, index):
     from pxr import UsdGeom
 
@@ -1560,6 +1744,10 @@ def check_animation(check, stage, asset, node_paths):
         if has_transforms:
             check_animated_world_transforms(check, stage, asset, node_paths, transforms, own_end, index)
         check_animated_visibility(check, stage, asset.json, node_paths, visibility_nodes, visibility, index)
+        material_end = check_material_channels(check, stage, asset, animation, index)
+        if material_end is not None:
+            own_end = max(own_end, material_end)
+            own.add((None, "material"))
         data = root.GetCustomDataByKey("gltf") or {}
         check.close(data.get("endTimeCode", -1.0), own_end * TIME_CODES_PER_SECOND, f"animation {index} end")
         name = animation.get("name") or None
@@ -1818,7 +2006,9 @@ def inspect(path, root, directory):
     result["ignored_pointers"] = [(a, c) for a, animation in enumerate(asset.json.get("animations", []))
                                   for c, channel in enumerate(animation["channels"])
                                   if channel["target"].get("path") == "pointer" and
-                                  not VISIBILITY_POINTER.fullmatch(target_pointer(channel["target"]))]
+                                  not VISIBILITY_POINTER.fullmatch(target_pointer(channel["target"])) and
+                                  not material_target(target_pointer(channel["target"])) and
+                                  not ignored_material_pointer(target_pointer(channel["target"]))]
     # Embedded images share a parsed package only inside a resolver cache scope.
     # Bound the scope to this inspection, so another file or reload sees fresh bytes.
     try:

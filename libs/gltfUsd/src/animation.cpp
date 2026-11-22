@@ -172,6 +172,151 @@ isPropertyPointer(std::string_view pointer)
     return true;
 }
 
+// A canonical decimal index below `count`, as a JSON pointer names an array element.
+bool
+parseIndex(std::string_view text, std::size_t count, std::size_t& index)
+{
+    const auto [end, ec] = std::from_chars(text.data(), text.data() + text.size(), index);
+    return !text.empty() && ec == std::errc() && end == text.data() + text.size() &&
+           !(text.size() > 1 && text.front() == '0') && index < count;
+}
+
+// Reads a sampler of a material property: a float, or an integer converted to float as
+// KHR_animation_pointer says, normalized or not, with as many components as the property.
+bool
+readMaterialChannel(const fastgltf::Asset& asset, const gltfCore::BufferReader& buffers,
+                    const fastgltf::AnimationSampler& sampler, MaterialChannel& result,
+                    std::string& error)
+{
+    result.interpolation = sampler.interpolation;
+    const bool cubic = sampler.interpolation == fastgltf::AnimationInterpolation::CubicSpline;
+    if (!readTimes(asset, sampler.inputAccessor, buffers, result.times, error))
+    {
+        return false;
+    }
+    if (cubic && result.times.size() < 2)
+    {
+        error = "a CUBICSPLINE sampler has fewer than two keyframes";
+        return false;
+    }
+    if (sampler.outputAccessor >= asset.accessors.size())
+    {
+        error = "output accessor index is out of range";
+        return false;
+    }
+    const auto& accessor = asset.accessors[sampler.outputAccessor];
+    const auto componentType = accessor.componentType;
+    const bool integer = componentType == fastgltf::ComponentType::Byte ||
+                         componentType == fastgltf::ComponentType::UnsignedByte ||
+                         componentType == fastgltf::ComponentType::Short ||
+                         componentType == fastgltf::ComponentType::UnsignedShort ||
+                         componentType == fastgltf::ComponentType::UnsignedInt;
+    if ((componentType != fastgltf::ComponentType::Float && !integer) ||
+        (accessor.normalized && (!integer || componentType == fastgltf::ComponentType::UnsignedInt)))
+    {
+        error = "output has an invalid component type";
+        return false;
+    }
+    const auto width = result.property.Width();
+    const auto type = width == 1   ? fastgltf::AccessorType::Scalar
+                      : width == 2 ? fastgltf::AccessorType::Vec2
+                      : width == 3 ? fastgltf::AccessorType::Vec3
+                                   : fastgltf::AccessorType::Vec4;
+    const auto componentSize = fastgltf::getComponentByteSize(componentType);
+    gltfCore::AccessorData data;
+    if (!gltfCore::GetAccessorData(asset, sampler.outputAccessor, type, componentType,
+                                   width * componentSize, false, data, error, buffers,
+                                   accessor.normalized))
+    {
+        error = "output " + error;
+        return false;
+    }
+    const std::size_t perKeyframe = cubic ? 3 : 1;
+    if (data.count != result.times.size() * perKeyframe)
+    {
+        error = "output count does not match the input count";
+        return false;
+    }
+    for (std::size_t i = 0; i < data.count; ++i)
+    {
+        std::array<double, 4> value{};
+        for (std::size_t c = 0; c < width; ++c)
+        {
+            const auto* element = data.Element(i) + c * componentSize;
+            if (accessor.normalized || componentType == fastgltf::ComponentType::Float)
+            {
+                value[c] = readComponent(element, componentType);
+                continue;
+            }
+            const auto bits = ReadUnsigned(element, componentSize);
+            value[c] = componentType == fastgltf::ComponentType::Byte    ? double(std::int8_t(bits))
+                       : componentType == fastgltf::ComponentType::Short ? double(std::int16_t(bits))
+                                                                         : double(bits);
+        }
+        if (!std::all_of(value.begin(), value.end(), [](double v) { return std::isfinite(v); }))
+        {
+            error = "output values are not finite";
+            return false;
+        }
+        if (cubic && i % 3 == 0)
+        {
+            result.ins.push_back(value);
+        }
+        else if (cubic && i % 3 == 2)
+        {
+            result.outs.push_back(value);
+        }
+        else if (!ValidateMaterialValue(result.property, value, error))
+        {
+            return false;
+        }
+        else
+        {
+            result.vertices.push_back(value);
+        }
+    }
+    return true;
+}
+
+// Whether conversion authors the property for an unlit material, which draws only its base color.
+bool
+drawnWhenUnlit(const MaterialProperty& property)
+{
+    return property.IsTransform() ? property.slot == TextureSlot::BaseColor
+                                  : property.field == MaterialField::BaseColor ||
+                                        property.field == MaterialField::AlphaCutoff;
+}
+
+// The glTF materials that primitives of the selected scene use, with any material variant.
+std::set<std::size_t>
+usedMaterials(const fastgltf::Asset& asset, const SceneMap& map)
+{
+    std::set<std::size_t> used;
+    for (const auto& mapped : map.nodes)
+    {
+        const auto& node = asset.nodes[mapped.index];
+        if (mapped.path.IsEmpty() || !node.meshIndex || *node.meshIndex >= asset.meshes.size())
+        {
+            continue;
+        }
+        for (const auto& primitive : asset.meshes[*node.meshIndex].primitives)
+        {
+            if (primitive.materialIndex)
+            {
+                used.insert(*primitive.materialIndex);
+            }
+            for (const auto& mapping : primitive.mappings)
+            {
+                if (mapping)
+                {
+                    used.insert(*mapping);
+                }
+            }
+        }
+    }
+    return used;
+}
+
 template <class T>
 bool
 readKeyframes(const fastgltf::Asset& asset, const gltfCore::BufferReader& buffers,
@@ -558,12 +703,14 @@ placeAtTimeZero(const fastgltf::Asset& asset, const SceneMap& map, std::size_t a
 // node of the scene. Returns false after reporting an error.
 bool
 readAnimation(const fastgltf::Asset& asset, const gltfCore::BufferReader& buffers,
-              const SceneMap& map, std::size_t animationIndex, AnimationValues& values)
+              const SceneMap& map, const std::set<std::size_t>& materials,
+              std::size_t animationIndex, AnimationValues& values)
 {
     const auto& animation = asset.animations[animationIndex];
     values.name = std::string(animation.name);
     std::set<std::pair<std::size_t, fastgltf::AnimationPath>> targets;
     std::set<std::size_t> visibilityTargets;
+    std::map<std::pair<std::size_t, std::string>, MaterialChannel> materialTargets;
     constexpr auto pointerExtension = fastgltf::extensions::KHR_animation_pointer;
     const auto declared = std::find(asset.extensionsUsed.begin(), asset.extensionsUsed.end(),
                                     pointerExtension) != asset.extensionsUsed.end();
@@ -599,15 +746,130 @@ readAnimation(const fastgltf::Asset& asset, const gltfCore::BufferReader& buffer
                     "KHR_animation_pointer requires a pointer path, a JSON property pointer "
                     "and no target node field");
             }
-            if (!pointer.starts_with(prefix) || !pointer.ends_with(suffix))
+            // An unsupported target is ignored where the extension is optional.
+            const auto unsupported = [&](const std::string& message)
             {
-                const auto message = "unsupported KHR_animation_pointer target " + *channel.pointer;
                 if (required)
                 {
                     return fail(message);
                 }
                 TF_WARN("glTF animation %zu channel %zu: %s; channel ignored", animationIndex, c,
                         message.c_str());
+                return true;
+            };
+            constexpr std::string_view materialPrefix = "/materials/";
+            if (pointer.starts_with(materialPrefix))
+            {
+                const auto rest = pointer.substr(materialPrefix.size());
+                const auto slash = rest.find('/');
+                std::size_t materialIndex = 0;
+                if (slash == std::string_view::npos ||
+                    !parseIndex(rest.substr(0, slash), asset.materials.size(), materialIndex))
+                {
+                    return fail("KHR_animation_pointer material target has an invalid index");
+                }
+                MaterialProperty property;
+                const auto kind = ParseMaterialPointer(rest.substr(slash + 1), property);
+                if (kind == MaterialPointer::Ignored)
+                {
+                    // Its extension is left out with a warning, so this changes nothing authored.
+                    TF_WARN("glTF animation %zu channel %zu: KHR_animation_pointer target %s "
+                            "belongs to an extension that conversion ignores; channel ignored",
+                            animationIndex, c, channel.pointer->c_str());
+                    continue;
+                }
+                if (kind == MaterialPointer::Unsupported)
+                {
+                    if (!unsupported("unsupported KHR_animation_pointer target " + *channel.pointer))
+                    {
+                        return false;
+                    }
+                    continue;
+                }
+                const auto& material = asset.materials[materialIndex];
+                if (!HasEnclosingObject(material, property))
+                {
+                    return fail("KHR_animation_pointer target " + *channel.pointer +
+                                " is in an object that the material does not have");
+                }
+                MaterialChannel materialChannel;
+                materialChannel.property = property;
+                std::string error;
+                if (!readMaterialChannel(asset, buffers, animation.samplers[channel.samplerIndex],
+                                         materialChannel, error))
+                {
+                    return fail(error);
+                }
+                // The extension forbids a second channel on a property. One that repeats the first
+                // changes nothing, and AnimationPointerUVs has four.
+                if (const auto [first, inserted] = materialTargets.try_emplace(
+                        {materialIndex, property.Path()}, materialChannel);
+                    !inserted)
+                {
+                    if (!(first->second == materialChannel))
+                    {
+                        return fail("KHR_animation_pointer targets the same material property as "
+                                    "another channel");
+                    }
+                    TF_WARN("glTF animation %zu channel %zu: KHR_animation_pointer target %s "
+                            "repeats another channel; channel ignored",
+                            animationIndex, c, channel.pointer->c_str());
+                    continue;
+                }
+                if (!materials.contains(materialIndex))
+                {
+                    continue;
+                }
+                if ((material.unlit && !drawnWhenUnlit(property)) ||
+                    (property.field == MaterialField::AlphaCutoff &&
+                     material.alphaMode != fastgltf::AlphaMode::Mask))
+                {
+                    TF_WARN("glTF animation %zu channel %zu: KHR_animation_pointer target %s "
+                            "changes nothing that conversion authors; channel ignored",
+                            animationIndex, c, channel.pointer->c_str());
+                    continue;
+                }
+                const auto anyZero = [&]()
+                {
+                    return std::any_of(materialChannel.vertices.begin(),
+                                       materialChannel.vertices.end(),
+                                       [](const auto& value) { return value[0] == 0.0; });
+                };
+                std::string unsupportedValue;
+                if (property.field == MaterialField::AlphaCutoff && anyZero())
+                {
+                    unsupportedValue = "an animated alpha cutoff of 0, which UsdPreviewSurface "
+                                       "reads as no masking";
+                }
+                else if (property.field == MaterialField::Ior && anyZero())
+                {
+                    unsupportedValue = "an animated ior of 0, which conversion maps to a finite ior";
+                }
+                else if (property.field == MaterialField::AttenuationDistance &&
+                         !std::isfinite(material.volume->attenuationDistance))
+                {
+                    unsupportedValue = "an animated attenuation distance whose stated value is "
+                                       "the infinite default";
+                }
+                if (!unsupportedValue.empty())
+                {
+                    if (!unsupported(unsupportedValue + " in " + *channel.pointer))
+                    {
+                        return false;
+                    }
+                    continue;
+                }
+                values.endTimeCode = std::max(values.endTimeCode,
+                                              materialChannel.times.back() * TimeCodesPerSecond);
+                values.materials[materialIndex].push_back(std::move(materialChannel));
+                continue;
+            }
+            if (!pointer.starts_with(prefix) || !pointer.ends_with(suffix))
+            {
+                if (!unsupported("unsupported KHR_animation_pointer target " + *channel.pointer))
+                {
+                    return false;
+                }
                 continue;
             }
             if (pointer.size() <= prefix.size() + suffix.size())
@@ -617,10 +879,7 @@ readAnimation(const fastgltf::Asset& asset, const gltfCore::BufferReader& buffer
             const auto index =
                 pointer.substr(prefix.size(), pointer.size() - prefix.size() - suffix.size());
             std::size_t nodeIndex = 0;
-            const auto [end, ec] =
-                std::from_chars(index.data(), index.data() + index.size(), nodeIndex);
-            if (ec != std::errc() || end != index.data() + index.size() ||
-                (index.size() > 1 && index.front() == '0') || nodeIndex >= asset.nodes.size())
+            if (!parseIndex(index, asset.nodes.size(), nodeIndex))
             {
                 return fail("KHR_animation_pointer visibility target has an invalid node index");
             }
@@ -765,13 +1024,30 @@ PlanAnimation(const fastgltf::Asset& asset, const gltfCore::BufferReader& buffer
     plan = {};
     plan.moved.assign(map.nodes.size(), 0);
     plan.animations.resize(asset.animations.size());
+    const auto materials = usedMaterials(asset, map);
     for (std::size_t a = 0; a < asset.animations.size(); ++a)
     {
         auto& values = plan.animations[a];
         values.nodes.resize(map.nodes.size());
-        if (!readAnimation(asset, buffers, map, a, values))
+        if (!readAnimation(asset, buffers, map, materials, a, values))
         {
             return false;
+        }
+        for (const auto& [index, channels] : values.materials)
+        {
+            auto& animated = plan.materials[index];
+            for (const auto& channel : channels)
+            {
+                if (channel.property.IsTransform())
+                {
+                    animated.transforms.set(std::size_t(channel.property.slot));
+                }
+                else
+                {
+                    animated.fields.set(std::size_t(channel.property.field));
+                }
+            }
+            plan.hasChannels = true;
         }
         plan.endTimeCode = std::max(plan.endTimeCode, values.endTimeCode);
         plan.hasChannels = plan.hasChannels || !values.weights.empty();

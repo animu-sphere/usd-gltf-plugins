@@ -173,6 +173,28 @@ class Renderer:
             return None
         return Render(label, image, stage, camera)
 
+    def record_frames(self, name, asset, path, times):
+        """Renders time codes in one usdrecord run, as a player draws them; returns {time: Render}."""
+        session_path, stage = self.session(name, asset, path, None)
+        pattern = self.output / f"{name}_{path}.###.png"
+        for time in times:
+            (self.output / f"{name}_{path}.{time:03d}.png").unlink(missing_ok=True)
+        result = subprocess.run(
+            [self.usdrecord, "--camera", CAMERA, "--sessionLayer", str(session_path), "--imageWidth", str(IMAGE_WIDTH),
+             "--frames", ",".join(str(time) for time in times), str(asset), str(pattern)],
+            env=self.environment, capture_output=True, text=True, encoding="utf-8", errors="replace")
+        (self.output / f"{name}_{path}.log").write_text(result.stdout + result.stderr, encoding="utf-8")
+        label = f"{name} {path}"
+        errors = [line for line in (result.stdout + result.stderr).splitlines()
+                  if "Error" in line or "Failed to" in line]
+        self.report.expect(f"{label} renders", result.returncode == 0, f"usdrecord exit code {result.returncode}")
+        self.report.expect(f"{label} reports no errors", not errors, errors[0] if errors else "none")
+        frames = {}
+        for time in times:
+            image = QtGui.QImage(str(self.output / f"{name}_{path}.{time:03d}.png"))
+            frames[time] = None if image.isNull() else Render(f"{label} at {time}", image, stage)
+        return frames
+
 
 def author_framing_camera(stage):
     """Adds a camera that faces -Z and frames everything, so that pixels can be computed."""
@@ -399,6 +421,45 @@ def quad_document(materials, images=(), normal=(0, 0, 1)):
 
 def pbr(**values):
     return {"pbrMetallicRoughness": values}
+
+
+def gradient_png():
+    """An 8 by 8 image whose red rises to the right and green downwards, so that a transform shows."""
+
+    def chunk(kind, data):
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+
+    rows = b"".join(b"\0" + b"".join(bytes((x * 36, y * 36, 128, 255)) for x in range(8)) for y in range(8))
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 8, 8, 8, 6, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
+
+
+def with_pointer_animation(document, channels):
+    """Adds an animation of (pointer, times, flat float values, accessor type) channels to a quad document."""
+    data = bytearray(base64.b64decode(document["buffers"][0]["uri"].split(",", 1)[1]))
+    animation = {"samplers": [], "channels": []}
+    for pointer, times, values, kind in channels:
+        accessors = []
+        for numbers, accessor_type in ((times, "SCALAR"), (values, kind)):
+            data += b"\0" * (-len(data) % 4)
+            packed = struct.pack(f"<{len(numbers)}f", *numbers)
+            document["bufferViews"].append({"buffer": 0, "byteOffset": len(data), "byteLength": len(packed)})
+            data += packed
+            width = {"SCALAR": 1, "VEC2": 2, "VEC3": 3, "VEC4": 4}[accessor_type]
+            accessor = {"bufferView": len(document["bufferViews"]) - 1, "componentType": 5126,
+                        "count": len(numbers) // width, "type": accessor_type}
+            if accessor_type == "SCALAR" and numbers is times:
+                accessor.update(min=[min(times)], max=[max(times)])
+            document["accessors"].append(accessor)
+            accessors.append(len(document["accessors"]) - 1)
+        animation["samplers"].append({"input": accessors[0], "output": accessors[1]})
+        animation["channels"].append({"sampler": len(animation["samplers"]) - 1, "target": {
+            "path": "pointer", "extensions": {"KHR_animation_pointer": {"pointer": pointer}}}})
+    document["buffers"][0] = {"byteLength": len(data),
+                              "uri": "data:application/octet-stream;base64," + base64.b64encode(bytes(data)).decode()}
+    document["animations"] = [animation]
+    document["extensionsUsed"] = [*document.get("extensionsUsed", []), "KHR_animation_pointer"]
+    return document
 
 
 # An image value of 188 is 0.737 read as data, and 0.503 read as sRGB.
@@ -800,6 +861,79 @@ def check_unlit(renderer, report):
         report.same(f"{path} an unlit base color image reads as sRGB", image,
                     render("srgb", unlit(pbr(baseColorFactor=[SRGB, SRGB, SRGB, 1]))))
     qt[2].doneCurrent()
+
+
+def check_material_animation(renderer, report):
+    """Renders animated base color factors, a factor times a texture, an emissive factor and strength,
+    and texture rotations and scales in one usdrecord run, as a player would, and compares each frame
+    with the static file at that time's values. A rotation moves the translation that UsdPreviewSurface
+    and MaterialX hold, so it is sampled between keyframes."""
+    times = (0, 6, 12, 23, 24, 36, 47, 48, 60)
+    end = 48
+    grid = [(x, y) for x in (0.2, 0.5, 0.8) for y in (0.2, 0.5, 0.8)]
+    red, green = [0.8, 0.05, 0.05, 1], [0.05, 0.8, 0.05, 1]
+    strength = "KHR_materials_emissive_strength"
+    transform = "KHR_texture_transform"
+
+    def lerp(a, b, f):
+        return [x + (y - x) * f for x, y in zip(a, b)] if isinstance(a, list) else a + (b - a) * f
+
+    def materials(f):
+        rough = {"metallicFactor": 0, "roughnessFactor": 1}
+        return [
+            pbr(**rough, baseColorFactor=lerp(red, green, f)),
+            pbr(**rough, baseColorFactor=lerp(red, green, f), baseColorTexture={"index": 0}),
+            {**pbr(**rough, baseColorFactor=[0, 0, 0, 1]), "emissiveFactor": lerp([0.1] * 3, [0.5] * 3, f),
+             "extensions": {strength: {"emissiveStrength": lerp(1.2, 1.8, f)}}},
+            pbr(**rough, baseColorTexture={"index": 1, "extensions": {transform: {
+                "rotation": lerp(0.2, 1.8, f)}}}),
+            pbr(**rough, baseColorTexture={"index": 1, "extensions": {transform: {
+                "offset": lerp([0.1, 0.2], [0.4, -0.3], f), "rotation": lerp(0.2, 1.8, f),
+                "scale": lerp([1, 1], [2, 0.5], f)}}}),
+        ]
+
+    def document_at(f):
+        document = quad_document(materials(f), [(255, 255, 255, 255)])
+        document["images"].append({"uri": "data:image/png;base64," + base64.b64encode(gradient_png()).decode()})
+        document["textures"].append({"source": 1})
+        document["extensionsUsed"] = [strength, transform]
+        return document
+
+    keys = [0, end / 24]
+    texture = "pbrMetallicRoughness/baseColorTexture/extensions/KHR_texture_transform/"
+    channels = [
+        ("/materials/0/pbrMetallicRoughness/baseColorFactor", keys, red + green, "VEC4"),
+        ("/materials/1/pbrMetallicRoughness/baseColorFactor", keys, red + green, "VEC4"),
+        ("/materials/2/emissiveFactor", keys, [0.1] * 3 + [0.5] * 3, "VEC3"),
+        ("/materials/2/extensions/KHR_materials_emissive_strength/emissiveStrength", keys, [1.2, 1.8], "SCALAR"),
+        ("/materials/3/" + texture + "rotation", keys, [0.2, 1.8], "SCALAR"),
+        ("/materials/4/" + texture + "offset", keys, [0.1, 0.2, 0.4, -0.3], "VEC2"),
+        ("/materials/4/" + texture + "rotation", keys, [0.2, 1.8], "SCALAR"),
+        ("/materials/4/" + texture + "scale", keys, [1, 1, 2, 0.5], "VEC2"),
+    ]
+    animated = with_pointer_animation(document_at(0), channels)
+    asset = renderer.output / "material_animation.gltf"
+    asset.write_text(json.dumps(animated), encoding="utf-8")
+    labels = ("base color", "base color times a texture", "emissive factor and strength", "texture rotation",
+              "texture offset, rotation and scale")
+    for path in PATHS:
+        frames = renderer.record_frames("material_animation", asset, path, times)
+        references = {}
+        for time in times:
+            reference = renderer.output / f"material_animation_at_{time:03d}.gltf"
+            reference.write_text(json.dumps(document_at(min(time, end) / end)), encoding="utf-8")
+            references[time] = renderer.record(f"material_animation_at_{time:03d}", reference, path)
+        if not all(frames.values()) or not all(references.values()):
+            continue
+        for mesh, label in enumerate(labels):
+            for time in times:
+                worst = max(abs(x - y) for point in grid
+                            for x, y in zip(frames[time].sample(mesh, point), references[time].sample(mesh, point)))
+                report.expect(f"{path} animated {label} at {time} matches its static file", worst <= SAME,
+                              f"apart by {worst}")
+            moved = max(abs(x - y) for point in grid
+                        for x, y in zip(frames[24].sample(mesh, point), frames[0].sample(mesh, point)))
+            report.expect(f"{path} animated {label} changes the image", moved >= DIFFERENT, f"apart by {moved}")
 
 
 def check_gpu_instancing(renderer, report):
@@ -1535,7 +1669,8 @@ def main():
 
     report = Report(arguments.verbose)
     renderer = Renderer(output, plugin, report)
-    for check in (check_reflections, check_lights, check_node_visibility, check_material_variants,
+    for check in (check_reflections, check_lights, check_node_visibility, check_material_animation,
+                  check_material_variants,
                   check_unlit, check_points_and_lines, check_gpu_instancing, check_emissive_strength, check_ior,
                   check_specular, check_anisotropy, check_iridescence, check_sheen, check_clearcoat,
                   check_transmission, check_volume, check_dispersion, check_alpha_modes, check_base_color_textures,
