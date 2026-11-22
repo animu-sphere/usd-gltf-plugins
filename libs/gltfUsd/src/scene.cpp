@@ -3,6 +3,7 @@
 
 #include "animation.h"
 #include "camera.h"
+#include "instancing.h"
 #include "light.h"
 #include "material.h"
 #include "mesh.h"
@@ -469,8 +470,12 @@ authorScene(const fastgltf::Asset& asset, const std::string& sourcePath,
             TF_RUNTIME_ERROR("Could not author glTF node %zu transform", index);
             return {};
         }
-        if (node.meshIndex && !placeMesh(asset, *map, *node.meshIndex, mapped.mesh, stage, buffers,
-                                         materials, decodedMeshes, variantBindings))
+        // An instanced mesh is the prototype of its node's point instancer, and drawn only by it.
+        const bool instanced = !mapped.instancer.IsEmpty();
+        if (node.meshIndex && ((instanced && !DefineInstancer(asset, mapped, stage, buffers)) ||
+                               !placeMesh(asset, *map, *node.meshIndex, mapped.mesh, stage, buffers,
+                                          materials, decodedMeshes, variantBindings) ||
+                               (instanced && !AuthorInstancerExtent(mapped, stage))))
         {
             return {};
         }

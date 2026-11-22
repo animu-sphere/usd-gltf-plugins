@@ -8,6 +8,13 @@ here.
 
 ## [Unreleased]
 
+### Added
+
+- Import `EXT_mesh_gpu_instancing` as a `UsdGeomPointInstancer` below the node, whose prototype is the
+  node's mesh, with TRANSLATION, ROTATION and SCALE as positions, float orientations and scales. Custom
+  attributes, skins and morph targets on instanced nodes fail with a diagnostic. See the
+  [GPU instancing decision](docs/adr/0043-gpu-instancing.md).
+
 ## [0.14.0] - 2026-11-21
 
 ### Added

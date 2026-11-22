@@ -38,6 +38,7 @@ CI success is not evidence of display compatibility.
 | Animated visibility (`KHR_animation_pointer`) | Experimental | Supports `/nodes/{index}/extensions/KHR_node_visibility/visible` in glTF and GLB, with STEP interpolation and unsigned byte scalar outputs. Uses the existing animation variants. Other pointers warn and are ignored when optional, or fail when required. USD data, [Storm display](#display-checks) and [Khronos samples](#sample-assets) checked on Windows with OpenUSD 26.08. See [ADR 0037](../adr/0037-animated-node-visibility.md). | `tests/test_file_format.py::test_animated_node_visibility`, `tests/test_file_format.py::test_animated_visibility_failures_preserve_layer`, `tests/check_display.py::check_node_visibility`, `tests/check_samples.py::check_animated_visibility` |
 | Lights (`KHR_lights_punctual`) | Experimental | Directional, point and spot, optional or required, below each node that uses them, with the node's scale, shear and reflection cancelled. A directional light is a distant light in lux. A point or spot light is a sphere of 1 millimeter whose intensity gives glTF's candela, so a renderer that ignores `treatAsPoint` draws a small sphere. The cone's softness approximates glTF's spot falloff, and Storm ignores the cone. `range` is ignored, with a warning. Degenerate nodes and values outside the specification fail. Tested in CI, with the [display check](#display-checks) on Windows. See the [decision record](../adr/0013-lights.md). | `tests/test_file_format.py::test_lights`, `tests/test_file_format.py::test_lights_reference_into_a_scaled_stage`, `tests/test_file_format.py::test_light_range_is_ignored_with_a_warning`, `tests/test_file_format.py::test_light_failures_preserve_layer`, `tests/test_file_format.py::test_lights_required_and_outside_selected_scene`, `tests/check_display.py` |
 | Points and lines | Verified (USD data, CI) | Indexed and non-indexed POINTS as `UsdGeomPoints` of constant width 0, and LINES, LINE_STRIP and LINE_LOOP as linear `UsdGeomBasisCurves` without widths, the loop periodic. Elements follow the index order, repeated indices included. NORMAL, TANGENT, TEXCOORD_n and COLOR_0 as on a mesh; no normals are generated. Without NORMAL, an unlit variant of the material emits the base color term plus the emissive factor, without it when an emissive texture multiplies it; with NORMAL, a lit variant without normal textures, with a warning when TANGENT asks for them. Morph targets, skins and Draco fail without replacing the layer. In Storm, lines are one pixel wide and shaded with a normal facing the camera, and points cover one multisample of a pixel, so they look dim. The [display](#display-checks) and [sample](#sample-assets) checks ran on Windows. See the [decision record](../adr/0042-points-and-lines.md). | `tests/test_file_format.py::test_points_and_lines`, `tests/test_file_format.py::test_point_and_line_materials`, `tests/test_file_format.py::test_point_and_line_failures_preserve_layer`, `tests/check_display.py::check_points_and_lines`, `tests/check_samples.py::check_points_or_curves` |
+| GPU instancing (`EXT_mesh_gpu_instancing`) | Verified (USD data, CI) | A node's instances as a `UsdGeomPointInstancer` named `Instances`, whose only prototype is the node's mesh, optional or required in glTF and GLB. TRANSLATION, ROTATION as floats or normalized bytes or shorts, and SCALE, each optional, as `positions`, normalized `orientationsf` and `scales`, applied before the node's transform. The node's camera, light and children are not instanced; material variants and node animation apply. Mismatched counts, wrong formats, rotations off unit length, non-finite values, custom `_` attributes, skins and morph targets fail without replacing the layer. A traversal without instancer support sees the prototype once at the node. The [display](#display-checks) and [sample](#sample-assets) checks ran on Windows. See the [decision record](../adr/0043-gpu-instancing.md). | `tests/test_file_format.py::test_gpu_instancing`, `tests/test_file_format.py::test_gpu_instancing_with_material_variants_and_animation`, `tests/test_file_format.py::test_gpu_instancing_on_a_node_without_a_mesh_warns`, `tests/test_file_format.py::test_gpu_instancing_failures_preserve_layer`, `tests/check_display.py::check_gpu_instancing`, `tests/check_samples.py::check_instances` |
 | Triangle-based meshes | Verified (USD data, CI) | Indexed and non-indexed TRIANGLES, TRIANGLE_STRIP and TRIANGLE_FAN with float or quantized POSITION. Interleaved accessors are accepted. | `tests/test_file_format.py::test_triangle_meshes`, `tests/test_file_format.py::test_triangle_strips_and_fans`, `tests/test_file_format.py::test_triangle_strip_and_fan_index_types_and_nonindexed_counts`, `tests/test_file_format.py::test_mesh_schema_attributes` |
 | Draco (`KHR_draco_mesh_compression`) | Verified (Windows x86-64, Linux x86-64, macOS arm64; OpenUSD 26.08) | Draco 2.2 TRIANGLES with bufferViews from GLB, data URIs and restricted external buffers. Mapped attributes and faces feed normal mesh authoring, including skin influences. Optional TRIANGLE_STRIP uses its uncompressed fallback with a warning, and fails when a compressed accessor has no bufferView. Required strips and corrupt triangle payloads fail. The [Khronos sample checks](#sample-assets) ran on Windows. See the [decision record](../adr/0033-draco-decoder.md). | `tests/test_file_format.py::test_draco_mesh_data`, `tests/test_file_format.py::test_optional_draco_triangle_strip_fallback`, `tests/test_file_format.py::test_draco_failures_preserve_layer`, [`tests/check_samples.py`](../../tests/check_samples.py), [workspace CI 43244411123](https://github.com/animu-sphere/usd-gltf-plugins/actions/runs/43244411123) |
 | Meshopt (`EXT_meshopt_compression`) | Verified (Windows x86-64; OpenUSD 26.08) | GLB, data URI and restricted external sources. The buffer reader shares decoded views across mesh and animation reads; it prefers a valid compressed payload even with an optional fallback. Invalid layouts and corrupt compressed data fail. See [modes, filters and bounds](../adr/0034-meshopt-buffer-views.md). `KHR_meshopt_compression` is unsupported. | `libs/gltfCore/tests/accessor.cpp`, `tests/test_file_format.py::test_meshopt_buffer_views`, `tests/test_file_format.py::test_meshopt_failures_preserve_layer`, [sample check](#sample-assets) |
@@ -218,8 +219,9 @@ Storm through MaterialX and UsdPreviewSurface, and compares pixels. The
 [development guide](../DEVELOPMENT.md) has the command, and
 [ADR 0007](../adr/0007-display-check.md) explains the comparisons and their limits.
 
-The suite with points and lines passed all 837 comparisons on Windows with OpenUSD 26.08, the
-OpenStrata lookdev runtime and an NVIDIA RTX A5000, as the suite with dispersion passed all 813 and the suite with material variants 809. The suite with emissive strength passed 691
+The suite with GPU instancing passed all 853 comparisons on Windows with OpenUSD 26.08, the
+OpenStrata lookdev runtime and an NVIDIA RTX A5000, as the suite with points and lines passed all 837, the suite with
+dispersion all 813 and the suite with material variants 809. The suite with emissive strength passed 691
 comparisons in the same environment. The v0.2.0 release candidate passed 681 comparisons
 after a clean build. The iridescence suite passed 663 comparisons, and the preceding sheen suite 639.
 The earlier specular suite passed 621 twice, and was the first with the unlit, ior, clearcoat,
@@ -368,6 +370,11 @@ MaterialX, and 247 to 248 and 248 to 252 through UsdPreviewSurface. The two alph
 agree within 3. Swapping their materials once showed that the part above 1 follows position,
 through the light, and not the codec.
 
+GPU instancing is checked through the same engine call, in darkness, on an unlit red quad drawn by two
+instances below a node that scales X by 2, and by two nodes without instances. Both instances are red
+where glTF puts them, and the node's own placement of the mesh, the second instance without its rotation,
+and the second instance with the node's transform applied before it are black.
+
 Points and lines are checked through the same engine call, in darkness, on lines and points packed closer
 than a pixel's multisamples near the center of a unit square, by the most common color there other than
 the background. Lines, strips and loops without NORMAL and material are white, and with a base color of
@@ -504,6 +511,9 @@ paths. Their point and curve vertices, curve topology, normals, vertex colors an
 variants agree with the glTF. PrimitiveModeNormalsTest drew points and lines without NORMAL in flat
 colors, and with NORMAL lit, as its reference screenshot shows.
 
+Both SimpleInstancing files opened and drew through both Storm shader paths. Their instancer's positions,
+orientations and scales agree with the glTF, and Storm drew the 125 cubes of its reference screenshot.
+
 Both SimpleSparseAccessor files opened and drew through both Storm shader paths. Their points,
 read through the sparse substitution of a base accessor, agree with the glTF.
 
@@ -520,8 +530,8 @@ shader networks of materials selected only by variants.
 | --- | --- | --- |
 | Opened | 334 | The stage opens. No file crashed or timed out while opening. |
 | Rejected | 5 | Each has a diagnostic naming a cause the file really has. |
-| Meaning verified | 309 | USD agrees with values decoded from the file, in all that is compared, and the file uses no ignored extension features. |
-| Meaning partial | 25 | The same, but the file uses optional extension features that are ignored, with a warning. What they change is not compared. |
+| Meaning verified | 311 | USD agrees with values decoded from the file, in all that is compared, and the file uses no ignored extension features. |
+| Meaning partial | 23 | The same, but the file uses optional extension features that are ignored, with a warning. What they change is not compared. |
 | Meaning differs | 0 | |
 | Rendered | 333 | Storm drew through both shader paths, measured by coverage in a static frame. One more file timed out through both. |
 
