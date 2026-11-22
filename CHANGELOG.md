@@ -8,6 +8,8 @@ here.
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-11-22
+
 ### Added
 
 - Import `EXT_mesh_gpu_instancing` as a `UsdGeomPointInstancer` below the node, whose prototype is the
