@@ -72,6 +72,7 @@ available when the decision was made; they are not progress reports:
 - [0039: Diffuse transmission](adr/0039-diffuse-transmission.md)
 - [0040: Dispersion](adr/0040-dispersion.md)
 - [0041: Morph target tangents](adr/0041-morph-target-tangents.md)
+- [0044: Animated material properties](adr/0044-animated-material-properties.md)
 
 New decisions go in `docs/adr/NNNN-title.md`.
 

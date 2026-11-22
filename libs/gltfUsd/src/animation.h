@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include "materialProperty.h"
 #include "sceneMap.h"
 
 #include "gltfCore/accessor.h"
@@ -57,6 +58,8 @@ struct AnimationValues
     std::map<std::size_t, TimeSamples<pxr::VtFloatArray>> weights;
     // By position in SceneMap::nodes. Absent for nodes without a visibility channel in this clip.
     std::map<std::size_t, TimeSamples<bool>> visibility;
+    // By glTF material index, the channels on materials that the selected scene uses.
+    std::map<std::size_t, std::vector<MaterialChannel>> materials;
     // By position in SceneMap::nodes, the node's transform relative to the asset at time 0.
     std::vector<pxr::GfMatrix4d> world;
 };
@@ -72,6 +75,8 @@ struct AnimationPlan
     std::vector<char> animated;
     // By position in SceneMap::nodes, the stated visibility of nodes animated in any clip.
     std::map<std::size_t, bool> statedVisibility;
+    // By glTF material index, the properties that any animation targets.
+    std::map<std::size_t, AnimatedProperties> materials;
     // The last keyframe of any animation's channels on the selected scene, in time codes.
     double endTimeCode = 0.0;
     // Whether any animation has a channel on the selected scene.

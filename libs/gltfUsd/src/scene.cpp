@@ -272,7 +272,8 @@ authorMaterialVariants(const UsdStageRefPtr& stage, const SdfPath& root, const S
 // corrections, and the animation's end and name in the root's customData. Selects the first.
 bool
 authorAnimations(const UsdStageRefPtr& stage, const SdfPath& root, const SceneMap& map,
-                 const AnimationPlan& plan, const std::vector<AnimatedCorrection>& corrections)
+                 const AnimationPlan& plan, const std::vector<AnimatedCorrection>& corrections,
+                 const MaterialAuthor& materials)
 {
     if (plan.animations.empty())
     {
@@ -353,6 +354,11 @@ authorAnimations(const UsdStageRefPtr& stage, const SdfPath& root, const SceneMa
         if (!AuthorSkelAnimation(map, values, stage, root, TfToken(variantName(a))))
         {
             return fail();
+        }
+        if (std::string error; !materials.AuthorAnimation(a, error))
+        {
+            TF_RUNTIME_ERROR("Could not author glTF animation %zu: %s", a, error.c_str());
+            return false;
         }
         // A failure here is an error, which authorScene's mark catches.
         const auto asset = stage->GetPrimAtPath(root);
@@ -436,7 +442,7 @@ authorScene(const fastgltf::Asset& asset, const std::string& sourcePath,
         stage->SetEndTimeCode(animation.endTimeCode);
     }
 
-    MaterialAuthor materials(asset, sourcePath, buffers, stage, materialScope.GetPath());
+    MaterialAuthor materials(asset, sourcePath, buffers, stage, materialScope.GetPath(), animation);
     DecodedMeshes decodedMeshes;
     VariantBindings variantBindings;
     std::vector<AnimatedCorrection> corrections;
@@ -514,7 +520,12 @@ authorScene(const fastgltf::Asset& asset, const std::string& sourcePath,
             return {};
         }
     }
-    if (!authorAnimations(stage, root.GetPath(), *map, animation, corrections) ||
+    if (std::string error; !materials.SampleAnimations(error))
+    {
+        TF_RUNTIME_ERROR("Could not sample glTF material animations: %s", error.c_str());
+        return {};
+    }
+    if (!authorAnimations(stage, root.GetPath(), *map, animation, corrections, materials) ||
         !authorMaterialVariants(stage, root.GetPath(), *map, asset, variantBindings))
     {
         return {};

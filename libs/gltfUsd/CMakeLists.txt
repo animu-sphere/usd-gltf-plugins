@@ -30,6 +30,7 @@ add_library(gltfUsd STATIC
     src/instancing.cpp
     src/light.cpp
     src/material.cpp
+    src/materialProperty.cpp
     src/mesh.cpp
     src/scene.cpp
     src/sceneMap.cpp

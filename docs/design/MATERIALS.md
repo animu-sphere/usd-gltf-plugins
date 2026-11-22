@@ -75,6 +75,38 @@ lists, duplicate variant indices on one primitive, and out-of-range indices fail
 An alternate material used in the selected scene must pass the same texture and shading input
 checks as the original. See [ADR 0038](../adr/0038-material-variants.md).
 
+## Animated material properties
+
+`KHR_animation_pointer` channels to `/materials/{index}/...` animate every float property of the
+glTF Asset Object Model that conversion authors: the core factors, alpha cutoff, normal scale and
+occlusion strength, the factors of each supported material extension, and the offset, rotation and
+scale of `KHR_texture_transform` on every texture slot. An input's value at a time is the static
+conversion of the material with the channels' values at that time, in every USD material made from
+the glTF material. What an animated property controls is authored whatever its stated value, such
+as a clearcoat of 0, a texture transform of all defaults, a factor of 1 or a texture that a factor
+of 0 leaves unread, so that the networks have the same inputs at every time. A connected input's
+own value is not drawn and is not animated.
+
+An input that an animation changes has no value outside the `animation` variants: every variant
+authors its stated value, and the animation with the channels its time samples, on the timeline of
+[node animation](SCENE_CONVENTIONS.md#skeletons-and-animation). Between the keyframes of the channels
+that an input depends on, a segment is cut into equal pieces until the lines between them stay
+within 1e-4 at the middle of each piece, relative to the larger of 1 and the input's largest value,
+in at most 256 pieces with a warning beyond. Samples on the line between their neighbors are left
+out. An input that is an affine function of one `LINEAR` property keeps its keyframes; the
+translation that a rotation moves, and a product such as Preview's emissive factor times strength,
+are cut. `STEP` holds as for nodes.
+
+Not animated, with a warning: properties of `KHR_materials_diffuse_transmission`, lit properties of
+an unlit material, `alphaCutoff` outside `MASK`, and a channel that repeats another's keyframes on the
+same property. UsdPreviewSurface keeps the stated base color factor in its per-mesh COLOR_0 products,
+with a warning, while MaterialX animates it. An animated ior or alpha cutoff of 0, an animated
+attenuation distance whose stated value is infinite, and other pointers are unsupported: they warn
+when the pointer extension is optional and fail when it is required. A pointer whose object the
+material does not have, a property that channels with different keyframes target, and a keyframe
+value that the static conversion would reject fail the import. See
+[ADR 0044](../adr/0044-animated-material-properties.md).
+
 ## Emissive strength
 
 `KHR_materials_emissive_strength` scales emission by a non-negative, unitless

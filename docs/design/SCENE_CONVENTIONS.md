@@ -112,6 +112,9 @@ selects `Animation_0`; an asset without animations has none. See the
   At default time, skeletons use their rest transforms.
 - A camera's or light's correction for scale below a node that any animation moves is inside each
   variant.
+- A material input that any animation changes, through `KHR_animation_pointer`, has its stated value
+  and the animation's time samples inside each variant. See the
+  [material design](MATERIALS.md#animated-material-properties).
 - `customData` on `/Root` inside a variant has a dictionary `gltf` with the animation's
   `endTimeCode` and, when it has one, its `name`.
 

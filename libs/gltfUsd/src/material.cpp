@@ -15,15 +15,20 @@
 #include "pxr/usd/usdGeom/mesh.h"
 #include "pxr/usd/usdGeom/primvarsAPI.h"
 #include "pxr/usd/usdGeom/tokens.h"
+#include "pxr/usd/usdShade/connectableAPI.h"
 #include "pxr/usd/usdShade/materialBindingAPI.h"
 #include "pxr/usd/usdShade/nodeGraph.h"
 #include "pxr/usd/usdShade/shader.h"
+#include "pxr/usd/usdShade/tokens.h"
 
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
 #include <optional>
 #include <string>
 #include <type_traits>
+#include <utility>
 
 namespace gltfUsd
 {
@@ -32,30 +37,178 @@ namespace
 
 using namespace pxr;
 
+// A STEP keyframe's earlier value is also authored this many time codes before it, as for nodes.
+constexpr double HoldTimeCodes = 1e-7;
+// How far the lines between an animated input's time samples may stray from its value, relative to
+// the larger of 1 and the input's largest component in the segment.
+constexpr double SampleTolerance = 1e-4;
+// The most pieces a segment is cut into.
+constexpr std::size_t MaxPieces = 256;
+
 bool
 inUnitRange(float value)
 {
     return std::isfinite(value) && value >= 0.0f && value <= 1.0f;
 }
 
-template <typename T>
-bool
-setInput(UsdShadeShader& shader, const char* name, const SdfValueTypeName& type, const T& value)
+// An output of a shader or node graph, which inputs connect to.
+struct Port
 {
-    const auto input = shader.CreateInput(TfToken(name), type);
-    return input && input.Set(value);
-}
+    SdfPath path;
+    SdfValueTypeName type;
 
-bool
-connectSurface(const UsdShadeMaterial& material, const TfToken& context,
-               const UsdShadeNodeGraph& graph, UsdShadeShader& shader, const TfToken& outputName)
+    explicit operator bool() const { return !path.IsEmpty(); }
+};
+
+enum class Variability
 {
-    const auto shaderOutput = shader.CreateOutput(outputName, SdfValueTypeNames->Token);
-    const auto graphOutput = graph.CreateOutput(TfToken("surface"), SdfValueTypeNames->Token);
-    const auto materialOutput = material.CreateSurfaceOutput(context);
-    return shaderOutput && graphOutput && materialOutput &&
-           graphOutput.ConnectToSource(shaderOutput) && materialOutput.ConnectToSource(graphOutput);
-}
+    // An ordinary input, whose values an animation may sample.
+    Varying,
+    // An input that gltf_pbr declares uniform.
+    Uniform,
+    // An input whose value no animation changes, such as a primvar reader's fallback.
+    Fixed,
+};
+
+// Authors shader networks on a stage. Without a stage, it only records the values that authoring
+// would give their inputs, which is how an animation's values are computed by the same functions as
+// the static networks.
+class Network
+{
+  public:
+    using Values = std::vector<std::pair<SdfPath, VtValue>>;
+
+    explicit Network(UsdStageRefPtr stage = {}) : _stage(std::move(stage)) {}
+
+    // The values given to inputs, in the order authoring gives them, including on a stage.
+    Values values;
+
+    [[nodiscard]] SdfPath Graph(const SdfPath& path) const
+    {
+        return !_stage || UsdShadeNodeGraph::Define(_stage, path) ? path : SdfPath();
+    }
+
+    [[nodiscard]] SdfPath Node(const SdfPath& graph, const std::string& name, const char* id) const
+    {
+        if (graph.IsEmpty())
+        {
+            return {};
+        }
+        const auto path = graph.AppendChild(TfToken(name));
+        if (!_stage)
+        {
+            return path;
+        }
+        const auto shader = UsdShadeShader::Define(_stage, path);
+        return shader && shader.CreateIdAttr().Set(TfToken(id)) ? path : SdfPath();
+    }
+
+    [[nodiscard]] Port Output(const SdfPath& node, const char* name,
+                              const SdfValueTypeName& type) const
+    {
+        if (node.IsEmpty() ||
+            (_stage &&
+             !UsdShadeConnectableAPI(_stage->GetPrimAtPath(node)).CreateOutput(TfToken(name), type)))
+        {
+            return {};
+        }
+        return {node.AppendProperty(TfToken(UsdShadeTokens->outputs.GetString() + name)), type};
+    }
+
+    template <typename T>
+    [[nodiscard]] bool Set(const SdfPath& node, const char* name, const SdfValueTypeName& type,
+                           const T& value, Variability variability = Variability::Varying)
+    {
+        if (node.IsEmpty())
+        {
+            return false;
+        }
+        if (variability != Variability::Fixed)
+        {
+            values.emplace_back(
+                node.AppendProperty(TfToken(UsdShadeTokens->inputs.GetString() + name)),
+                VtValue(value));
+        }
+        if (!_stage)
+        {
+            return true;
+        }
+        const auto input =
+            UsdShadeConnectableAPI(_stage->GetPrimAtPath(node)).CreateInput(TfToken(name), type);
+        return input &&
+               (variability != Variability::Uniform ||
+                input.GetAttr().SetVariability(SdfVariabilityUniform)) &&
+               input.Set(value);
+    }
+
+    // Connects an input, keeping its type if it exists. A connected input's own value is not
+    // drawn, so no animation changes it.
+    [[nodiscard]] bool Connect(const SdfPath& node, const char* name, const SdfValueTypeName& type,
+                               const Port& source)
+    {
+        if (node.IsEmpty() || !source)
+        {
+            return false;
+        }
+        const auto connected =
+            node.AppendProperty(TfToken(UsdShadeTokens->inputs.GetString() + name));
+        std::erase_if(values, [&](const auto& value) { return value.first == connected; });
+        if (!_stage)
+        {
+            return true;
+        }
+        const UsdShadeConnectableAPI connectable(_stage->GetPrimAtPath(node));
+        auto input = connectable.GetInput(TfToken(name));
+        if (!input)
+        {
+            input = connectable.CreateInput(TfToken(name), type);
+        }
+        return input && input.ConnectToSource(source.path);
+    }
+
+    [[nodiscard]] bool SetColorSpace(const SdfPath& node, const char* name,
+                                     const TfToken& colorSpace) const
+    {
+        if (!_stage)
+        {
+            return true;
+        }
+        const auto input = UsdShadeConnectableAPI(_stage->GetPrimAtPath(node)).GetInput(TfToken(name));
+        if (!input)
+        {
+            return false;
+        }
+        input.GetAttr().SetColorSpace(colorSpace);
+        return true;
+    }
+
+    // Connects a material's surface output, for a render context, through the graph's output.
+    [[nodiscard]] bool ConnectSurface(const SdfPath& material, const TfToken& context,
+                                      const SdfPath& graph, const SdfPath& shader,
+                                      const TfToken& outputName) const
+    {
+        if (material.IsEmpty() || graph.IsEmpty() || shader.IsEmpty())
+        {
+            return false;
+        }
+        if (!_stage)
+        {
+            return true;
+        }
+        const auto shaderOutput = UsdShadeShader(_stage->GetPrimAtPath(shader))
+                                      .CreateOutput(outputName, SdfValueTypeNames->Token);
+        const auto graphOutput = UsdShadeNodeGraph(_stage->GetPrimAtPath(graph))
+                                     .CreateOutput(TfToken("surface"), SdfValueTypeNames->Token);
+        const auto materialOutput =
+            UsdShadeMaterial(_stage->GetPrimAtPath(material)).CreateSurfaceOutput(context);
+        return shaderOutput && graphOutput && materialOutput &&
+               graphOutput.ConnectToSource(shaderOutput) &&
+               materialOutput.ConnectToSource(graphOutput);
+    }
+
+  private:
+    UsdStageRefPtr _stage;
+};
 
 struct PbrFactors
 {
@@ -103,6 +256,13 @@ struct PbrFactors
     // Added to the emitted base color of an unlit point or line without NORMAL, which glTF draws
     // as the sum of its base color and emissive values.
     GfVec3f unlitEmission = GfVec3f(0);
+    // The properties that an animation changes. What each controls is authored whatever its value,
+    // so that the networks have the same inputs at every time.
+    AnimatedProperties animated;
+    // Whether an animation changes unlitEmission.
+    bool unlitEmissionAnimated = false;
+
+    [[nodiscard]] bool animates(MaterialField field) const { return animated.Has(field); }
 };
 
 // glTF's default, and the default of both shaders' ior inputs.
@@ -163,18 +323,55 @@ pbrFactors(const fastgltf::Material& source)
                               : 0.0f};
 }
 
+// The factors of a material, with the properties that animations change. An animated rotation is
+// not reduced modulo a turn, so that its samples do not wrap.
+PbrFactors
+pbrFactors(const fastgltf::Material& source, const AnimatedProperties& animated)
+{
+    auto factors = pbrFactors(source);
+    factors.animated = animated;
+    if (animated.Has(MaterialField::AnisotropyRotation) && source.anisotropy)
+    {
+        factors.anisotropyRotation = float(source.anisotropy->anisotropyRotation);
+    }
+    return factors;
+}
+
+// A point or line without NORMAL draws an unlit sum of its base color and emissive factor.
+void
+adjustForUse(PbrFactors& factors, MaterialUse use, bool emissiveTexture)
+{
+    if (use != MaterialUse::Unlit)
+    {
+        return;
+    }
+    factors.unlit = true;
+    // The factor is the whole emission only without a texture to multiply it.
+    if (!emissiveTexture)
+    {
+        factors.unlitEmission = factors.emissive * factors.emissiveStrength;
+        factors.unlitEmissionAnimated = factors.animates(MaterialField::Emissive) ||
+                                        factors.animates(MaterialField::EmissiveStrength);
+    }
+    // gltf_pbr's strength would scale the emitted base color too.
+    factors.emissiveStrength = 1.0f;
+    factors.animated.fields.reset(std::size_t(MaterialField::EmissiveStrength));
+}
+
 // glTF disables the clearcoat layer at a factor of 0, and an unlit material reflects nothing.
 bool
 hasClearcoat(const PbrFactors& factors)
 {
-    return !factors.unlit && factors.clearcoat > 0.0f;
+    return !factors.unlit &&
+           (factors.clearcoat > 0.0f || factors.animates(MaterialField::Clearcoat));
 }
 
 // A transmission of 0 is none, and an unlit material transmits nothing.
 bool
 hasTransmission(const PbrFactors& factors)
 {
-    return !factors.unlit && factors.transmission > 0.0f;
+    return !factors.unlit &&
+           (factors.transmission > 0.0f || factors.animates(MaterialField::Transmission));
 }
 
 // A volume is the medium that transmitted light passes through, so a material that transmits none
@@ -182,41 +379,47 @@ hasTransmission(const PbrFactors& factors)
 bool
 hasVolume(const PbrFactors& factors)
 {
-    return hasTransmission(factors) && factors.thickness > 0.0f;
+    return hasTransmission(factors) &&
+           (factors.thickness > 0.0f || factors.animates(MaterialField::Thickness));
 }
 
 // glTF disperses only the light that a volume refracts, so a thin material has no use for it.
 bool
 hasDispersion(const PbrFactors& factors)
 {
-    return hasVolume(factors) && factors.dispersion > 0.0f;
+    return hasVolume(factors) &&
+           (factors.dispersion > 0.0f || factors.animates(MaterialField::Dispersion));
 }
 
 // glTF disables the sheen layer at a black color factor, and an unlit material reflects nothing.
 bool
 hasSheen(const PbrFactors& factors)
 {
-    return !factors.unlit && factors.sheenColor != GfVec3f(0);
+    return !factors.unlit &&
+           (factors.sheenColor != GfVec3f(0) || factors.animates(MaterialField::SheenColor));
 }
 
 // The sheen roughness is the factor times its texture, and gltf_pbr's default is glTF's 0.
 bool
 hasSheenRoughness(const PbrFactors& factors)
 {
-    return hasSheen(factors) && factors.sheenRoughness != 0.0f;
+    return hasSheen(factors) &&
+           (factors.sheenRoughness != 0.0f || factors.animates(MaterialField::SheenRoughness));
 }
 
 // A strength of 0 disables the film, and an unlit material reflects nothing.
 bool
 hasIridescence(const PbrFactors& factors)
 {
-    return !factors.unlit && factors.iridescence > 0.0f;
+    return !factors.unlit &&
+           (factors.iridescence > 0.0f || factors.animates(MaterialField::Iridescence));
 }
 
 bool
 hasAnisotropy(const PbrFactors& factors)
 {
-    return !factors.unlit && factors.anisotropy > 0.0f;
+    return !factors.unlit &&
+           (factors.anisotropy > 0.0f || factors.animates(MaterialField::Anisotropy));
 }
 
 // The ior to author, if it is not the shaders' default. An unlit material reflects nothing, so
@@ -224,7 +427,7 @@ hasAnisotropy(const PbrFactors& factors)
 std::optional<float>
 authoredIor(const PbrFactors& factors)
 {
-    if (factors.unlit || factors.ior == kDefaultIor)
+    if (factors.unlit || (factors.ior == kDefaultIor && !factors.animates(MaterialField::Ior)))
     {
         return std::nullopt;
     }
@@ -266,12 +469,14 @@ bool
 previewUsesOpacity(const PbrFactors& factors)
 {
     return factors.alphaMode == fastgltf::AlphaMode::Blend ||
-           (factors.alphaMode == fastgltf::AlphaMode::Mask && factors.alphaCutoff > 0.0f);
+           (factors.alphaMode == fastgltf::AlphaMode::Mask &&
+            (factors.alphaCutoff > 0.0f || factors.animates(MaterialField::AlphaCutoff)));
 }
 
 // UsdPreviewSurface has no multiply node, so a factor other than 1 is applied to
 // a primvar on each mesh. The product interpolates exactly like COLOR_0. Names
-// these graphs read avoid colons, which break MaterialX shaders in Storm.
+// these graphs read avoid colons, which break MaterialX shaders in Storm. An animation does not
+// change these products.
 const char*
 previewColorPrimvar(const PbrFactors& factors)
 {
@@ -287,31 +492,31 @@ previewAlphaPrimvar(const PbrFactors& factors)
 }
 
 template <typename T>
-UsdShadeOutput
-authorPrimvarReader(const UsdShadeNodeGraph& graph, const char* name, const char* id,
+Port
+authorPrimvarReader(Network& net, const SdfPath& graph, const char* name, const char* id,
                     const char* primvarInput, const char* primvar, const char* fallbackInput,
                     const SdfValueTypeName& type, const T& fallback, const char* output)
 {
-    auto reader = UsdShadeShader::Define(graph.GetPrim().GetStage(),
-                                         graph.GetPath().AppendChild(TfToken(name)));
-    if (!reader || !reader.CreateIdAttr().Set(TfToken(id)) ||
-        !setInput(reader, primvarInput, SdfValueTypeNames->String, std::string(primvar)) ||
-        !setInput(reader, fallbackInput, type, fallback))
+    const auto reader = net.Node(graph, name, id);
+    if (!net.Set(reader, primvarInput, SdfValueTypeNames->String, std::string(primvar),
+                 Variability::Fixed) ||
+        !net.Set(reader, fallbackInput, type, fallback, Variability::Fixed))
     {
-        return UsdShadeOutput();
+        return {};
     }
-    return reader.CreateOutput(TfToken(output), type);
+    return net.Output(reader, output, type);
 }
 
 bool
-connectPreviewVertexColor(const UsdShadeNodeGraph& graph, UsdShadeShader& surface,
+connectPreviewVertexColor(Network& net, const SdfPath& graph, const SdfPath& surface,
                           const PbrFactors& factors)
 {
     const auto color =
-        authorPrimvarReader(graph, "displayColorReader", "UsdPrimvarReader_float3", "varname",
+        authorPrimvarReader(net, graph, "displayColorReader", "UsdPrimvarReader_float3", "varname",
                             previewColorPrimvar(factors), "fallback", SdfValueTypeNames->Float3,
                             factors.baseColor + factors.unlitEmission, "result");
-    if (!color || !surface.GetInput(TfToken(previewColorInput(factors))).ConnectToSource(color))
+    if (!color || !net.Connect(surface, previewColorInput(factors), SdfValueTypeNames->Color3f,
+                               color))
     {
         return false;
     }
@@ -320,10 +525,10 @@ connectPreviewVertexColor(const UsdShadeNodeGraph& graph, UsdShadeShader& surfac
         return true;
     }
     // A primitive without vertex alpha has no primvar and uses the factor alone.
-    const auto alpha = authorPrimvarReader(graph, "colorAlphaReader", "UsdPrimvarReader_float",
+    const auto alpha = authorPrimvarReader(net, graph, "colorAlphaReader", "UsdPrimvarReader_float",
                                            "varname", previewAlphaPrimvar(factors), "fallback",
                                            SdfValueTypeNames->Float, factors.alpha, "result");
-    return alpha && surface.GetInput(TfToken("opacity")).ConnectToSource(alpha);
+    return alpha && net.Connect(surface, "opacity", SdfValueTypeNames->Float, alpha);
 }
 
 // Applied to `st` as scale, then counter-clockwise rotation about the origin, then translation.
@@ -369,6 +574,49 @@ struct MaterialTextures
     std::optional<TextureInput> iridescence;
     std::optional<TextureInput> iridescenceThickness;
     std::optional<TextureInput> anisotropy;
+
+    std::optional<TextureInput>& operator[](TextureSlot slot)
+    {
+        switch (slot)
+        {
+        case TextureSlot::BaseColor:
+            return baseColor;
+        case TextureSlot::MetallicRoughness:
+            return metallicRoughness;
+        case TextureSlot::Normal:
+            return normal;
+        case TextureSlot::Occlusion:
+            return occlusion;
+        case TextureSlot::Emissive:
+            return emissive;
+        case TextureSlot::Clearcoat:
+            return clearcoat;
+        case TextureSlot::ClearcoatRoughness:
+            return clearcoatRoughness;
+        case TextureSlot::ClearcoatNormal:
+            return clearcoatNormal;
+        case TextureSlot::Transmission:
+            return transmission;
+        case TextureSlot::Thickness:
+            return thickness;
+        case TextureSlot::Specular:
+            return specular;
+        case TextureSlot::SpecularColor:
+            return specularColor;
+        case TextureSlot::SheenColor:
+            return sheenColor;
+        case TextureSlot::SheenRoughness:
+            return sheenRoughness;
+        case TextureSlot::Iridescence:
+            return iridescence;
+        case TextureSlot::IridescenceThickness:
+            return iridescenceThickness;
+        case TextureSlot::Anisotropy:
+        case TextureSlot::Count:
+            break;
+        }
+        return anisotropy;
+    }
 };
 
 // gltf_pbr's specular weight and color are glTF's: the weight scales a dielectric's F0 and F90,
@@ -377,13 +625,15 @@ struct MaterialTextures
 bool
 hasSpecularWeight(const PbrFactors& factors, const MaterialTextures& textures)
 {
-    return !factors.unlit && (factors.specular != 1.0f || textures.specular);
+    return !factors.unlit && (factors.specular != 1.0f || textures.specular ||
+                              factors.animates(MaterialField::Specular));
 }
 
 bool
 hasSpecularColor(const PbrFactors& factors, const MaterialTextures& textures)
 {
-    return !factors.unlit && (factors.specularColor != GfVec3f(1) || textures.specularColor);
+    return !factors.unlit && (factors.specularColor != GfVec3f(1) || textures.specularColor ||
+                              factors.animates(MaterialField::SpecularColor));
 }
 
 // Textures sharing a UV set share a reader: defining it again changes nothing.
@@ -421,297 +671,281 @@ mtlxWrap(fastgltf::Wrap wrap)
     }
 }
 
-UsdShadeOutput
-authorPreviewTransform(const UsdShadeNodeGraph& graph, const std::string& image,
-                       const UsdShadeOutput& st, const UvTransform& transform)
+Port
+authorPreviewTransform(Network& net, const SdfPath& graph, const std::string& image,
+                       const Port& st, const UvTransform& transform)
 {
-    auto node = UsdShadeShader::Define(graph.GetPrim().GetStage(),
-                                       graph.GetPath().AppendChild(TfToken(image + "Transform")));
-    const auto in =
-        node ? node.CreateInput(TfToken("in"), SdfValueTypeNames->Float2) : UsdShadeInput();
-    return in && node.CreateIdAttr().Set(TfToken("UsdTransform2d")) && in.ConnectToSource(st) &&
-                   setInput(node, "scale", SdfValueTypeNames->Float2, transform.scale) &&
-                   setInput(node, "rotation", SdfValueTypeNames->Float,
-                            transform.rotationDegrees) &&
-                   setInput(node, "translation", SdfValueTypeNames->Float2, transform.translation)
-               ? node.CreateOutput(TfToken("result"), SdfValueTypeNames->Float2)
-               : UsdShadeOutput();
+    const auto node = net.Node(graph, image + "Transform", "UsdTransform2d");
+    return net.Connect(node, "in", SdfValueTypeNames->Float2, st) &&
+                   net.Set(node, "scale", SdfValueTypeNames->Float2, transform.scale) &&
+                   net.Set(node, "rotation", SdfValueTypeNames->Float, transform.rotationDegrees) &&
+                   net.Set(node, "translation", SdfValueTypeNames->Float2, transform.translation)
+               ? net.Output(node, "result", SdfValueTypeNames->Float2)
+               : Port();
 }
 
 // UsdUVTexture computes texture * scale + bias, which expresses glTF's factors
-// and occlusion strength exactly.
-UsdShadeShader
-authorPreviewTexture(const UsdShadeNodeGraph& graph, const char* name, const TextureInput& texture,
-                     const char* colorSpace, const GfVec4f& scale, const GfVec4f& bias = GfVec4f(0))
+// and occlusion strength exactly. A bias of 0 is left out unless an animation changes it.
+SdfPath
+authorPreviewTexture(Network& net, const SdfPath& graph, const char* name,
+                     const TextureInput& texture, const char* colorSpace, const GfVec4f& scale,
+                     const GfVec4f& bias = GfVec4f(0), bool animatedBias = false)
 {
-    auto st = authorPrimvarReader(graph, texCoordReaderName(texture).c_str(),
+    auto st = authorPrimvarReader(net, graph, texCoordReaderName(texture).c_str(),
                                   "UsdPrimvarReader_float2", "varname", texture.primvar.c_str(),
                                   "fallback", SdfValueTypeNames->Float2, GfVec2f(0), "result");
     if (st && texture.transform)
     {
-        st = authorPreviewTransform(graph, name, st, *texture.transform);
+        st = authorPreviewTransform(net, graph, name, st, *texture.transform);
     }
-    auto image = UsdShadeShader::Define(graph.GetPrim().GetStage(),
-                                        graph.GetPath().AppendChild(TfToken(name)));
-    const auto stInput =
-        image ? image.CreateInput(TfToken("st"), SdfValueTypeNames->Float2) : UsdShadeInput();
-    if (!st || !stInput || !image.CreateIdAttr().Set(TfToken("UsdUVTexture")) ||
-        !stInput.ConnectToSource(st) ||
-        !setInput(image, "file", SdfValueTypeNames->Asset, SdfAssetPath(texture.file)) ||
-        !setInput(image, "sourceColorSpace", SdfValueTypeNames->Token, TfToken(colorSpace)) ||
-        !setInput(image, "wrapS", SdfValueTypeNames->Token, TfToken(previewWrap(texture.wrapS))) ||
-        !setInput(image, "wrapT", SdfValueTypeNames->Token, TfToken(previewWrap(texture.wrapT))) ||
-        !setInput(image, "scale", SdfValueTypeNames->Float4, scale) ||
-        (bias != GfVec4f(0) && !setInput(image, "bias", SdfValueTypeNames->Float4, bias)))
+    const auto image = st ? net.Node(graph, name, "UsdUVTexture") : SdfPath();
+    if (!net.Connect(image, "st", SdfValueTypeNames->Float2, st) ||
+        !net.Set(image, "file", SdfValueTypeNames->Asset, SdfAssetPath(texture.file),
+                 Variability::Fixed) ||
+        !net.Set(image, "sourceColorSpace", SdfValueTypeNames->Token, TfToken(colorSpace),
+                 Variability::Fixed) ||
+        !net.Set(image, "wrapS", SdfValueTypeNames->Token, TfToken(previewWrap(texture.wrapS)),
+                 Variability::Fixed) ||
+        !net.Set(image, "wrapT", SdfValueTypeNames->Token, TfToken(previewWrap(texture.wrapT)),
+                 Variability::Fixed) ||
+        !net.Set(image, "scale", SdfValueTypeNames->Float4, scale) ||
+        ((bias != GfVec4f(0) || animatedBias) &&
+         !net.Set(image, "bias", SdfValueTypeNames->Float4, bias)))
     {
-        return UsdShadeShader();
+        return {};
     }
     return image;
 }
 
 bool
-connectPreviewOutput(UsdShadeShader& image, const char* output, const SdfValueTypeName& type,
-                     UsdShadeShader& surface, const char* input)
+connectPreviewOutput(Network& net, const SdfPath& image, const char* output,
+                     const SdfValueTypeName& type, const SdfPath& surface, const char* input)
 {
-    const auto source = image.CreateOutput(TfToken(output), type);
-    return source && surface.GetInput(TfToken(input)).ConnectToSource(source);
+    const auto source = net.Output(image, output, type);
+    return source && net.Connect(surface, input, type, source);
 }
 
 bool
-connectPreviewBaseColor(const UsdShadeNodeGraph& graph, UsdShadeShader& surface,
+connectPreviewBaseColor(Network& net, const SdfPath& graph, const SdfPath& surface,
                         const PbrFactors& factors, const TextureInput& texture)
 {
     const auto& emission = factors.unlitEmission;
-    auto image = authorPreviewTexture(
-        graph, "baseColorTexture", texture, "sRGB",
+    const auto image = authorPreviewTexture(
+        net, graph, "baseColorTexture", texture, "sRGB",
         GfVec4f(factors.baseColor[0], factors.baseColor[1], factors.baseColor[2], factors.alpha),
-        GfVec4f(emission[0], emission[1], emission[2], 0));
-    return image &&
-           connectPreviewOutput(image, "rgb", SdfValueTypeNames->Float3, surface,
+        GfVec4f(emission[0], emission[1], emission[2], 0), factors.unlitEmissionAnimated);
+    return !image.IsEmpty() &&
+           connectPreviewOutput(net, image, "rgb", SdfValueTypeNames->Float3, surface,
                                 previewColorInput(factors)) &&
            (!previewUsesOpacity(factors) ||
-            connectPreviewOutput(image, "a", SdfValueTypeNames->Float, surface, "opacity"));
+            connectPreviewOutput(net, image, "a", SdfValueTypeNames->Float, surface, "opacity"));
 }
 
 bool
-connectPreviewMetallicRoughness(const UsdShadeNodeGraph& graph, UsdShadeShader& surface,
+connectPreviewMetallicRoughness(Network& net, const SdfPath& graph, const SdfPath& surface,
                                 const PbrFactors& factors, const TextureInput& texture)
 {
-    auto image = authorPreviewTexture(graph, "metallicRoughnessTexture", texture, "raw",
-                                      GfVec4f(1, factors.roughness, factors.metallic, 1));
-    return image &&
-           connectPreviewOutput(image, "g", SdfValueTypeNames->Float, surface, "roughness") &&
-           connectPreviewOutput(image, "b", SdfValueTypeNames->Float, surface, "metallic");
+    const auto image = authorPreviewTexture(net, graph, "metallicRoughnessTexture", texture, "raw",
+                                            GfVec4f(1, factors.roughness, factors.metallic, 1));
+    return !image.IsEmpty() &&
+           connectPreviewOutput(net, image, "g", SdfValueTypeNames->Float, surface, "roughness") &&
+           connectPreviewOutput(net, image, "b", SdfValueTypeNames->Float, surface, "metallic");
 }
 
 // Maps the image to a tangent-space vector, with glTF's scale on X and Y only.
 bool
-connectPreviewNormal(const UsdShadeNodeGraph& graph, UsdShadeShader& surface,
+connectPreviewNormal(Network& net, const SdfPath& graph, const SdfPath& surface,
                      const PbrFactors& factors, const TextureInput& texture)
 {
     const float scale = factors.normalScale;
-    auto image =
-        authorPreviewTexture(graph, "normalTexture", texture, "raw",
+    const auto image =
+        authorPreviewTexture(net, graph, "normalTexture", texture, "raw",
                              GfVec4f(2 * scale, 2 * scale, 2, 1), GfVec4f(-scale, -scale, -1, 0));
-    return image && setInput(surface, "normal", SdfValueTypeNames->Normal3f, GfVec3f(0, 0, 1)) &&
-           connectPreviewOutput(image, "rgb", SdfValueTypeNames->Float3, surface, "normal");
+    return !image.IsEmpty() &&
+           net.Set(surface, "normal", SdfValueTypeNames->Normal3f, GfVec3f(0, 0, 1),
+                   Variability::Fixed) &&
+           connectPreviewOutput(net, image, "rgb", SdfValueTypeNames->Float3, surface, "normal");
 }
 
 bool
-connectPreviewOcclusion(const UsdShadeNodeGraph& graph, UsdShadeShader& surface,
+connectPreviewOcclusion(Network& net, const SdfPath& graph, const SdfPath& surface,
                         const PbrFactors& factors, const TextureInput& texture)
 {
     const float strength = factors.occlusionStrength;
-    auto image = authorPreviewTexture(graph, "occlusionTexture", texture, "raw", GfVec4f(strength),
-                                      GfVec4f(1 - strength));
-    return image && setInput(surface, "occlusion", SdfValueTypeNames->Float, 1.0f) &&
-           connectPreviewOutput(image, "r", SdfValueTypeNames->Float, surface, "occlusion");
+    const auto image = authorPreviewTexture(net, graph, "occlusionTexture", texture, "raw",
+                                            GfVec4f(strength), GfVec4f(1 - strength),
+                                            factors.animates(MaterialField::OcclusionStrength));
+    return !image.IsEmpty() &&
+           net.Set(surface, "occlusion", SdfValueTypeNames->Float, 1.0f, Variability::Fixed) &&
+           connectPreviewOutput(net, image, "r", SdfValueTypeNames->Float, surface, "occlusion");
 }
 
 bool
-connectPreviewEmissive(const UsdShadeNodeGraph& graph, UsdShadeShader& surface,
+connectPreviewEmissive(Network& net, const SdfPath& graph, const SdfPath& surface,
                        const PbrFactors& factors, const TextureInput& texture)
 {
     const auto color = factors.emissive * factors.emissiveStrength;
-    auto image = authorPreviewTexture(graph, "emissiveTexture", texture, "sRGB",
-                                      GfVec4f(color[0], color[1], color[2], 1));
-    return image &&
-           connectPreviewOutput(image, "rgb", SdfValueTypeNames->Float3, surface, "emissiveColor");
+    const auto image = authorPreviewTexture(net, graph, "emissiveTexture", texture, "sRGB",
+                                            GfVec4f(color[0], color[1], color[2], 1));
+    return !image.IsEmpty() && connectPreviewOutput(net, image, "rgb", SdfValueTypeNames->Float3,
+                                                    surface, "emissiveColor");
 }
 
 // glTF's clearcoat is R and its roughness G, each times its factor.
 bool
-connectPreviewClearcoat(const UsdShadeNodeGraph& graph, UsdShadeShader& surface,
+connectPreviewClearcoat(Network& net, const SdfPath& graph, const SdfPath& surface,
                         const PbrFactors& factors, const MaterialTextures& textures)
 {
     if (textures.clearcoat)
     {
-        auto image = authorPreviewTexture(graph, "clearcoatTexture", *textures.clearcoat, "raw",
-                                          GfVec4f(factors.clearcoat, 1, 1, 1));
-        if (!image ||
-            !connectPreviewOutput(image, "r", SdfValueTypeNames->Float, surface, "clearcoat"))
+        const auto image = authorPreviewTexture(net, graph, "clearcoatTexture", *textures.clearcoat,
+                                                "raw", GfVec4f(factors.clearcoat, 1, 1, 1));
+        if (image.IsEmpty() ||
+            !connectPreviewOutput(net, image, "r", SdfValueTypeNames->Float, surface, "clearcoat"))
         {
             return false;
         }
     }
     if (textures.clearcoatRoughness)
     {
-        auto image =
-            authorPreviewTexture(graph, "clearcoatRoughnessTexture", *textures.clearcoatRoughness,
-                                 "raw", GfVec4f(1, factors.clearcoatRoughness, 1, 1));
-        return image && connectPreviewOutput(image, "g", SdfValueTypeNames->Float, surface,
-                                             "clearcoatRoughness");
+        const auto image = authorPreviewTexture(net, graph, "clearcoatRoughnessTexture",
+                                                *textures.clearcoatRoughness, "raw",
+                                                GfVec4f(1, factors.clearcoatRoughness, 1, 1));
+        return !image.IsEmpty() && connectPreviewOutput(net, image, "g", SdfValueTypeNames->Float,
+                                                        surface, "clearcoatRoughness");
     }
     return true;
 }
 
 bool
-connectPreviewTextures(const UsdShadeNodeGraph& graph, UsdShadeShader& surface,
+connectPreviewTextures(Network& net, const SdfPath& graph, const SdfPath& surface,
                        const PbrFactors& factors, const MaterialTextures& textures)
 {
     return (!textures.metallicRoughness ||
-            connectPreviewMetallicRoughness(graph, surface, factors,
+            connectPreviewMetallicRoughness(net, graph, surface, factors,
                                             *textures.metallicRoughness)) &&
-           (!textures.normal || connectPreviewNormal(graph, surface, factors, *textures.normal)) &&
+           (!textures.normal ||
+            connectPreviewNormal(net, graph, surface, factors, *textures.normal)) &&
            (!textures.occlusion ||
-            connectPreviewOcclusion(graph, surface, factors, *textures.occlusion)) &&
+            connectPreviewOcclusion(net, graph, surface, factors, *textures.occlusion)) &&
            (!textures.emissive ||
-            connectPreviewEmissive(graph, surface, factors, *textures.emissive)) &&
-           (!hasClearcoat(factors) || connectPreviewClearcoat(graph, surface, factors, textures));
-}
-
-UsdShadeShader
-defineMtlxNode(const UsdShadeNodeGraph& graph, const char* name, const char* id)
-{
-    auto node = UsdShadeShader::Define(graph.GetPrim().GetStage(),
-                                       graph.GetPath().AppendChild(TfToken(name)));
-    return node && node.CreateIdAttr().Set(TfToken(id)) ? node : UsdShadeShader();
+            connectPreviewEmissive(net, graph, surface, factors, *textures.emissive)) &&
+           (!hasClearcoat(factors) ||
+            connectPreviewClearcoat(net, graph, surface, factors, textures));
 }
 
 // `second` is a constant, or another node's output.
 template <typename T>
-UsdShadeOutput
-authorMtlxMultiply(const UsdShadeNodeGraph& graph, const char* name, const char* id,
-                   const SdfValueTypeName& type, const UsdShadeOutput& first, const T& second)
+Port
+authorMtlxMultiply(Network& net, const SdfPath& graph, const std::string& name, const char* id,
+                   const SdfValueTypeName& type, const Port& first, const T& second)
 {
-    auto multiply = defineMtlxNode(graph, name, id);
-    const auto in1 = multiply ? multiply.CreateInput(TfToken("in1"), type) : UsdShadeInput();
-    if (!in1 || !in1.ConnectToSource(first))
+    const auto multiply = net.Node(graph, name, id);
+    if (!net.Connect(multiply, "in1", type, first))
     {
-        return UsdShadeOutput();
+        return {};
     }
-    if constexpr (std::is_same_v<T, UsdShadeOutput>)
+    if constexpr (std::is_same_v<T, Port>)
     {
-        const auto in2 = multiply.CreateInput(TfToken("in2"), type);
-        if (!in2 || !in2.ConnectToSource(second))
+        if (!net.Connect(multiply, "in2", type, second))
         {
-            return UsdShadeOutput();
+            return {};
         }
     }
-    else if (!setInput(multiply, "in2", type, second))
+    else if (!net.Set(multiply, "in2", type, second))
     {
-        return UsdShadeOutput();
+        return {};
     }
-    return multiply.CreateOutput(TfToken("out"), type);
+    return net.Output(multiply, "out", type);
 }
 
 // place2d cannot express a scale of 0, because it divides by it. rotate2d turns clockwise.
-UsdShadeOutput
-authorMtlxTransform(const UsdShadeNodeGraph& graph, const std::string& image,
-                    const UsdShadeOutput& st, const UvTransform& transform)
+Port
+authorMtlxTransform(Network& net, const SdfPath& graph, const std::string& image, const Port& st,
+                    const UvTransform& transform)
 {
     const auto type = SdfValueTypeNames->Float2;
-    const auto scaled = authorMtlxMultiply(graph, (image + "Scale").c_str(), "ND_multiply_vector2",
-                                           type, st, transform.scale);
-    auto rotate = scaled ? defineMtlxNode(graph, (image + "Rotate").c_str(), "ND_rotate2d_vector2")
-                         : UsdShadeShader();
-    const auto in = rotate ? rotate.CreateInput(TfToken("in"), type) : UsdShadeInput();
-    if (!in || !in.ConnectToSource(scaled) ||
-        !setInput(rotate, "amount", SdfValueTypeNames->Float, -transform.rotationDegrees))
+    const auto scaled = authorMtlxMultiply(net, graph, image + "Scale", "ND_multiply_vector2", type,
+                                           st, transform.scale);
+    const auto rotate =
+        scaled ? net.Node(graph, image + "Rotate", "ND_rotate2d_vector2") : SdfPath();
+    if (!net.Connect(rotate, "in", type, scaled) ||
+        !net.Set(rotate, "amount", SdfValueTypeNames->Float, -transform.rotationDegrees))
     {
-        return UsdShadeOutput();
+        return {};
     }
-    auto translate = defineMtlxNode(graph, (image + "Translate").c_str(), "ND_add_vector2");
-    const auto in1 = translate ? translate.CreateInput(TfToken("in1"), type) : UsdShadeInput();
-    return in1 && in1.ConnectToSource(rotate.CreateOutput(TfToken("out"), type)) &&
-                   setInput(translate, "in2", type, transform.translation)
-               ? translate.CreateOutput(TfToken("out"), type)
-               : UsdShadeOutput();
+    const auto translate = net.Node(graph, image + "Translate", "ND_add_vector2");
+    return net.Connect(translate, "in1", type, net.Output(rotate, "out", type)) &&
+                   net.Set(translate, "in2", type, transform.translation)
+               ? net.Output(translate, "out", type)
+               : Port();
 }
 
 // Non-color data is a vector image, which no color space transform applies to.
-UsdShadeOutput
-authorMtlxImage(const UsdShadeNodeGraph& graph, const char* name, const TextureInput& texture,
-                bool color)
+Port
+authorMtlxImage(Network& net, const SdfPath& graph, const std::string& name,
+                const TextureInput& texture, bool color)
 {
-    auto st = authorPrimvarReader(graph, texCoordReaderName(texture).c_str(),
+    auto st = authorPrimvarReader(net, graph, texCoordReaderName(texture).c_str(),
                                   "ND_geompropvalue_vector2", "geomprop", texture.primvar.c_str(),
                                   "default", SdfValueTypeNames->Float2, GfVec2f(0), "out");
     if (st && texture.transform)
     {
-        st = authorMtlxTransform(graph, name, st, *texture.transform);
+        st = authorMtlxTransform(net, graph, name, st, *texture.transform);
     }
     const auto type = color ? SdfValueTypeNames->Color4f : SdfValueTypeNames->Float4;
-    auto image = defineMtlxNode(graph, name, color ? "ND_image_color4" : "ND_image_vector4");
-    const auto stInput =
-        image ? image.CreateInput(TfToken("texcoord"), SdfValueTypeNames->Float2) : UsdShadeInput();
-    const auto file =
-        image ? image.CreateInput(TfToken("file"), SdfValueTypeNames->Asset) : UsdShadeInput();
-    if (!st || !stInput || !file || !stInput.ConnectToSource(st) ||
-        !file.Set(SdfAssetPath(texture.file)) ||
-        !setInput(image, "default", type, GfVec4f(0, 0, 0, 1)) ||
-        !setInput(image, "uaddressmode", SdfValueTypeNames->String,
-                  std::string(mtlxWrap(texture.wrapS))) ||
-        !setInput(image, "vaddressmode", SdfValueTypeNames->String,
-                  std::string(mtlxWrap(texture.wrapT))))
+    const auto image =
+        st ? net.Node(graph, name, color ? "ND_image_color4" : "ND_image_vector4") : SdfPath();
+    if (!net.Connect(image, "texcoord", SdfValueTypeNames->Float2, st) ||
+        !net.Set(image, "file", SdfValueTypeNames->Asset, SdfAssetPath(texture.file),
+                 Variability::Fixed) ||
+        !net.Set(image, "default", type, GfVec4f(0, 0, 0, 1), Variability::Fixed) ||
+        !net.Set(image, "uaddressmode", SdfValueTypeNames->String,
+                 std::string(mtlxWrap(texture.wrapS)), Variability::Fixed) ||
+        !net.Set(image, "vaddressmode", SdfValueTypeNames->String,
+                 std::string(mtlxWrap(texture.wrapT)), Variability::Fixed) ||
+        (color && !net.SetColorSpace(image, "file", TfToken("srgb_texture"))))
     {
-        return UsdShadeOutput();
+        return {};
     }
-    if (color)
-    {
-        file.GetAttr().SetColorSpace(TfToken("srgb_texture"));
-    }
-    return image.CreateOutput(TfToken("out"), type);
+    return net.Output(image, "out", type);
 }
 
-UsdShadeOutput
-authorMtlxImageChannel(const UsdShadeNodeGraph& graph, const char* name, const char* id,
-                       const UsdShadeOutput& image, const SdfValueTypeName& type)
+Port
+authorMtlxImageChannel(Network& net, const SdfPath& graph, const std::string& name, const char* id,
+                       const Port& image, const SdfValueTypeName& type)
 {
-    auto node = defineMtlxNode(graph, name, id);
-    const auto in = node ? node.CreateInput(TfToken("in"), image.GetTypeName()) : UsdShadeInput();
-    return in && in.ConnectToSource(image) ? node.CreateOutput(TfToken("out"), type)
-                                           : UsdShadeOutput();
+    const auto node = net.Node(graph, name, id);
+    return net.Connect(node, "in", image.type, image) ? net.Output(node, "out", type) : Port();
 }
 
-UsdShadeOutput
-authorMtlxImageComponent(const UsdShadeNodeGraph& graph, const char* name,
-                         const UsdShadeOutput& image, int index)
+Port
+authorMtlxImageComponent(Network& net, const SdfPath& graph, const std::string& name,
+                         const Port& image, int index)
 {
-    const bool color = image.GetTypeName() == SdfValueTypeNames->Color4f;
+    const bool color = image.type == SdfValueTypeNames->Color4f;
     const auto output =
-        authorMtlxImageChannel(graph, name, color ? "ND_extract_color4" : "ND_extract_vector4",
+        authorMtlxImageChannel(net, graph, name, color ? "ND_extract_color4" : "ND_extract_vector4",
                                image, SdfValueTypeNames->Float);
-    if (!output)
-    {
-        return UsdShadeOutput();
-    }
-    UsdShadeShader extract(output.GetPrim());
-    return setInput(extract, "index", SdfValueTypeNames->Int, index) ? output : UsdShadeOutput();
+    return output && net.Set(output.path.GetPrimPath(), "index", SdfValueTypeNames->Int, index,
+                             Variability::Fixed)
+               ? output
+               : Port();
 }
 
-// Connects texture * vertex value * factor + addend, leaving out the terms that are absent.
+// Connects texture * vertex value * factor + addend, leaving out the terms that are absent. A
+// factor of 1 and an addend of 0 are left out unless an animation changes them.
 template <typename T>
 bool
-connectMtlxInput(const UsdShadeNodeGraph& graph, UsdShadeShader& surface, const char* input,
-                 UsdShadeOutput source, const UsdShadeOutput& vertex, const char* vertexName,
-                 const char* factorName, const char* multiplyId, const SdfValueTypeName& type,
-                 const T& factor, const T& addend = T(0), const char* addName = nullptr,
-                 const char* addId = nullptr)
+connectMtlxInput(Network& net, const SdfPath& graph, const SdfPath& surface, const char* input,
+                 Port source, const Port& vertex, const char* vertexName, const std::string& factorName,
+                 const char* multiplyId, const SdfValueTypeName& type, const T& factor,
+                 bool animatedFactor, const T& addend = T(0), const char* addName = nullptr,
+                 const char* addId = nullptr, bool animatedAddend = false)
 {
     if (source && vertex)
     {
-        source = authorMtlxMultiply(graph, vertexName, multiplyId, type, source, vertex);
+        source = authorMtlxMultiply(net, graph, vertexName, multiplyId, type, source, vertex);
         if (!source)
         {
             return false;
@@ -725,32 +959,32 @@ connectMtlxInput(const UsdShadeNodeGraph& graph, UsdShadeShader& surface, const 
     {
         return true;
     }
-    if (factor != T(1))
+    if (factor != T(1) || animatedFactor)
     {
-        source = authorMtlxMultiply(graph, factorName, multiplyId, type, source, factor);
+        source = authorMtlxMultiply(net, graph, factorName, multiplyId, type, source, factor);
     }
-    if (source && addend != T(0))
+    if (source && (addend != T(0) || animatedAddend))
     {
-        source = authorMtlxMultiply(graph, addName, addId, type, source, addend);
+        source = authorMtlxMultiply(net, graph, addName, addId, type, source, addend);
     }
-    return source && surface.GetInput(TfToken(input)).ConnectToSource(source);
+    return source && net.Connect(surface, input, type, source);
 }
 
 bool
-connectMtlxInputs(const UsdShadeNodeGraph& graph, UsdShadeShader& surface,
+connectMtlxInputs(Network& net, const SdfPath& graph, const SdfPath& surface,
                   const PbrFactors& factors, bool vertexColor, const TextureInput* texture)
 {
     const bool usesAlpha = factors.alphaMode != fastgltf::AlphaMode::Opaque;
-    UsdShadeOutput imageColor;
-    UsdShadeOutput imageAlpha;
+    Port imageColor;
+    Port imageAlpha;
     if (texture)
     {
-        const auto image = authorMtlxImage(graph, "baseColorImage", *texture, true);
+        const auto image = authorMtlxImage(net, graph, "baseColorImage", *texture, true);
         if (!image)
         {
             return false;
         }
-        imageColor = authorMtlxImageChannel(graph, "baseColorRgb", "ND_convert_color4_color3",
+        imageColor = authorMtlxImageChannel(net, graph, "baseColorRgb", "ND_convert_color4_color3",
                                             image, SdfValueTypeNames->Color3f);
         if (!imageColor)
         {
@@ -758,19 +992,19 @@ connectMtlxInputs(const UsdShadeNodeGraph& graph, UsdShadeShader& surface,
         }
         if (usesAlpha)
         {
-            imageAlpha = authorMtlxImageComponent(graph, "baseColorA", image, 3);
+            imageAlpha = authorMtlxImageComponent(net, graph, "baseColorA", image, 3);
             if (!imageAlpha)
             {
                 return false;
             }
         }
     }
-    UsdShadeOutput vertexColorValue;
-    UsdShadeOutput vertexAlpha;
+    Port vertexColorValue;
+    Port vertexAlpha;
     if (vertexColor)
     {
         vertexColorValue = authorPrimvarReader(
-            graph, "displayColorReader", "ND_geompropvalue_color3", "geomprop", "displayColor",
+            net, graph, "displayColorReader", "ND_geompropvalue_color3", "geomprop", "displayColor",
             "default", SdfValueTypeNames->Color3f, GfVec3f(1), "out");
         if (!vertexColorValue)
         {
@@ -778,8 +1012,9 @@ connectMtlxInputs(const UsdShadeNodeGraph& graph, UsdShadeShader& surface,
         }
         if (usesAlpha)
         {
-            vertexAlpha = authorPrimvarReader(graph, "colorAlphaReader", "ND_geompropvalue_float",
-                                              "geomprop", "gltf_colorAlpha", "default",
+            vertexAlpha = authorPrimvarReader(net, graph, "colorAlphaReader",
+                                              "ND_geompropvalue_float", "geomprop",
+                                              "gltf_colorAlpha", "default",
                                               SdfValueTypeNames->Float, 1.0f, "out");
             if (!vertexAlpha)
             {
@@ -787,258 +1022,262 @@ connectMtlxInputs(const UsdShadeNodeGraph& graph, UsdShadeShader& surface,
             }
         }
     }
-    return connectMtlxInput(graph, surface, mtlxColorInput(factors), imageColor, vertexColorValue,
-                            "baseColorVertex", "baseColorFactor", "ND_multiply_color3",
-                            SdfValueTypeNames->Color3f, factors.baseColor, factors.unlitEmission,
-                            "emissiveAdd", "ND_add_color3") &&
-           connectMtlxInput(graph, surface, "alpha", imageAlpha, vertexAlpha, "alphaVertex",
+    const bool animated = factors.animates(MaterialField::BaseColor);
+    return connectMtlxInput(net, graph, surface, mtlxColorInput(factors), imageColor,
+                            vertexColorValue, "baseColorVertex", "baseColorFactor",
+                            "ND_multiply_color3", SdfValueTypeNames->Color3f, factors.baseColor,
+                            animated, factors.unlitEmission, "emissiveAdd", "ND_add_color3",
+                            factors.unlitEmissionAnimated) &&
+           connectMtlxInput(net, graph, surface, "alpha", imageAlpha, vertexAlpha, "alphaVertex",
                             "alphaFactor", "ND_multiply_float", SdfValueTypeNames->Float,
-                            factors.alpha);
+                            factors.alpha, animated);
 }
 
 bool
-connectMtlxMetallicRoughness(const UsdShadeNodeGraph& graph, UsdShadeShader& surface,
+connectMtlxMetallicRoughness(Network& net, const SdfPath& graph, const SdfPath& surface,
                              const PbrFactors& factors, const TextureInput& texture)
 {
-    const auto image = authorMtlxImage(graph, "metallicRoughnessImage", texture, false);
+    const auto image = authorMtlxImage(net, graph, "metallicRoughnessImage", texture, false);
     if (!image)
     {
         return false;
     }
-    const auto roughness = authorMtlxImageComponent(graph, "roughnessChannel", image, 1);
-    const auto metallic = authorMtlxImageComponent(graph, "metallicChannel", image, 2);
+    const auto roughness = authorMtlxImageComponent(net, graph, "roughnessChannel", image, 1);
+    const auto metallic = authorMtlxImageComponent(net, graph, "metallicChannel", image, 2);
     return roughness && metallic &&
-           connectMtlxInput(graph, surface, "roughness", roughness, UsdShadeOutput(), nullptr,
+           connectMtlxInput(net, graph, surface, "roughness", roughness, Port(), nullptr,
                             "roughnessFactor", "ND_multiply_float", SdfValueTypeNames->Float,
-                            factors.roughness) &&
-           connectMtlxInput(graph, surface, "metallic", metallic, UsdShadeOutput(), nullptr,
+                            factors.roughness, factors.animates(MaterialField::Roughness)) &&
+           connectMtlxInput(net, graph, surface, "metallic", metallic, Port(), nullptr,
                             "metallicFactor", "ND_multiply_float", SdfValueTypeNames->Float,
-                            factors.metallic);
+                            factors.metallic, factors.animates(MaterialField::Metallic));
 }
 
 // `name` prefixes the nodes, and `input` is the surface's normal input.
 bool
-connectMtlxNormal(const UsdShadeNodeGraph& graph, UsdShadeShader& surface, const std::string& name,
-                  const char* input, float scale, const TextureInput& texture)
+connectMtlxNormal(Network& net, const SdfPath& graph, const SdfPath& surface,
+                  const std::string& name, const char* input, float scale, bool animatedScale,
+                  const TextureInput& texture)
 {
-    const auto image = authorMtlxImage(graph, (name + "Image").c_str(), texture, false);
+    const auto image = authorMtlxImage(net, graph, name + "Image", texture, false);
     const auto xyz =
-        image ? authorMtlxImageChannel(graph, (name + "Xyz").c_str(), "ND_convert_vector4_vector3",
+        image ? authorMtlxImageChannel(net, graph, name + "Xyz", "ND_convert_vector4_vector3",
                                        image, SdfValueTypeNames->Vector3f)
-              : UsdShadeOutput();
-    auto map = xyz ? defineMtlxNode(graph, (name + "Map").c_str(), "ND_normalmap_float")
-                   : UsdShadeShader();
-    const auto in =
-        map ? map.CreateInput(TfToken("in"), SdfValueTypeNames->Vector3f) : UsdShadeInput();
-    const auto normal = surface.CreateInput(TfToken(input), SdfValueTypeNames->Vector3f);
-    return in && normal && in.ConnectToSource(xyz) &&
-           (scale == 1.0f || setInput(map, "scale", SdfValueTypeNames->Float, scale)) &&
-           normal.ConnectToSource(map.CreateOutput(TfToken("out"), SdfValueTypeNames->Vector3f));
+              : Port();
+    const auto map = xyz ? net.Node(graph, name + "Map", "ND_normalmap_float") : SdfPath();
+    return net.Connect(map, "in", SdfValueTypeNames->Vector3f, xyz) &&
+           ((scale == 1.0f && !animatedScale) ||
+            net.Set(map, "scale", SdfValueTypeNames->Float, scale)) &&
+           net.Connect(surface, input, SdfValueTypeNames->Vector3f,
+                       net.Output(map, "out", SdfValueTypeNames->Vector3f));
 }
 
 // glTF's 1 + strength * (occlusion - 1) is a mix from 1 to the image.
 bool
-connectMtlxOcclusion(const UsdShadeNodeGraph& graph, UsdShadeShader& surface,
+connectMtlxOcclusion(Network& net, const SdfPath& graph, const SdfPath& surface,
                      const PbrFactors& factors, const TextureInput& texture)
 {
-    const auto image = authorMtlxImage(graph, "occlusionImage", texture, false);
-    auto source =
-        image ? authorMtlxImageComponent(graph, "occlusionChannel", image, 0) : UsdShadeOutput();
-    if (!source || !setInput(surface, "occlusion", SdfValueTypeNames->Float, 1.0f))
+    const auto image = authorMtlxImage(net, graph, "occlusionImage", texture, false);
+    auto source = image ? authorMtlxImageComponent(net, graph, "occlusionChannel", image, 0) : Port();
+    if (!source ||
+        !net.Set(surface, "occlusion", SdfValueTypeNames->Float, 1.0f, Variability::Fixed))
     {
         return false;
     }
-    if (factors.occlusionStrength != 1.0f)
+    if (factors.occlusionStrength != 1.0f || factors.animates(MaterialField::OcclusionStrength))
     {
-        auto mix = defineMtlxNode(graph, "occlusionStrength", "ND_mix_float");
-        const auto fg =
-            mix ? mix.CreateInput(TfToken("fg"), SdfValueTypeNames->Float) : UsdShadeInput();
-        if (!fg || !fg.ConnectToSource(source) ||
-            !setInput(mix, "bg", SdfValueTypeNames->Float, 1.0f) ||
-            !setInput(mix, "mix", SdfValueTypeNames->Float, factors.occlusionStrength))
+        const auto mix = net.Node(graph, "occlusionStrength", "ND_mix_float");
+        if (!net.Connect(mix, "fg", SdfValueTypeNames->Float, source) ||
+            !net.Set(mix, "bg", SdfValueTypeNames->Float, 1.0f, Variability::Fixed) ||
+            !net.Set(mix, "mix", SdfValueTypeNames->Float, factors.occlusionStrength))
         {
             return false;
         }
-        source = mix.CreateOutput(TfToken("out"), SdfValueTypeNames->Float);
+        source = net.Output(mix, "out", SdfValueTypeNames->Float);
     }
-    return source && surface.GetInput(TfToken("occlusion")).ConnectToSource(source);
+    return source && net.Connect(surface, "occlusion", SdfValueTypeNames->Float, source);
 }
 
 // The color of a color image times its factor.
 bool
-connectMtlxColor(const UsdShadeNodeGraph& graph, UsdShadeShader& surface, const std::string& name,
-                 const char* input, const GfVec3f& factor, const TextureInput& texture)
+connectMtlxColor(Network& net, const SdfPath& graph, const SdfPath& surface,
+                 const std::string& name, const char* input, const GfVec3f& factor,
+                 bool animatedFactor, const TextureInput& texture)
 {
-    const auto image = authorMtlxImage(graph, (name + "Image").c_str(), texture, true);
+    const auto image = authorMtlxImage(net, graph, name + "Image", texture, true);
     const auto rgb =
-        image ? authorMtlxImageChannel(graph, (name + "Rgb").c_str(), "ND_convert_color4_color3",
-                                       image, SdfValueTypeNames->Color3f)
-              : UsdShadeOutput();
-    return rgb && connectMtlxInput(graph, surface, input, rgb, UsdShadeOutput(), nullptr,
-                                   (name + "Factor").c_str(), "ND_multiply_color3",
-                                   SdfValueTypeNames->Color3f, factor);
+        image ? authorMtlxImageChannel(net, graph, name + "Rgb", "ND_convert_color4_color3", image,
+                                       SdfValueTypeNames->Color3f)
+              : Port();
+    return rgb && connectMtlxInput(net, graph, surface, input, rgb, Port(), nullptr,
+                                   name + "Factor", "ND_multiply_color3",
+                                   SdfValueTypeNames->Color3f, factor, animatedFactor);
 }
 
 // One channel of a non-color image times its factor.
 bool
-connectMtlxChannel(const UsdShadeNodeGraph& graph, UsdShadeShader& surface, const std::string& name,
-                   const char* input, int index, float factor, const TextureInput& texture)
+connectMtlxChannel(Network& net, const SdfPath& graph, const SdfPath& surface,
+                   const std::string& name, const char* input, int index, float factor,
+                   bool animatedFactor, const TextureInput& texture)
 {
-    const auto image = authorMtlxImage(graph, (name + "Image").c_str(), texture, false);
+    const auto image = authorMtlxImage(net, graph, name + "Image", texture, false);
     const auto channel =
-        image ? authorMtlxImageComponent(graph, (name + "Channel").c_str(), image, index)
-              : UsdShadeOutput();
-    return channel && connectMtlxInput(graph, surface, input, channel, UsdShadeOutput(), nullptr,
-                                       (name + "Factor").c_str(), "ND_multiply_float",
-                                       SdfValueTypeNames->Float, factor);
+        image ? authorMtlxImageComponent(net, graph, name + "Channel", image, index) : Port();
+    return channel && connectMtlxInput(net, graph, surface, input, channel, Port(), nullptr,
+                                       name + "Factor", "ND_multiply_float",
+                                       SdfValueTypeNames->Float, factor, animatedFactor);
 }
 
 // glTF uses the G channel to interpolate the thickness range, which may be descending.
 bool
-connectMtlxIridescenceThickness(const UsdShadeNodeGraph& graph, UsdShadeShader& surface,
+connectMtlxIridescenceThickness(Network& net, const SdfPath& graph, const SdfPath& surface,
                                 const PbrFactors& factors, const TextureInput& texture)
 {
-    const auto image = authorMtlxImage(graph, "iridescenceThicknessImage", texture, false);
+    const auto image = authorMtlxImage(net, graph, "iridescenceThicknessImage", texture, false);
     const auto channel =
-        image ? authorMtlxImageComponent(graph, "iridescenceThicknessChannel", image, 1)
-              : UsdShadeOutput();
-    auto mix = channel ? defineMtlxNode(graph, "iridescenceThicknessRange", "ND_mix_float")
-                       : UsdShadeShader();
-    const auto amount =
-        mix ? mix.CreateInput(TfToken("mix"), SdfValueTypeNames->Float) : UsdShadeInput();
-    return amount && amount.ConnectToSource(channel) &&
-           setInput(mix, "bg", SdfValueTypeNames->Float, factors.iridescenceMinimum) &&
-           setInput(mix, "fg", SdfValueTypeNames->Float, factors.iridescenceMaximum) &&
-           surface.GetInput(TfToken("iridescence_thickness"))
-               .ConnectToSource(mix.CreateOutput(TfToken("out"), SdfValueTypeNames->Float));
+        image ? authorMtlxImageComponent(net, graph, "iridescenceThicknessChannel", image, 1)
+              : Port();
+    const auto mix =
+        channel ? net.Node(graph, "iridescenceThicknessRange", "ND_mix_float") : SdfPath();
+    return net.Connect(mix, "mix", SdfValueTypeNames->Float, channel) &&
+           net.Set(mix, "bg", SdfValueTypeNames->Float, factors.iridescenceMinimum) &&
+           net.Set(mix, "fg", SdfValueTypeNames->Float, factors.iridescenceMaximum) &&
+           net.Connect(surface, "iridescence_thickness", SdfValueTypeNames->Float,
+                       net.Output(mix, "out", SdfValueTypeNames->Float));
 }
 
 // glTF's linear B is strength, and remapped RG supplies a direction in the renderer's frame.
 bool
-connectMtlxAnisotropy(const UsdShadeNodeGraph& graph, UsdShadeShader& surface,
+connectMtlxAnisotropy(Network& net, const SdfPath& graph, const SdfPath& surface,
                       const PbrFactors& factors, const TextureInput& texture)
 {
-    const auto image = authorMtlxImage(graph, "anisotropyImage", texture, false);
+    const auto float1 = SdfValueTypeNames->Float;
+    const auto image = authorMtlxImage(net, graph, "anisotropyImage", texture, false);
     const auto strength =
-        image ? authorMtlxImageComponent(graph, "anisotropyChannel", image, 2) : UsdShadeOutput();
+        image ? authorMtlxImageComponent(net, graph, "anisotropyChannel", image, 2) : Port();
     const auto scaled =
-        image ? authorMtlxMultiply(graph, "anisotropyDirectionScale", "ND_multiply_vector4",
+        image ? authorMtlxMultiply(net, graph, "anisotropyDirectionScale", "ND_multiply_vector4",
                                    SdfValueTypeNames->Float4, image, GfVec4f(2))
-              : UsdShadeOutput();
-    auto remap = scaled ? defineMtlxNode(graph, "anisotropyDirection", "ND_subtract_vector4")
-                        : UsdShadeShader();
-    if (!strength || !remap ||
-        !remap.CreateInput(TfToken("in1"), SdfValueTypeNames->Float4).ConnectToSource(scaled) ||
-        !setInput(remap, "in2", SdfValueTypeNames->Float4, GfVec4f(1)))
+              : Port();
+    const auto remap =
+        scaled ? net.Node(graph, "anisotropyDirection", "ND_subtract_vector4") : SdfPath();
+    if (!strength || !net.Connect(remap, "in1", SdfValueTypeNames->Float4, scaled) ||
+        !net.Set(remap, "in2", SdfValueTypeNames->Float4, GfVec4f(1), Variability::Fixed))
     {
         return false;
     }
-    const auto direction = remap.CreateOutput(TfToken("out"), SdfValueTypeNames->Float4);
-    const auto x = authorMtlxImageComponent(graph, "anisotropyX", direction, 0);
-    const auto y = authorMtlxImageComponent(graph, "anisotropyY", direction, 1);
-    const auto xy = authorMtlxImageChannel(graph, "anisotropyXy", "ND_convert_vector4_vector2",
+    const auto direction = net.Output(remap, "out", SdfValueTypeNames->Float4);
+    const auto x = authorMtlxImageComponent(net, graph, "anisotropyX", direction, 0);
+    const auto y = authorMtlxImageComponent(net, graph, "anisotropyY", direction, 1);
+    const auto xy = authorMtlxImageChannel(net, graph, "anisotropyXy", "ND_convert_vector4_vector2",
                                            direction, SdfValueTypeNames->Float2);
-    auto length = defineMtlxNode(graph, "anisotropyDirectionLength", "ND_dotproduct_vector2");
-    auto angle = defineMtlxNode(graph, "anisotropyAngle", "ND_atan2_float");
-    auto selected = defineMtlxNode(graph, "anisotropyValidAngle", "ND_ifgreater_float");
-    if (!x || !y || !xy || !length || !angle || !selected ||
-        !length.CreateInput(TfToken("in1"), SdfValueTypeNames->Float2).ConnectToSource(xy) ||
-        !length.CreateInput(TfToken("in2"), SdfValueTypeNames->Float2).ConnectToSource(xy) ||
-        !angle.CreateInput(TfToken("inx"), SdfValueTypeNames->Float).ConnectToSource(x) ||
-        !angle.CreateInput(TfToken("iny"), SdfValueTypeNames->Float).ConnectToSource(y) ||
-        !selected.CreateInput(TfToken("value1"), SdfValueTypeNames->Float)
-             .ConnectToSource(length.CreateOutput(TfToken("out"), SdfValueTypeNames->Float)) ||
-        !setInput(selected, "value2", SdfValueTypeNames->Float, 0.0f) ||
-        !selected.CreateInput(TfToken("in1"), SdfValueTypeNames->Float)
-             .ConnectToSource(angle.CreateOutput(TfToken("out"), SdfValueTypeNames->Float)) ||
-        !setInput(selected, "in2", SdfValueTypeNames->Float, 0.0f))
+    const auto length = net.Node(graph, "anisotropyDirectionLength", "ND_dotproduct_vector2");
+    const auto angle = net.Node(graph, "anisotropyAngle", "ND_atan2_float");
+    const auto selected = net.Node(graph, "anisotropyValidAngle", "ND_ifgreater_float");
+    if (!x || !y || !xy || !net.Connect(length, "in1", SdfValueTypeNames->Float2, xy) ||
+        !net.Connect(length, "in2", SdfValueTypeNames->Float2, xy) ||
+        !net.Connect(angle, "inx", float1, x) || !net.Connect(angle, "iny", float1, y) ||
+        !net.Connect(selected, "value1", float1, net.Output(length, "out", float1)) ||
+        !net.Set(selected, "value2", float1, 0.0f, Variability::Fixed) ||
+        !net.Connect(selected, "in1", float1, net.Output(angle, "out", float1)) ||
+        !net.Set(selected, "in2", float1, 0.0f, Variability::Fixed))
     {
         return false;
     }
     // atan2 supplies the angle without needing to normalize RG. For a zero direction, use +X.
-    auto rotation = selected.CreateOutput(TfToken("out"), SdfValueTypeNames->Float);
-    if (factors.anisotropyRotation != 0.0f)
+    auto rotation = net.Output(selected, "out", float1);
+    if (factors.anisotropyRotation != 0.0f || factors.animates(MaterialField::AnisotropyRotation))
     {
-        auto add = defineMtlxNode(graph, "anisotropyRotation", "ND_add_float");
-        if (!add ||
-            !add.CreateInput(TfToken("in1"), SdfValueTypeNames->Float).ConnectToSource(rotation) ||
-            !setInput(add, "in2", SdfValueTypeNames->Float, factors.anisotropyRotation))
+        const auto add = net.Node(graph, "anisotropyRotation", "ND_add_float");
+        if (!net.Connect(add, "in1", float1, rotation) ||
+            !net.Set(add, "in2", float1, factors.anisotropyRotation))
         {
             return false;
         }
-        rotation = add.CreateOutput(TfToken("out"), SdfValueTypeNames->Float);
+        rotation = net.Output(add, "out", float1);
     }
-    return rotation && surface.GetInput(TfToken("anisotropy_rotation")).ConnectToSource(rotation) &&
-           connectMtlxInput(graph, surface, "anisotropy_strength", strength, UsdShadeOutput(),
-                            nullptr, "anisotropyFactor", "ND_multiply_float",
-                            SdfValueTypeNames->Float, factors.anisotropy);
+    return rotation && net.Connect(surface, "anisotropy_rotation", float1, rotation) &&
+           connectMtlxInput(net, graph, surface, "anisotropy_strength", strength, Port(), nullptr,
+                            "anisotropyFactor", "ND_multiply_float", float1, factors.anisotropy,
+                            factors.animates(MaterialField::Anisotropy));
 }
 
 // The clearcoat normal defaults to the geometric normal, as in glTF, not to the base normal map.
 bool
-connectMtlxClearcoat(const UsdShadeNodeGraph& graph, UsdShadeShader& surface,
+connectMtlxClearcoat(Network& net, const SdfPath& graph, const SdfPath& surface,
                      const PbrFactors& factors, const MaterialTextures& textures)
 {
-    return (!textures.clearcoat || connectMtlxChannel(graph, surface, "clearcoat", "clearcoat", 0,
-                                                      factors.clearcoat, *textures.clearcoat)) &&
+    return (!textures.clearcoat ||
+            connectMtlxChannel(net, graph, surface, "clearcoat", "clearcoat", 0, factors.clearcoat,
+                               factors.animates(MaterialField::Clearcoat), *textures.clearcoat)) &&
            (!textures.clearcoatRoughness ||
-            connectMtlxChannel(graph, surface, "clearcoatRoughness", "clearcoat_roughness", 1,
-                               factors.clearcoatRoughness, *textures.clearcoatRoughness)) &&
+            connectMtlxChannel(net, graph, surface, "clearcoatRoughness", "clearcoat_roughness", 1,
+                               factors.clearcoatRoughness,
+                               factors.animates(MaterialField::ClearcoatRoughness),
+                               *textures.clearcoatRoughness)) &&
            (!textures.clearcoatNormal ||
-            connectMtlxNormal(graph, surface, "clearcoatNormal", "clearcoat_normal",
-                              factors.clearcoatNormalScale, *textures.clearcoatNormal));
+            connectMtlxNormal(net, graph, surface, "clearcoatNormal", "clearcoat_normal",
+                              factors.clearcoatNormalScale,
+                              factors.animates(MaterialField::ClearcoatNormalScale),
+                              *textures.clearcoatNormal));
 }
 
 bool
-connectMtlxTextures(const UsdShadeNodeGraph& graph, UsdShadeShader& surface,
+connectMtlxTextures(Network& net, const SdfPath& graph, const SdfPath& surface,
                     const PbrFactors& factors, const MaterialTextures& textures)
 {
+    const auto animates = [&](MaterialField field) { return factors.animates(field); };
     return (!textures.metallicRoughness ||
-            connectMtlxMetallicRoughness(graph, surface, factors, *textures.metallicRoughness)) &&
-           (!textures.normal || connectMtlxNormal(graph, surface, "normal", "normal",
-                                                  factors.normalScale, *textures.normal)) &&
+            connectMtlxMetallicRoughness(net, graph, surface, factors,
+                                         *textures.metallicRoughness)) &&
+           (!textures.normal ||
+            connectMtlxNormal(net, graph, surface, "normal", "normal", factors.normalScale,
+                              animates(MaterialField::NormalScale), *textures.normal)) &&
            (!textures.occlusion ||
-            connectMtlxOcclusion(graph, surface, factors, *textures.occlusion)) &&
-           (!textures.emissive || connectMtlxColor(graph, surface, "emissive", "emissive",
-                                                   factors.emissive, *textures.emissive)) &&
-           (!hasClearcoat(factors) || connectMtlxClearcoat(graph, surface, factors, textures)) &&
+            connectMtlxOcclusion(net, graph, surface, factors, *textures.occlusion)) &&
+           (!textures.emissive ||
+            connectMtlxColor(net, graph, surface, "emissive", "emissive", factors.emissive,
+                             animates(MaterialField::Emissive), *textures.emissive)) &&
+           (!hasClearcoat(factors) ||
+            connectMtlxClearcoat(net, graph, surface, factors, textures)) &&
            (!textures.transmission ||
-            connectMtlxChannel(graph, surface, "transmission", "transmission", 0,
-                               factors.transmission, *textures.transmission)) &&
-           (!textures.thickness || connectMtlxChannel(graph, surface, "thickness", "thickness", 1,
-                                                      factors.thickness, *textures.thickness)) &&
-           (!textures.specular || connectMtlxChannel(graph, surface, "specular", "specular", 3,
-                                                     factors.specular, *textures.specular)) &&
+            connectMtlxChannel(net, graph, surface, "transmission", "transmission", 0,
+                               factors.transmission, animates(MaterialField::Transmission),
+                               *textures.transmission)) &&
+           (!textures.thickness ||
+            connectMtlxChannel(net, graph, surface, "thickness", "thickness", 1, factors.thickness,
+                               animates(MaterialField::Thickness), *textures.thickness)) &&
+           (!textures.specular ||
+            connectMtlxChannel(net, graph, surface, "specular", "specular", 3, factors.specular,
+                               animates(MaterialField::Specular), *textures.specular)) &&
            (!textures.specularColor ||
-            connectMtlxColor(graph, surface, "specularColor", "specular_color",
-                             factors.specularColor, *textures.specularColor)) &&
-           (!textures.sheenColor || connectMtlxColor(graph, surface, "sheenColor", "sheen_color",
-                                                     factors.sheenColor, *textures.sheenColor)) &&
+            connectMtlxColor(net, graph, surface, "specularColor", "specular_color",
+                             factors.specularColor, animates(MaterialField::SpecularColor),
+                             *textures.specularColor)) &&
+           (!textures.sheenColor ||
+            connectMtlxColor(net, graph, surface, "sheenColor", "sheen_color", factors.sheenColor,
+                             animates(MaterialField::SheenColor), *textures.sheenColor)) &&
            (!textures.sheenRoughness ||
-            connectMtlxChannel(graph, surface, "sheenRoughness", "sheen_roughness", 3,
-                               factors.sheenRoughness, *textures.sheenRoughness)) &&
+            connectMtlxChannel(net, graph, surface, "sheenRoughness", "sheen_roughness", 3,
+                               factors.sheenRoughness, animates(MaterialField::SheenRoughness),
+                               *textures.sheenRoughness)) &&
            (!textures.iridescence ||
-            connectMtlxChannel(graph, surface, "iridescence", "iridescence", 0, factors.iridescence,
+            connectMtlxChannel(net, graph, surface, "iridescence", "iridescence", 0,
+                               factors.iridescence, animates(MaterialField::Iridescence),
                                *textures.iridescence)) &&
            (!textures.iridescenceThickness ||
-            connectMtlxIridescenceThickness(graph, surface, factors,
+            connectMtlxIridescenceThickness(net, graph, surface, factors,
                                             *textures.iridescenceThickness)) &&
            (!textures.anisotropy ||
-            connectMtlxAnisotropy(graph, surface, factors, *textures.anisotropy));
+            connectMtlxAnisotropy(net, graph, surface, factors, *textures.anisotropy));
 }
 
 bool
-authorPreview(const UsdShadeMaterial& material, const PbrFactors& factors, bool vertexColor,
+authorPreview(Network& net, const SdfPath& material, const PbrFactors& factors, bool vertexColor,
               const MaterialTextures& textures)
 {
-    const auto stage = material.GetPrim().GetStage();
-    const auto graph =
-        UsdShadeNodeGraph::Define(stage, material.GetPath().AppendChild(TfToken("preview")));
-    if (!graph)
-    {
-        return false;
-    }
-    auto surface = UsdShadeShader::Define(stage, graph.GetPath().AppendChild(TfToken("surface")));
+    const auto graph = net.Graph(material.AppendChild(TfToken("preview")));
+    const auto surface = net.Node(graph, "surface", "UsdPreviewSurface");
     const bool opacity = previewUsesOpacity(factors);
     // A black metal has no diffuse term, and its specular color is black at every angle.
     const bool unlit = factors.unlit;
@@ -1046,61 +1285,48 @@ authorPreview(const UsdShadeMaterial& material, const PbrFactors& factors, bool 
     const auto ior = authoredIor(factors);
     // The clearcoat's roughness defaults to 0.01, not glTF's 0.
     const bool clearcoat = hasClearcoat(factors);
-    return surface && surface.CreateIdAttr().Set(TfToken("UsdPreviewSurface")) &&
-           setInput(surface, "diffuseColor", SdfValueTypeNames->Color3f,
-                    unlit ? GfVec3f(0) : factors.baseColor) &&
-           setInput(surface, "metallic", SdfValueTypeNames->Float,
-                    unlit ? 1.0f : factors.metallic) &&
-           setInput(surface, "roughness", SdfValueTypeNames->Float,
-                    unlit ? 1.0f : factors.roughness) &&
-           setInput(surface, "emissiveColor", SdfValueTypeNames->Color3f,
-                    unlit ? factors.baseColor + factors.unlitEmission
-                          : factors.emissive * factors.emissiveStrength) &&
-           (!ior || setInput(surface, "ior", SdfValueTypeNames->Float, *ior)) &&
-           (!clearcoat ||
-            (setInput(surface, "clearcoat", SdfValueTypeNames->Float, factors.clearcoat) &&
-             setInput(surface, "clearcoatRoughness", SdfValueTypeNames->Float,
-                      factors.clearcoatRoughness))) &&
-           (!opacity || setInput(surface, "opacity", SdfValueTypeNames->Float, factors.alpha)) &&
+    const auto color3 = SdfValueTypeNames->Color3f;
+    const auto float1 = SdfValueTypeNames->Float;
+    return net.Set(surface, "diffuseColor", color3, unlit ? GfVec3f(0) : factors.baseColor) &&
+           net.Set(surface, "metallic", float1, unlit ? 1.0f : factors.metallic) &&
+           net.Set(surface, "roughness", float1, unlit ? 1.0f : factors.roughness) &&
+           net.Set(surface, "emissiveColor", color3,
+                   unlit ? factors.baseColor + factors.unlitEmission
+                         : factors.emissive * factors.emissiveStrength) &&
+           (!ior || net.Set(surface, "ior", float1, *ior)) &&
+           (!clearcoat || (net.Set(surface, "clearcoat", float1, factors.clearcoat) &&
+                           net.Set(surface, "clearcoatRoughness", float1,
+                                   factors.clearcoatRoughness))) &&
+           (!opacity || net.Set(surface, "opacity", float1, factors.alpha)) &&
            (!opacity || factors.alphaMode != fastgltf::AlphaMode::Mask ||
-            setInput(surface, "opacityThreshold", SdfValueTypeNames->Float, factors.alphaCutoff)) &&
-           connectSurface(material, TfToken(), graph, surface, TfToken("surface")) &&
+            net.Set(surface, "opacityThreshold", float1, factors.alphaCutoff)) &&
+           net.ConnectSurface(material, TfToken(), graph, surface, TfToken("surface")) &&
            (textures.baseColor
-                ? connectPreviewBaseColor(graph, surface, factors, *textures.baseColor)
-                : (!vertexColor || connectPreviewVertexColor(graph, surface, factors))) &&
-           connectPreviewTextures(graph, surface, factors, textures);
+                ? connectPreviewBaseColor(net, graph, surface, factors, *textures.baseColor)
+                : (!vertexColor || connectPreviewVertexColor(net, graph, surface, factors))) &&
+           connectPreviewTextures(net, graph, surface, factors, textures);
 }
 
 bool
-authorMtlx(const UsdShadeMaterial& material, const PbrFactors& factors, bool vertexColor,
+authorMtlx(Network& net, const SdfPath& material, const PbrFactors& factors, bool vertexColor,
            const MaterialTextures& textures)
 {
-    const auto stage = material.GetPrim().GetStage();
-    const auto graph =
-        UsdShadeNodeGraph::Define(stage, material.GetPath().AppendChild(TfToken("mtlx")));
-    if (!graph)
+    const auto graph = net.Graph(material.AppendChild(TfToken("mtlx")));
+    const auto surface = net.Node(graph, "surface", "ND_gltf_pbr_surfaceshader");
+    if (surface.IsEmpty())
     {
         return false;
     }
-    auto surface = UsdShadeShader::Define(stage, graph.GetPath().AppendChild(TfToken("surface")));
-    if (!surface)
-    {
-        return false;
-    }
+    const auto color3 = SdfValueTypeNames->Color3f;
+    const auto float1 = SdfValueTypeNames->Float;
     const bool opaque = factors.alphaMode == fastgltf::AlphaMode::Opaque;
     const bool mask = factors.alphaMode == fastgltf::AlphaMode::Mask;
     // A dielectric's specular input scales both its F0 and F90, so 0 removes its reflection.
     const bool unlit = factors.unlit;
-    const auto alphaMode = surface.CreateInput(TfToken("alpha_mode"), SdfValueTypeNames->Int);
-    const bool hasEmissiveStrength = factors.emissiveStrength != 1.0f;
-    const auto emissiveStrength =
-        hasEmissiveStrength
-            ? surface.CreateInput(TfToken("emissive_strength"), SdfValueTypeNames->Float)
-            : UsdShadeInput();
+    const bool hasEmissiveStrength =
+        factors.emissiveStrength != 1.0f || factors.animates(MaterialField::EmissiveStrength);
     // gltf_pbr computes its dielectric F0 from ior as glTF does, and declares the input uniform.
     const auto ior = authoredIor(factors);
-    const auto iorInput =
-        ior ? surface.CreateInput(TfToken("ior"), SdfValueTypeNames->Float) : UsdShadeInput();
     // gltf_pbr layers a dielectric of ior 1.5 over the base, as glTF does.
     const bool clearcoat = hasClearcoat(factors);
     // gltf_pbr mixes its diffuse term toward a transmission tinted by the base color, as glTF does.
@@ -1112,12 +1338,6 @@ authorMtlx(const UsdShadeMaterial& material, const PbrFactors& factors, bool ver
     const bool attenuation = volume && std::isfinite(factors.attenuationDistance);
     // gltf_pbr's dispersion is glTF's, 20 over the Abbe number.
     const bool dispersion = hasDispersion(factors);
-    const auto attenuationDistance =
-        attenuation ? surface.CreateInput(TfToken("attenuation_distance"), SdfValueTypeNames->Float)
-                    : UsdShadeInput();
-    const auto attenuationColor =
-        attenuation ? surface.CreateInput(TfToken("attenuation_color"), SdfValueTypeNames->Color3f)
-                    : UsdShadeInput();
     // gltf_pbr's dielectric F0 is min(F0 of the ior * specular_color, 1) * specular, and its F90
     // specular, as glTF's are.
     const bool specular = hasSpecularWeight(factors, textures);
@@ -1128,82 +1348,67 @@ authorMtlx(const UsdShadeMaterial& material, const PbrFactors& factors, bool ver
     const bool sheenRoughness = hasSheenRoughness(factors);
     const bool iridescence = hasIridescence(factors);
     const bool anisotropy = hasAnisotropy(factors);
-    const auto filmIor =
-        iridescence ? surface.CreateInput(TfToken("iridescence_ior"), SdfValueTypeNames->Float)
-                    : UsdShadeInput();
-    return surface.CreateIdAttr().Set(TfToken("ND_gltf_pbr_surfaceshader")) &&
-           setInput(surface, "base_color", SdfValueTypeNames->Color3f,
-                    unlit ? GfVec3f(0) : factors.baseColor) &&
-           setInput(surface, "metallic", SdfValueTypeNames->Float,
-                    unlit ? 0.0f : factors.metallic) &&
-           setInput(surface, "roughness", SdfValueTypeNames->Float, factors.roughness) &&
-           (!anisotropy || (setInput(surface, "anisotropy_strength", SdfValueTypeNames->Float,
-                                     factors.anisotropy) &&
-                            setInput(surface, "anisotropy_rotation", SdfValueTypeNames->Float,
-                                     factors.anisotropyRotation))) &&
-           (!unlit || setInput(surface, "specular", SdfValueTypeNames->Float, 0.0f)) &&
-           (!specular ||
-            setInput(surface, "specular", SdfValueTypeNames->Float, factors.specular)) &&
-           (!specularColor || setInput(surface, "specular_color", SdfValueTypeNames->Color3f,
-                                       factors.specularColor)) &&
-           (!sheen ||
-            setInput(surface, "sheen_color", SdfValueTypeNames->Color3f, factors.sheenColor)) &&
-           (!sheenRoughness || setInput(surface, "sheen_roughness", SdfValueTypeNames->Float,
-                                        factors.sheenRoughness)) &&
+    return net.Set(surface, "base_color", color3, unlit ? GfVec3f(0) : factors.baseColor) &&
+           net.Set(surface, "metallic", float1, unlit ? 0.0f : factors.metallic) &&
+           net.Set(surface, "roughness", float1, factors.roughness) &&
+           (!anisotropy ||
+            (net.Set(surface, "anisotropy_strength", float1, factors.anisotropy) &&
+             net.Set(surface, "anisotropy_rotation", float1, factors.anisotropyRotation))) &&
+           (!unlit || net.Set(surface, "specular", float1, 0.0f)) &&
+           (!specular || net.Set(surface, "specular", float1, factors.specular)) &&
+           (!specularColor || net.Set(surface, "specular_color", color3, factors.specularColor)) &&
+           (!sheen || net.Set(surface, "sheen_color", color3, factors.sheenColor)) &&
+           (!sheenRoughness || net.Set(surface, "sheen_roughness", float1, factors.sheenRoughness)) &&
            (!iridescence ||
-            (setInput(surface, "iridescence", SdfValueTypeNames->Float, factors.iridescence) &&
-             filmIor && filmIor.GetAttr().SetVariability(SdfVariabilityUniform) &&
-             filmIor.Set(factors.iridescenceIor) &&
-             setInput(surface, "iridescence_thickness", SdfValueTypeNames->Float,
-                      factors.iridescenceMaximum))) &&
-           setInput(surface, "emissive", SdfValueTypeNames->Color3f,
-                    unlit ? factors.baseColor + factors.unlitEmission : factors.emissive) &&
-           (!hasEmissiveStrength ||
-            (emissiveStrength && emissiveStrength.GetAttr().SetVariability(SdfVariabilityUniform) &&
-             emissiveStrength.Set(factors.emissiveStrength))) &&
-           (!ior || (iorInput && iorInput.GetAttr().SetVariability(SdfVariabilityUniform) &&
-                     iorInput.Set(*ior))) &&
-           (!clearcoat ||
-            (setInput(surface, "clearcoat", SdfValueTypeNames->Float, factors.clearcoat) &&
-             setInput(surface, "clearcoat_roughness", SdfValueTypeNames->Float,
-                      factors.clearcoatRoughness))) &&
-           (!transmission ||
-            setInput(surface, "transmission", SdfValueTypeNames->Float, factors.transmission)) &&
-           (!volume ||
-            setInput(surface, "thickness", SdfValueTypeNames->Float, factors.thickness)) &&
+            (net.Set(surface, "iridescence", float1, factors.iridescence) &&
+             net.Set(surface, "iridescence_ior", float1, factors.iridescenceIor,
+                     Variability::Uniform) &&
+             net.Set(surface, "iridescence_thickness", float1, factors.iridescenceMaximum))) &&
+           net.Set(surface, "emissive", color3,
+                   unlit ? factors.baseColor + factors.unlitEmission : factors.emissive) &&
+           (!hasEmissiveStrength || net.Set(surface, "emissive_strength", float1,
+                                            factors.emissiveStrength, Variability::Uniform)) &&
+           (!ior || net.Set(surface, "ior", float1, *ior, Variability::Uniform)) &&
+           (!clearcoat || (net.Set(surface, "clearcoat", float1, factors.clearcoat) &&
+                           net.Set(surface, "clearcoat_roughness", float1,
+                                   factors.clearcoatRoughness))) &&
+           (!transmission || net.Set(surface, "transmission", float1, factors.transmission)) &&
+           (!volume || net.Set(surface, "thickness", float1, factors.thickness)) &&
            (!attenuation ||
-            (attenuationDistance &&
-             attenuationDistance.GetAttr().SetVariability(SdfVariabilityUniform) &&
-             attenuationDistance.Set(factors.attenuationDistance) && attenuationColor &&
-             attenuationColor.GetAttr().SetVariability(SdfVariabilityUniform) &&
-             attenuationColor.Set(factors.attenuationColor))) &&
-           (!dispersion ||
-            setInput(surface, "dispersion", SdfValueTypeNames->Float, factors.dispersion)) &&
-           alphaMode && alphaMode.GetAttr().SetVariability(SdfVariabilityUniform) &&
-           alphaMode.Set(opaque ? 0 : (mask ? 1 : 2)) &&
-           (opaque || setInput(surface, "alpha", SdfValueTypeNames->Float, factors.alpha)) &&
-           (!mask ||
-            setInput(surface, "alpha_cutoff", SdfValueTypeNames->Float, factors.alphaCutoff)) &&
-           connectSurface(material, TfToken("mtlx"), graph, surface, TfToken("out")) &&
-           connectMtlxInputs(graph, surface, factors, vertexColor,
+            (net.Set(surface, "attenuation_distance", float1, factors.attenuationDistance,
+                     Variability::Uniform) &&
+             net.Set(surface, "attenuation_color", color3, factors.attenuationColor,
+                     Variability::Uniform))) &&
+           (!dispersion || net.Set(surface, "dispersion", float1, factors.dispersion)) &&
+           net.Set(surface, "alpha_mode", SdfValueTypeNames->Int, opaque ? 0 : (mask ? 1 : 2),
+                   Variability::Uniform) &&
+           (opaque || net.Set(surface, "alpha", float1, factors.alpha)) &&
+           (!mask || net.Set(surface, "alpha_cutoff", float1, factors.alphaCutoff)) &&
+           net.ConnectSurface(material, TfToken("mtlx"), graph, surface, TfToken("out")) &&
+           connectMtlxInputs(net, graph, surface, factors, vertexColor,
                              textures.baseColor ? &*textures.baseColor : nullptr) &&
-           connectMtlxTextures(graph, surface, factors, textures);
+           connectMtlxTextures(net, graph, surface, factors, textures);
 }
 
 UsdShadeMaterial
 authorMaterial(const fastgltf::Material& source, const PbrFactors& factors, const std::string& name,
                const UsdStageRefPtr& stage, const SdfPath& scope, bool vertexColor = false,
-               const MaterialTextures& textures = {})
+               const MaterialTextures& textures = {}, Network::Values* values = nullptr)
 {
     const auto material = UsdShadeMaterial::Define(stage, scope.AppendChild(TfToken(name)));
     if (!material || (!source.name.empty() && !material.GetPrim().SetDisplayName(source.name)))
     {
         return UsdShadeMaterial();
     }
-    if (!authorPreview(material, factors, vertexColor, textures) ||
-        !authorMtlx(material, factors, vertexColor, textures))
+    Network net(stage);
+    if (!authorPreview(net, material.GetPath(), factors, vertexColor, textures) ||
+        !authorMtlx(net, material.GetPath(), factors, vertexColor, textures))
     {
         return UsdShadeMaterial();
+    }
+    if (values)
+    {
+        *values = std::move(net.values);
     }
     return material;
 }
@@ -1220,12 +1425,13 @@ texCoordOf(const fastgltf::TextureInfo& info)
 //     rotation = | cos r   sin r |
 //                | -sin r  cos r |
 // and `st` holds (u, 1 - v). Substituting gives the scale and rotation unchanged, with r now
-// counter-clockwise, and a translation that also moves the origin from the upper left.
+// counter-clockwise, and a translation that also moves the origin from the upper left. A transform
+// of all defaults is none, unless an animation changes it.
 std::optional<UvTransform>
-uvTransform(const fastgltf::TextureTransform& source)
+uvTransform(const fastgltf::TextureTransform& source, bool animated = false)
 {
-    if (source.rotation == 0 && source.uvOffset[0] == 0 && source.uvOffset[1] == 0 &&
-        source.uvScale[0] == 1 && source.uvScale[1] == 1)
+    if (!animated && source.rotation == 0 && source.uvOffset[0] == 0 &&
+        source.uvOffset[1] == 0 && source.uvScale[0] == 1 && source.uvScale[1] == 1)
     {
         return std::nullopt;
     }
@@ -1239,7 +1445,7 @@ uvTransform(const fastgltf::TextureTransform& source)
 bool
 resolveTexture(const fastgltf::Asset& asset, const fastgltf::TextureInfo& info,
                const std::string& sourcePath, const gltfCore::BufferReader& buffers,
-               TextureInput& result, std::string& error)
+               TextureInput& result, std::string& error, bool animatedTransform)
 {
     if (info.textureIndex >= asset.textures.size())
     {
@@ -1310,7 +1516,7 @@ resolveTexture(const fastgltf::Asset& asset, const fastgltf::TextureInfo& info,
     result.primvar = texCoord == 0 ? "st" : "st" + std::to_string(texCoord);
     if (info.transform)
     {
-        result.transform = uvTransform(*info.transform);
+        result.transform = uvTransform(*info.transform, animatedTransform);
         // The parser accepts each value, but a sum of very large ones can overflow.
         if (result.transform && !(std::isfinite(result.transform->translation[0]) &&
                                   std::isfinite(result.transform->translation[1])))
@@ -1347,22 +1553,377 @@ preparePreviewPrimvars(const PbrFactors& factors, const VtVec3fArray& colors,
     }
 }
 
+// Sets one property of the factors or raw texture transforms to a glTF value.
+void
+applyValue(PbrFactors& factors, std::array<fastgltf::TextureTransform, TextureSlotCount>& transforms,
+           const MaterialProperty& property, const std::array<double, 4>& value)
+{
+    const auto f = [&](std::size_t i) { return float(value[i]); };
+    const auto color = [&]() { return GfVec3f(f(0), f(1), f(2)); };
+    if (property.IsTransform())
+    {
+        auto& transform = transforms[std::size_t(property.slot)];
+        switch (property.field)
+        {
+        case MaterialField::TextureOffset:
+            transform.uvOffset = fastgltf::math::nvec2(value[0], value[1]);
+            break;
+        case MaterialField::TextureRotation:
+            transform.rotation = fastgltf::num(value[0]);
+            break;
+        default:
+            transform.uvScale = fastgltf::math::nvec2(value[0], value[1]);
+            break;
+        }
+        return;
+    }
+    switch (property.field)
+    {
+    case MaterialField::BaseColor:
+        factors.baseColor = color();
+        factors.alpha = f(3);
+        break;
+    case MaterialField::Metallic:
+        factors.metallic = f(0);
+        break;
+    case MaterialField::Roughness:
+        factors.roughness = f(0);
+        break;
+    case MaterialField::Emissive:
+        factors.emissive = color();
+        break;
+    case MaterialField::AlphaCutoff:
+        factors.alphaCutoff = f(0);
+        break;
+    case MaterialField::NormalScale:
+        factors.normalScale = f(0);
+        break;
+    case MaterialField::OcclusionStrength:
+        factors.occlusionStrength = f(0);
+        break;
+    case MaterialField::EmissiveStrength:
+        factors.emissiveStrength = f(0);
+        break;
+    case MaterialField::Ior:
+        factors.ior = f(0);
+        break;
+    case MaterialField::Clearcoat:
+        factors.clearcoat = f(0);
+        break;
+    case MaterialField::ClearcoatRoughness:
+        factors.clearcoatRoughness = f(0);
+        break;
+    case MaterialField::ClearcoatNormalScale:
+        factors.clearcoatNormalScale = f(0);
+        break;
+    case MaterialField::Transmission:
+        factors.transmission = f(0);
+        break;
+    case MaterialField::Thickness:
+        factors.thickness = f(0);
+        break;
+    case MaterialField::AttenuationDistance:
+        factors.attenuationDistance = f(0);
+        break;
+    case MaterialField::AttenuationColor:
+        factors.attenuationColor = color();
+        break;
+    case MaterialField::Dispersion:
+        factors.dispersion = f(0);
+        break;
+    case MaterialField::Specular:
+        factors.specular = f(0);
+        break;
+    case MaterialField::SpecularColor:
+        factors.specularColor = color();
+        break;
+    case MaterialField::SheenColor:
+        factors.sheenColor = color();
+        break;
+    case MaterialField::SheenRoughness:
+        factors.sheenRoughness = f(0);
+        break;
+    case MaterialField::Iridescence:
+        factors.iridescence = f(0);
+        break;
+    case MaterialField::IridescenceIor:
+        factors.iridescenceIor = f(0);
+        break;
+    case MaterialField::IridescenceMinimum:
+        factors.iridescenceMinimum = f(0);
+        break;
+    case MaterialField::IridescenceMaximum:
+        factors.iridescenceMaximum = f(0);
+        break;
+    case MaterialField::Anisotropy:
+        factors.anisotropy = f(0);
+        break;
+    case MaterialField::AnisotropyRotation:
+        factors.anisotropyRotation = f(0);
+        break;
+    default:
+        break;
+    }
+}
+
+// The components of a value that USD interpolates linearly, or 0 for one that it holds.
+std::size_t
+components(const VtValue& value, std::array<double, 4>& result)
+{
+    if (value.IsHolding<float>())
+    {
+        result[0] = value.UncheckedGet<float>();
+        return 1;
+    }
+    if (value.IsHolding<GfVec2f>())
+    {
+        const auto& v = value.UncheckedGet<GfVec2f>();
+        result = {v[0], v[1], 0, 0};
+        return 2;
+    }
+    if (value.IsHolding<GfVec3f>())
+    {
+        const auto& v = value.UncheckedGet<GfVec3f>();
+        result = {v[0], v[1], v[2], 0};
+        return 3;
+    }
+    if (value.IsHolding<GfVec4f>())
+    {
+        const auto& v = value.UncheckedGet<GfVec4f>();
+        result = {v[0], v[1], v[2], v[3]};
+        return 4;
+    }
+    return 0;
+}
+
+// Whether the lines from `start` to `end` pass within the tolerance of `middle` at their middles.
+bool
+linearAt(const Network::Values& start, const Network::Values& end, const Network::Values& middle)
+{
+    for (std::size_t i = 0; i < start.size(); ++i)
+    {
+        std::array<double, 4> a{};
+        std::array<double, 4> b{};
+        std::array<double, 4> m{};
+        const auto width = components(start[i].second, a);
+        if (width == 0 || components(end[i].second, b) != width ||
+            components(middle[i].second, m) != width)
+        {
+            continue;
+        }
+        double scale = 1.0;
+        for (std::size_t c = 0; c < width; ++c)
+        {
+            scale = std::max({scale, std::abs(a[c]), std::abs(b[c])});
+        }
+        for (std::size_t c = 0; c < width; ++c)
+        {
+            if (!(std::abs(m[c] - (a[c] + b[c]) / 2) <= SampleTolerance * scale))
+            {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+// How far a sample that is left out may be from the line through the samples kept around it, as a
+// fraction of the larger of 1 and their largest component: float rounding of a linear value.
+constexpr double PruneTolerance = 1e-6;
+
+// Whether the stage's interpolation between (t0, v0) and (t1, v1) gives v at t.
+bool
+interpolates(double t0, const VtValue& v0, double t1, const VtValue& v1, double t, const VtValue& v)
+{
+    std::array<double, 4> a{};
+    std::array<double, 4> b{};
+    std::array<double, 4> m{};
+    const auto width = components(v0, a);
+    if (width == 0 || components(v1, b) != width || components(v, m) != width)
+    {
+        // The stage holds a value that it cannot interpolate.
+        return v == v0;
+    }
+    const double u = (t - t0) / (t1 - t0);
+    double scale = 1.0;
+    for (std::size_t c = 0; c < width; ++c)
+    {
+        scale = std::max({scale, std::abs(a[c]), std::abs(b[c])});
+    }
+    for (std::size_t c = 0; c < width; ++c)
+    {
+        if (!(std::abs(m[c] - (a[c] + (b[c] - a[c]) * u)) <= PruneTolerance * scale))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+// The positions of the samples of one input to author: the others are on the lines between them.
+std::vector<std::size_t>
+keptSamples(const std::vector<std::pair<double, Network::Values>>& series, std::size_t position)
+{
+    const auto value = [&](std::size_t i) -> const VtValue& { return series[i].second[position].second; };
+    std::vector<std::size_t> kept{0};
+    for (std::size_t i = 1; i < series.size(); ++i)
+    {
+        if (i + 1 == series.size())
+        {
+            kept.push_back(i);
+            break;
+        }
+        // Leave sample i out if the line from the last kept sample to the next one gives every
+        // sample since the last kept one.
+        const auto from = kept.back();
+        bool onLine = true;
+        for (std::size_t j = from + 1; j <= i && onLine; ++j)
+        {
+            onLine = interpolates(series[from].first, value(from), series[i + 1].first,
+                                  value(i + 1), series[j].first, value(j));
+        }
+        if (!onLine)
+        {
+            kept.push_back(i);
+        }
+    }
+    return kept;
+}
+
 } // namespace
+
+// A USD material made from a glTF material that an animation changes, with what is needed to
+// compute its inputs at any time.
+struct AnimatedMaterial
+{
+    std::size_t index = 0;
+    MaterialUse use = MaterialUse::Full;
+    bool vertexColor = false;
+    bool emissiveTexture = false;
+    SdfPath path;
+    // The factors before adjustForUse, and each slot's raw transform.
+    PbrFactors factors;
+    std::array<fastgltf::TextureTransform, TextureSlotCount> transforms{};
+    MaterialTextures textures;
+    // The inputs' values without animation, in authoring order.
+    Network::Values stated;
+    // Positions in `stated` of the inputs that an animation changes, each input's last position.
+    std::vector<std::size_t> animated;
+    // By animation, the values of every input at each time code.
+    std::map<std::size_t, std::vector<std::pair<double, Network::Values>>> samples;
+
+    // The inputs' values with each channel's value at `seconds`.
+    Network::Values Evaluate(const std::vector<MaterialChannel>& channels, double seconds,
+                             bool before) const
+    {
+        auto at = factors;
+        auto raw = transforms;
+        for (const auto& channel : channels)
+        {
+            applyValue(at, raw, channel.property, channel.Evaluate(seconds, before));
+        }
+        adjustForUse(at, use, emissiveTexture);
+        auto inputs = textures;
+        for (std::size_t slot = 0; slot < TextureSlotCount; ++slot)
+        {
+            auto& texture = inputs[TextureSlot(slot)];
+            if (texture && factors.animated.HasTransform(TextureSlot(slot)))
+            {
+                texture->transform = uvTransform(raw[slot], true);
+            }
+        }
+        Network net;
+        if (!authorPreview(net, path, at, vertexColor, inputs) ||
+            !authorMtlx(net, path, at, vertexColor, inputs))
+        {
+            net.values.clear();
+        }
+        return std::move(net.values);
+    }
+};
 
 MaterialAuthor::MaterialAuthor(const fastgltf::Asset& asset, const std::string& sourcePath,
                                const gltfCore::BufferReader& buffers,
-                               const pxr::UsdStageRefPtr& stage, const pxr::SdfPath& scope)
-    : _asset(asset), _sourcePath(sourcePath), _buffers(buffers), _stage(stage), _scope(scope)
+                               const pxr::UsdStageRefPtr& stage, const pxr::SdfPath& scope,
+                               const AnimationPlan& animation)
+    : _asset(asset), _sourcePath(sourcePath), _buffers(buffers), _stage(stage), _scope(scope),
+      _animation(animation)
 {
 }
+
+MaterialAuthor::~MaterialAuthor() = default;
+
+namespace
+{
+
+AnimatedProperties
+animatedProperties(const AnimationPlan& plan, std::size_t index)
+{
+    const auto found = plan.materials.find(index);
+    return found == plan.materials.end() ? AnimatedProperties{} : found->second;
+}
+
+// Whether a layer is drawn: its stated factor is positive, or an animation changes it, as
+// hasClearcoat and hasAnisotropy decide.
+bool
+everPositive(const AnimationPlan& plan, std::size_t index, MaterialField field, float stated)
+{
+    return stated > 0.0f || animatedProperties(plan, index).Has(field);
+}
+
+// Whether a normal map's transform rotates or mirrors the image when stated or at a keyframe.
+bool
+turnsNormalFrame(const AnimationPlan& plan, std::size_t index, TextureSlot slot,
+                 const std::optional<TextureInput>& normal)
+{
+    if (!normal || !normal->transform)
+    {
+        return false;
+    }
+    const auto& transform = *normal->transform;
+    if (transform.rotationDegrees != 0.0f || transform.scale[0] < 0.0f || transform.scale[1] < 0.0f)
+    {
+        return true;
+    }
+    for (const auto& animation : plan.animations)
+    {
+        const auto channels = animation.materials.find(index);
+        if (channels == animation.materials.end())
+        {
+            continue;
+        }
+        for (const auto& channel : channels->second)
+        {
+            if (channel.property.slot != slot)
+            {
+                continue;
+            }
+            for (const auto& value : channel.vertices)
+            {
+                if ((channel.property.field == MaterialField::TextureRotation && value[0] != 0.0) ||
+                    (channel.property.field == MaterialField::TextureScale &&
+                     (value[0] < 0.0 || value[1] < 0.0)))
+                {
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
+} // namespace
 
 bool
 MaterialAuthor::HasNormalTextures(std::size_t index) const
 {
     const auto& material = _asset.materials[index];
-    return !material.unlit && (material.normalTexture ||
-                               (material.clearcoat && material.clearcoat->clearcoatFactor > 0.0f &&
-                                material.clearcoat->clearcoatNormalTexture));
+    return !material.unlit &&
+           (material.normalTexture ||
+            (material.clearcoat &&
+             everPositive(_animation, index, MaterialField::Clearcoat,
+                          material.clearcoat->clearcoatFactor) &&
+             material.clearcoat->clearcoatNormalTexture));
 }
 
 std::optional<std::size_t>
@@ -1378,12 +1939,16 @@ MaterialAuthor::TangentTexCoord(std::size_t index) const
     {
         return texCoordOf(*material.normalTexture);
     }
-    if (material.clearcoat && material.clearcoat->clearcoatFactor > 0.0f &&
+    if (material.clearcoat &&
+        everPositive(_animation, index, MaterialField::Clearcoat,
+                     material.clearcoat->clearcoatFactor) &&
         material.clearcoat->clearcoatNormalTexture)
     {
         return texCoordOf(*material.clearcoat->clearcoatNormalTexture);
     }
-    if (material.anisotropy && material.anisotropy->anisotropyStrength > 0.0f)
+    if (material.anisotropy &&
+        everPositive(_animation, index, MaterialField::Anisotropy,
+                     material.anisotropy->anisotropyStrength))
     {
         const auto& texture = material.anisotropy->anisotropyTexture;
         return texture ? texCoordOf(*texture) : 0;
@@ -1571,26 +2136,20 @@ MaterialAuthor::Prepare(std::optional<std::size_t> materialIndex, std::size_t uv
     {
         use = MaterialUse::Full;
     }
-    auto factors = pbrFactors(source);
-    if (use == MaterialUse::Unlit)
-    {
-        factors.unlit = true;
-        // The factor is the whole emission only without a texture to multiply it.
-        if (!source.emissiveTexture)
-        {
-            factors.unlitEmission = factors.emissive * factors.emissiveStrength;
-        }
-        // gltf_pbr's strength would scale the emitted base color too.
-        factors.emissiveStrength = 1.0f;
-    }
+    const auto animated = animatedProperties(_animation, index);
+    const auto base = pbrFactors(source, animated);
+    auto factors = base;
+    adjustForUse(factors, use, bool(source.emissiveTexture));
     auto& material = _materials[{index, colors != nullptr, use}];
     if (!material)
     {
-        const auto resolve = [&](const auto& info, std::optional<TextureInput>& texture)
+        const auto resolve = [&](const auto& info, std::optional<TextureInput>& texture,
+                                 TextureSlot slot)
         {
-            return !info ||
-                   resolveTexture(_asset, *info, _sourcePath, _buffers, texture.emplace(), error);
+            return !info || resolveTexture(_asset, *info, _sourcePath, _buffers, texture.emplace(),
+                                           error, animated.HasTransform(slot));
         };
+        const auto animates = [&](MaterialField field) { return factors.animates(field); };
         // KHR_materials_unlit defines every other texture as a fallback for clients without it,
         // and an unlit point or line draws only its base color and emissive factor.
         // A clearcoat or transmission of factor 0 is disabled, and so is a volume without
@@ -1599,49 +2158,61 @@ MaterialAuthor::Prepare(std::optional<std::size_t> materialIndex, std::size_t uv
         // factor makes the color black whatever its texture. A black sheen color factor disables the
         // sheen layer, and a sheen roughness factor of 0 makes the roughness 0 whatever its texture.
         // An iridescence factor of 0 disables the film; equal thickness endpoints fix its thickness.
+        // A texture is read whatever these values when an animation changes them.
         const bool coated = hasClearcoat(factors);
         const bool transmits = hasTransmission(factors);
         const bool thick = hasVolume(factors);
-        const bool reflects = specular && !factors.unlit && factors.specular > 0.0f;
-        const bool tinted = reflects && factors.specularColor != GfVec3f(0);
+        const bool reflects = specular && !factors.unlit &&
+                              (factors.specular > 0.0f || animates(MaterialField::Specular));
+        const bool tinted = reflects && (factors.specularColor != GfVec3f(0) ||
+                                         animates(MaterialField::SpecularColor));
         const bool sheened = hasSheen(factors);
         const bool film = hasIridescence(factors);
         MaterialTextures textures;
-        if (!resolve(pbr.baseColorTexture, textures.baseColor) ||
+        if (!resolve(pbr.baseColorTexture, textures.baseColor, TextureSlot::BaseColor) ||
             (!factors.unlit &&
-             (!resolve(pbr.metallicRoughnessTexture, textures.metallicRoughness) ||
+             (!resolve(pbr.metallicRoughnessTexture, textures.metallicRoughness,
+                       TextureSlot::MetallicRoughness) ||
               (use != MaterialUse::WithoutNormalTextures &&
-               !resolve(source.normalTexture, textures.normal)) ||
-              !resolve(source.occlusionTexture, textures.occlusion) ||
-              !resolve(source.emissiveTexture, textures.emissive))) ||
+               !resolve(source.normalTexture, textures.normal, TextureSlot::Normal)) ||
+              !resolve(source.occlusionTexture, textures.occlusion, TextureSlot::Occlusion) ||
+              !resolve(source.emissiveTexture, textures.emissive, TextureSlot::Emissive))) ||
             (coated &&
-             (!resolve(clearcoat->clearcoatTexture, textures.clearcoat) ||
-              !resolve(clearcoat->clearcoatRoughnessTexture, textures.clearcoatRoughness) ||
+             (!resolve(clearcoat->clearcoatTexture, textures.clearcoat, TextureSlot::Clearcoat) ||
+              !resolve(clearcoat->clearcoatRoughnessTexture, textures.clearcoatRoughness,
+                       TextureSlot::ClearcoatRoughness) ||
               (use != MaterialUse::WithoutNormalTextures &&
-               !resolve(clearcoat->clearcoatNormalTexture, textures.clearcoatNormal)))) ||
-            (transmits && !resolve(transmission->transmissionTexture, textures.transmission)) ||
-            (thick && !resolve(volume->thicknessTexture, textures.thickness)) ||
-            (reflects && !resolve(specular->specularTexture, textures.specular)) ||
-            (tinted && !resolve(specular->specularColorTexture, textures.specularColor)) ||
-            (sheened && !resolve(sheen->sheenColorTexture, textures.sheenColor)) ||
-            (hasSheenRoughness(factors) &&
-             !resolve(sheen->sheenRoughnessTexture, textures.sheenRoughness)) ||
-            (film && (!resolve(iridescence->iridescenceTexture, textures.iridescence) ||
-                      (factors.iridescenceMinimum != factors.iridescenceMaximum &&
+               !resolve(clearcoat->clearcoatNormalTexture, textures.clearcoatNormal,
+                        TextureSlot::ClearcoatNormal)))) ||
+            (transmits && !resolve(transmission->transmissionTexture, textures.transmission,
+                                   TextureSlot::Transmission)) ||
+            (thick &&
+             !resolve(volume->thicknessTexture, textures.thickness, TextureSlot::Thickness)) ||
+            (reflects &&
+             !resolve(specular->specularTexture, textures.specular, TextureSlot::Specular)) ||
+            (tinted && !resolve(specular->specularColorTexture, textures.specularColor,
+                                TextureSlot::SpecularColor)) ||
+            (sheened &&
+             !resolve(sheen->sheenColorTexture, textures.sheenColor, TextureSlot::SheenColor)) ||
+            (hasSheenRoughness(factors) && !resolve(sheen->sheenRoughnessTexture,
+                                                    textures.sheenRoughness,
+                                                    TextureSlot::SheenRoughness)) ||
+            (film && (!resolve(iridescence->iridescenceTexture, textures.iridescence,
+                               TextureSlot::Iridescence) ||
+                      ((factors.iridescenceMinimum != factors.iridescenceMaximum ||
+                        animates(MaterialField::IridescenceMinimum) ||
+                        animates(MaterialField::IridescenceMaximum)) &&
                        !resolve(iridescence->iridescenceThicknessTexture,
-                                textures.iridescenceThickness)))) ||
+                                textures.iridescenceThickness,
+                                TextureSlot::IridescenceThickness)))) ||
             (hasAnisotropy(factors) &&
-             !resolve(anisotropy->anisotropyTexture, textures.anisotropy)))
+             !resolve(anisotropy->anisotropyTexture, textures.anisotropy, TextureSlot::Anisotropy)))
         {
             return false;
         }
-        const auto turnsFrame = [](const std::optional<TextureInput>& normal)
-        {
-            return normal && normal->transform &&
-                   (normal->transform->rotationDegrees != 0.0f ||
-                    normal->transform->scale[0] < 0.0f || normal->transform->scale[1] < 0.0f);
-        };
-        if (turnsFrame(textures.normal) || turnsFrame(textures.clearcoatNormal))
+        if (turnsNormalFrame(_animation, index, TextureSlot::Normal, textures.normal) ||
+            turnsNormalFrame(_animation, index, TextureSlot::ClearcoatNormal,
+                             textures.clearcoatNormal))
         {
             TF_WARN("glTF material %zu: a MaterialX renderer may derive the normal map's tangent "
                     "frame without its rotation or mirroring by KHR_texture_transform",
@@ -1771,14 +2342,43 @@ MaterialAuthor::Prepare(std::optional<std::size_t> materialIndex, std::size_t uv
                     "emission of an emissive texture",
                     index);
         }
+        if (colors && !textures.baseColor &&
+            (factors.animates(MaterialField::BaseColor) || factors.unlitEmissionAnimated))
+        {
+            TF_WARN("glTF material %zu: UsdPreviewSurface keeps the stated base color factor on "
+                    "primitives with COLOR_0, which an animation does not change",
+                    index);
+        }
+        Network::Values values;
         material = authorMaterial(source, factors,
                                   "Material_" + std::to_string(index) +
                                       (colors ? "_VertexColor" : "") + materialUseSuffix(use),
-                                  _stage, _scope, colors != nullptr, textures);
+                                  _stage, _scope, colors != nullptr, textures, &values);
         if (!material)
         {
             error = "could not author USD material";
             return false;
+        }
+        if (animated.Any())
+        {
+            auto record = std::make_unique<AnimatedMaterial>();
+            record->index = index;
+            record->use = use;
+            record->vertexColor = colors != nullptr;
+            record->emissiveTexture = bool(source.emissiveTexture);
+            record->path = material.GetPath();
+            record->factors = base;
+            for (std::size_t slot = 0; slot < TextureSlotCount; ++slot)
+            {
+                if (const auto* info = TextureInfoOf(source, TextureSlot(slot));
+                    info && info->transform)
+                {
+                    record->transforms[slot] = *info->transform;
+                }
+            }
+            record->textures = std::move(textures);
+            record->stated = std::move(values);
+            _animated.push_back(std::move(record));
         }
     }
     if (colors && !pbr.baseColorTexture)
@@ -1813,6 +2413,175 @@ MaterialAuthor::PrepareDefault(bool hasVertexColor, MaterialUse use, MaterialBin
         }
     }
     binding.material = material;
+    return true;
+}
+
+bool
+MaterialAuthor::SampleAnimations(std::string& error)
+{
+    bool capped = false;
+    for (auto& record : _animated)
+    {
+        auto& material = *record;
+        for (std::size_t a = 0; a < _animation.animations.size(); ++a)
+        {
+            const auto found = _animation.animations[a].materials.find(material.index);
+            if (found == _animation.animations[a].materials.end())
+            {
+                continue;
+            }
+            const auto& channels = found->second;
+            std::vector<double> keys;
+            for (const auto& channel : channels)
+            {
+                keys.insert(keys.end(), channel.times.begin(), channel.times.end());
+            }
+            std::sort(keys.begin(), keys.end());
+            keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
+            // Every time has the same inputs as the stated values, because what an animated
+            // property controls is authored whatever its value.
+            bool mismatched = false;
+            const auto evaluate = [&](double seconds, bool before)
+            {
+                auto values = material.Evaluate(channels, seconds, before);
+                if (values.size() != material.stated.size() ||
+                    !std::equal(values.begin(), values.end(), material.stated.begin(),
+                                [](const auto& a, const auto& b) { return a.first == b.first; }))
+                {
+                    mismatched = true;
+                    return material.stated;
+                }
+                return values;
+            };
+            auto& samples = material.samples[a];
+            auto previous = evaluate(keys.front(), false);
+            samples.emplace_back(keys.front() * TimeCodesPerSecond, previous);
+            for (std::size_t k = 1; k < keys.size(); ++k)
+            {
+                const double start = keys[k - 1];
+                const double duration = keys[k] - start;
+                // The points of equal pieces of the segment, from its start to the limit at its end.
+                std::vector<Network::Values> points{previous, evaluate(keys[k], true)};
+                for (std::size_t pieces = 1;; pieces *= 2)
+                {
+                    std::vector<Network::Values> middles;
+                    bool linear = true;
+                    for (std::size_t i = 0; i < pieces; ++i)
+                    {
+                        middles.push_back(
+                            evaluate(start + duration * (double(i) + 0.5) / double(pieces), false));
+                        linear = linear && linearAt(points[i], points[i + 1], middles.back());
+                    }
+                    if (linear || pieces * 2 > MaxPieces)
+                    {
+                        capped = capped || !linear;
+                        break;
+                    }
+                    std::vector<Network::Values> refined;
+                    for (std::size_t i = 0; i < pieces; ++i)
+                    {
+                        refined.push_back(std::move(points[i]));
+                        refined.push_back(std::move(middles[i]));
+                    }
+                    refined.push_back(std::move(points.back()));
+                    points = std::move(refined);
+                }
+                for (std::size_t i = 1; i + 1 < points.size(); ++i)
+                {
+                    const double time = start + duration * double(i) / double(points.size() - 1);
+                    samples.emplace_back(time * TimeCodesPerSecond, std::move(points[i]));
+                }
+                const double code = keys[k] * TimeCodesPerSecond;
+                auto at = evaluate(keys[k], false);
+                // A STEP keyframe holds the earlier value until just before it.
+                if (at != points.back() && code - HoldTimeCodes > samples.back().first)
+                {
+                    samples.emplace_back(code - HoldTimeCodes, std::move(points.back()));
+                }
+                samples.emplace_back(code, at);
+                previous = std::move(at);
+            }
+            if (mismatched)
+            {
+                error = "glTF material " + std::to_string(material.index) +
+                        " has different inputs at different times of animation " +
+                        std::to_string(a);
+                return false;
+            }
+        }
+        // Each input's last value is the one authored.
+        std::map<SdfPath, std::size_t> last;
+        for (std::size_t i = 0; i < material.stated.size(); ++i)
+        {
+            last[material.stated[i].first] = i;
+        }
+        for (const auto& [path, position] : last)
+        {
+            const auto& stated = material.stated[position].second;
+            const bool changes = std::any_of(
+                material.samples.begin(), material.samples.end(),
+                [&](const auto& animation)
+                {
+                    return std::any_of(animation.second.begin(), animation.second.end(),
+                                       [&](const auto& sample)
+                                       { return sample.second[position].second != stated; });
+                });
+            if (!changes)
+            {
+                continue;
+            }
+            material.animated.push_back(position);
+            // A value outside the variants would be stronger than theirs.
+            const auto attribute = _stage->GetAttributeAtPath(path);
+            if (!attribute || !attribute.ClearDefault())
+            {
+                error = "could not remove the stated value of " + path.GetString();
+                return false;
+            }
+        }
+    }
+    if (capped)
+    {
+        TF_WARN("A glTF material animation segment is cut into only %zu pieces, which can stray "
+                "from its values by more than %g",
+                MaxPieces, SampleTolerance);
+    }
+    return true;
+}
+
+bool
+MaterialAuthor::AuthorAnimation(std::size_t animationIndex, std::string& error) const
+{
+    for (const auto& record : _animated)
+    {
+        const auto& material = *record;
+        const auto samples = material.samples.find(animationIndex);
+        for (const auto position : material.animated)
+        {
+            const auto& [path, stated] = material.stated[position];
+            const auto attribute = _stage->GetAttributeAtPath(path);
+            if (!attribute || !attribute.Set(stated))
+            {
+                error = "could not author the stated value of " + path.GetString();
+                return false;
+            }
+            if (samples == material.samples.end() ||
+                std::all_of(samples->second.begin(), samples->second.end(),
+                            [&](const auto& sample) { return sample.second[position].second == stated; }))
+            {
+                continue;
+            }
+            const auto& series = samples->second;
+            for (const auto i : keptSamples(series, position))
+            {
+                if (!attribute.Set(series[i].second[position].second, UsdTimeCode(series[i].first)))
+                {
+                    error = "could not author the time samples of " + path.GetString();
+                    return false;
+                }
+            }
+        }
+    }
     return true;
 }
 

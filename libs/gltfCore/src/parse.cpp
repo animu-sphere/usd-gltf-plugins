@@ -632,6 +632,52 @@ describeMalformedMaterialVariants(const simdjson::dom::element& root)
     return {};
 }
 
+// KHR_animation_pointer requires the object that holds a targeted property, which fastgltf does not
+// record for every material extension. Describes the first material pointer without one.
+std::string
+describeMissingPointerObject(const simdjson::dom::element& root)
+{
+    simdjson::dom::array animations;
+    if (root["animations"].get_array().get(animations) != simdjson::SUCCESS)
+    {
+        return {};
+    }
+    std::size_t animationIndex = 0;
+    for (const auto animation : animations)
+    {
+        simdjson::dom::array channels;
+        std::size_t channelIndex = 0;
+        if (animation["channels"].get_array().get(channels) == simdjson::SUCCESS)
+        {
+            for (const auto channel : channels)
+            {
+                // Conversion reports a pointer to a material that does not exist.
+                constexpr std::string_view prefix = "/materials/";
+                std::string_view pointer;
+                simdjson::dom::object object;
+                if (channel["target"]["extensions"][fastgltf::extensions::KHR_animation_pointer]
+                           ["pointer"]
+                               .get_string()
+                               .get(pointer) == simdjson::SUCCESS &&
+                    pointer.starts_with(prefix) &&
+                    root.at_pointer(pointer.substr(0, pointer.find('/', prefix.size())))
+                            .get_object()
+                            .get(object) == simdjson::SUCCESS &&
+                    root.at_pointer(pointer.substr(0, pointer.rfind('/'))).get_object().get(object) !=
+                        simdjson::SUCCESS)
+                {
+                    return "glTF animation " + std::to_string(animationIndex) + " channel " +
+                           std::to_string(channelIndex) + ": KHR_animation_pointer target " +
+                           std::string(pointer) + " is in an object that the asset does not have";
+                }
+                ++channelIndex;
+            }
+        }
+        ++animationIndex;
+    }
+    return {};
+}
+
 // Fastgltf keeps defaults for some missing material components and skips some invalid fields.
 std::string
 describeMalformedCheckedExtensions(const std::byte* bytes, std::size_t size)
@@ -649,6 +695,10 @@ describeMalformedCheckedExtensions(const std::byte* bytes, std::size_t size)
         return description;
     }
     if (auto description = describeMalformedMaterialVariants(root); !description.empty())
+    {
+        return description;
+    }
+    if (auto description = describeMissingPointerObject(root); !description.empty())
     {
         return description;
     }
