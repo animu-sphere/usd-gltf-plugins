@@ -167,7 +167,7 @@ class Network
     }
 
     // A KHR_xmp_json_ld packet, if any, as the prim's assetInfo["xmp"].
-    [[nodiscard]] bool SetXmp(const SdfPath& node, const VtDictionary* xmp) const
+    [[nodiscard]] bool SetXmp(const SdfPath& node, const VtValue* xmp) const
     {
         if (!_stage || !xmp)
         {
@@ -175,7 +175,7 @@ class Network
         }
         static const TfToken key("xmp");
         const auto prim = _stage->GetPrimAtPath(node);
-        prim.SetAssetInfoByKey(key, VtValue(*xmp));
+        prim.SetAssetInfoByKey(key, *xmp);
         return prim.HasAuthoredAssetInfoKey(key);
     }
 
@@ -558,7 +558,7 @@ struct TextureInput
     std::string file;
     // The glTF image that `file` is made from, and its KHR_xmp_json_ld packet or null.
     std::size_t image = 0;
-    const VtDictionary* xmp = nullptr;
+    const VtValue* xmp = nullptr;
     std::string primvar;
     fastgltf::Wrap wrapS;
     fastgltf::Wrap wrapT;
@@ -1412,7 +1412,7 @@ UsdShadeMaterial
 authorMaterial(const fastgltf::Material& source, const PbrFactors& factors, const std::string& name,
                const UsdStageRefPtr& stage, const SdfPath& scope, bool vertexColor = false,
                const MaterialTextures& textures = {}, Network::Values* values = nullptr,
-               const VtDictionary* xmp = nullptr)
+               const VtValue* xmp = nullptr)
 {
     const auto material = UsdShadeMaterial::Define(stage, scope.AppendChild(TfToken(name)));
     if (!material || (!source.name.empty() && !material.GetPrim().SetDisplayName(source.name)))

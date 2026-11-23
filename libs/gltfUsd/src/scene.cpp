@@ -387,7 +387,7 @@ authorAnimations(const UsdStageRefPtr& stage, const SdfPath& root, const SceneMa
         // An animation has no prim of its own, and /Root's assetInfo is the asset's.
         if (const auto* packet = xmp.Get(gltfCore::XmpPacketOf(xmp.Metadata().animations, a)))
         {
-            asset.SetCustomDataByKey(TfToken("gltf:xmp"), VtValue(*packet));
+            asset.SetCustomDataByKey(TfToken("gltf:xmp"), *packet);
         }
     }
     if (!stage->GetPrimAtPath(root).GetVariantSet(setName).SetVariantSelection(variantName(0)))

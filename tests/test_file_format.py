@@ -9157,6 +9157,8 @@ assert layer.ExportToString() == Path(sys.argv[3]).read_text(encoding="utf-8")
                         copy = Usd.Stage.Open(str(exported))
                         for prim_path, packet in expected.items():
                             self.assertEqual(copy.GetPrimAtPath(prim_path).GetAssetInfoByKey("xmp"), packet)
+                        # A crate file stays open while its layer exists, and Windows cannot delete it.
+                        del copy
 
     def test_xmp_metadata_values(self):
         packet = {
