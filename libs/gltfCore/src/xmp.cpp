@@ -19,6 +19,8 @@ constexpr std::string_view kExtension = "KHR_xmp_json_ld";
 
 using simdjson::SUCCESS;
 
+// Each value is read into a local first. A range-for over get_array().value_unsafe() would iterate a
+// reference into a temporary result destroyed before the loop, which crashed with GCC.
 JsonValue
 toValue(const simdjson::dom::element& element)
 {
@@ -30,39 +32,55 @@ toValue(const simdjson::dom::element& element)
         break;
     case simdjson::dom::element_type::BOOL:
         value.kind = JsonValue::Kind::Boolean;
-        value.boolean = element.get_bool().value_unsafe();
+        (void)element.get_bool().get(value.boolean);
         break;
     case simdjson::dom::element_type::INT64:
         value.kind = JsonValue::Kind::Integer;
-        value.integer = element.get_int64().value_unsafe();
+        (void)element.get_int64().get(value.integer);
         break;
     case simdjson::dom::element_type::UINT64:
+    {
+        std::uint64_t integer = 0;
+        (void)element.get_uint64().get(integer);
         value.kind = JsonValue::Kind::Real;
-        value.real = double(element.get_uint64().value_unsafe());
+        value.real = double(integer);
         break;
+    }
     case simdjson::dom::element_type::DOUBLE:
         value.kind = JsonValue::Kind::Real;
-        value.real = element.get_double().value_unsafe();
+        (void)element.get_double().get(value.real);
         break;
     case simdjson::dom::element_type::STRING:
+    {
+        std::string_view text;
+        (void)element.get_string().get(text);
         value.kind = JsonValue::Kind::String;
-        value.string = std::string(element.get_string().value_unsafe());
+        value.string = std::string(text);
         break;
+    }
     case simdjson::dom::element_type::ARRAY:
+    {
+        simdjson::dom::array array;
+        (void)element.get_array().get(array);
         value.kind = JsonValue::Kind::Array;
         value.string = simdjson::minify(element);
-        for (const auto item : element.get_array().value_unsafe())
+        for (const auto item : array)
         {
             value.elements.push_back(toValue(item));
         }
         break;
+    }
     case simdjson::dom::element_type::OBJECT:
+    {
+        simdjson::dom::object object;
+        (void)element.get_object().get(object);
         value.kind = JsonValue::Kind::Object;
-        for (const auto field : element.get_object().value_unsafe())
+        for (const auto field : object)
         {
             value.members.push_back({std::string(field.key), toValue(field.value)});
         }
         break;
+    }
     default:
         // The parser reports big integers as numbers unless asked not to.
         break;
