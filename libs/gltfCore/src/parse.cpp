@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "gltfCore/parse.h"
 
+#include "json.h"
+
 #include <simdjson.h>
 
 #include <algorithm>
@@ -20,6 +22,8 @@ namespace
 constexpr std::size_t kGlbHeaderSize = 12;
 constexpr std::size_t kChunkHeaderSize = 8;
 constexpr std::size_t kGlbJsonOffset = kGlbHeaderSize + kChunkHeaderSize;
+// Read by xmp.cpp, since fastgltf does not know it.
+constexpr std::string_view kXmpExtension = "KHR_xmp_json_ld";
 
 std::uint32_t
 readUint32LE(const std::byte* bytes)
@@ -58,8 +62,10 @@ hasValidGlbLengths(const std::byte* bytes, std::size_t size)
     return true;
 }
 
+} // namespace
+
 std::string_view
-jsonOf(const std::byte* bytes, std::size_t size)
+detail::JsonOf(const std::byte* bytes, std::size_t size)
 {
     const std::string_view text(reinterpret_cast<const char*>(bytes), size);
     if (!text.starts_with("glTF"))
@@ -75,12 +81,25 @@ jsonOf(const std::byte* bytes, std::size_t size)
                                            : std::string_view{};
 }
 
+namespace
+{
+
+using detail::JsonOf;
+
+// fastgltf rejects a required extension that it does not know, so one that the importer reads from
+// the JSON itself can only be optional.
+bool
+isRequirable(std::string_view extension)
+{
+    return IsImplementedExtension(extension) && extension != kXmpExtension;
+}
+
 // fastgltf stops at the first such extension without naming it, so this reads them from the JSON.
 // Returns an empty string if they cannot be read.
 std::string
 describeRequiredExtensions(const std::byte* bytes, std::size_t size)
 {
-    const auto json = jsonOf(bytes, size);
+    const auto json = JsonOf(bytes, size);
     simdjson::dom::parser parser;
     simdjson::dom::element root;
     simdjson::dom::array required;
@@ -93,7 +112,7 @@ describeRequiredExtensions(const std::byte* bytes, std::size_t size)
     for (const auto extension : required)
     {
         std::string_view name;
-        if (extension.get_string().get(name) == simdjson::SUCCESS && !IsImplementedExtension(name))
+        if (extension.get_string().get(name) == simdjson::SUCCESS && !isRequirable(name))
         {
             names += (names.empty() ? "" : ", ") + std::string(name);
         }
@@ -163,7 +182,7 @@ textureTransformsAreWellFormed(const simdjson::dom::element& element)
 bool
 hasMalformedTextureTransform(const std::byte* bytes, std::size_t size)
 {
-    const auto json = jsonOf(bytes, size);
+    const auto json = JsonOf(bytes, size);
     simdjson::dom::parser parser;
     simdjson::dom::element root;
     simdjson::dom::element materials;
@@ -177,7 +196,7 @@ hasMalformedTextureTransform(const std::byte* bytes, std::size_t size)
 bool
 hasMalformedLight(const std::byte* bytes, std::size_t size)
 {
-    const auto json = jsonOf(bytes, size);
+    const auto json = JsonOf(bytes, size);
     simdjson::dom::parser parser;
     simdjson::dom::element root;
     simdjson::dom::array lights;
@@ -205,7 +224,7 @@ hasMalformedLight(const std::byte* bytes, std::size_t size)
 std::string
 describeMalformedNodeVisibility(const std::byte* bytes, std::size_t size)
 {
-    const auto json = jsonOf(bytes, size);
+    const auto json = JsonOf(bytes, size);
     simdjson::dom::parser parser;
     simdjson::dom::element root;
     simdjson::dom::array nodes;
@@ -682,7 +701,7 @@ describeMissingPointerObject(const simdjson::dom::element& root)
 std::string
 describeMalformedCheckedExtensions(const std::byte* bytes, std::size_t size)
 {
-    const auto json = jsonOf(bytes, size);
+    const auto json = JsonOf(bytes, size);
     simdjson::dom::parser parser;
     simdjson::dom::element root;
     simdjson::dom::array materials;
@@ -699,6 +718,10 @@ describeMalformedCheckedExtensions(const std::byte* bytes, std::size_t size)
         return description;
     }
     if (auto description = describeMissingPointerObject(root); !description.empty())
+    {
+        return description;
+    }
+    if (auto description = detail::DescribeMalformedXmp(root); !description.empty())
     {
         return description;
     }
@@ -721,7 +744,7 @@ describeMalformedCheckedExtensions(const std::byte* bytes, std::size_t size)
 std::string
 describeMalformedMaterial(const std::byte* bytes, std::size_t size)
 {
-    const auto json = jsonOf(bytes, size);
+    const auto json = JsonOf(bytes, size);
     simdjson::dom::parser parser;
     simdjson::dom::element root;
     simdjson::dom::array materials;
@@ -821,7 +844,8 @@ IsImplementedExtension(std::string_view extension)
            extension == fastgltf::extensions::KHR_mesh_quantization ||
            extension == fastgltf::extensions::KHR_node_visibility ||
            extension == fastgltf::extensions::KHR_texture_basisu ||
-           extension == fastgltf::extensions::KHR_texture_transform;
+           extension == fastgltf::extensions::KHR_texture_transform ||
+           extension == kXmpExtension;
 }
 
 fastgltf::Expected<fastgltf::Asset>

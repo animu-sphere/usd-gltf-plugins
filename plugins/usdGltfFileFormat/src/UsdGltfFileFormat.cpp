@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "gltfCore/parse.h"
+#include "gltfCore/xmp.h"
 #include "gltfUsd/scene.h"
 #include "externalBuffer.h"
 
@@ -67,11 +68,20 @@ class UsdGltfFileFormat : public SdfFileFormat
                              error.c_str());
             return false;
         }
+        gltfCore::XmpMetadata xmp;
+        if (!gltfCore::ReadXmpMetadata(reinterpret_cast<const std::byte*>(bytes.get()),
+                                       input->GetSize(), xmp, error))
+        {
+            TF_RUNTIME_ERROR("usdGltfFileFormat: cannot parse '%s': %s", path.c_str(),
+                             error.c_str());
+            return false;
+        }
         ExternalBufferLoader loader(path);
         auto converted = gltfUsd::ConvertScene(
             asset.get(), path,
             [&loader](const fastgltf::Buffer& buffer, std::span<const std::byte>& data,
-                      std::string& error) { return loader.Load(buffer, data, error); });
+                      std::string& error) { return loader.Load(buffer, data, error); },
+            xmp);
         if (!converted)
         {
             return false;

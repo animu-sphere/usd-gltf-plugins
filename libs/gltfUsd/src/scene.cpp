@@ -10,6 +10,7 @@
 #include "gltfCore/parse.h"
 #include "sceneMap.h"
 #include "skin.h"
+#include "xmp.h"
 #include "gltfCore/sceneSelection.h"
 
 #include "pxr/base/gf/matrix4d.h"
@@ -69,15 +70,27 @@ defineNode(const UsdStageRefPtr& stage, const SceneMap& map, const SdfPath& path
 bool
 placeMesh(const fastgltf::Asset& asset, const SceneMap& map, std::size_t meshIndex,
           const SdfPath& path, const UsdStageRefPtr& stage, const gltfCore::BufferReader& buffers,
-          MaterialAuthor& materials, DecodedMeshes& decodedMeshes, VariantBindings& variantBindings)
+          MaterialAuthor& materials, DecodedMeshes& decodedMeshes, VariantBindings& variantBindings,
+          const XmpPackets& xmp)
 {
     const auto& first = map.meshes[meshIndex].front();
     if (path == first)
     {
-        return ConvertMesh(asset, meshIndex, stage, path, buffers, materials, decodedMeshes,
-                           variantBindings);
+        if (!ConvertMesh(asset, meshIndex, stage, path, buffers, materials, decodedMeshes,
+                         variantBindings))
+        {
+            return false;
+        }
+        if (!xmp.Author(stage->GetPrimAtPath(path),
+                        gltfCore::XmpPacketOf(xmp.Metadata().meshes, meshIndex)))
+        {
+            TF_RUNTIME_ERROR("Could not author the XMP metadata of glTF mesh %zu", meshIndex);
+            return false;
+        }
+        return true;
     }
-    // Material bindings target a scope outside the copied subtree, so they are copied unchanged.
+    // Material bindings target a scope outside the copied subtree, so they are copied unchanged,
+    // and the mesh's metadata with them.
     const auto layer = stage->GetRootLayer();
     if (!SdfCopySpec(layer, first, layer, path))
     {
@@ -273,7 +286,7 @@ authorMaterialVariants(const UsdStageRefPtr& stage, const SdfPath& root, const S
 bool
 authorAnimations(const UsdStageRefPtr& stage, const SdfPath& root, const SceneMap& map,
                  const AnimationPlan& plan, const std::vector<AnimatedCorrection>& corrections,
-                 const MaterialAuthor& materials)
+                 const MaterialAuthor& materials, const XmpPackets& xmp)
 {
     if (plan.animations.empty())
     {
@@ -371,6 +384,11 @@ authorAnimations(const UsdStageRefPtr& stage, const SdfPath& root, const SceneMa
         {
             asset.SetCustomDataByKey(TfToken("gltf:name"), VtValue(values.name));
         }
+        // An animation has no prim of its own, and /Root's assetInfo is the asset's.
+        if (const auto* packet = xmp.Get(gltfCore::XmpPacketOf(xmp.Metadata().animations, a)))
+        {
+            asset.SetCustomDataByKey(TfToken("gltf:xmp"), VtValue(*packet));
+        }
     }
     if (!stage->GetPrimAtPath(root).GetVariantSet(setName).SetVariantSelection(variantName(0)))
     {
@@ -382,7 +400,8 @@ authorAnimations(const UsdStageRefPtr& stage, const SdfPath& root, const SceneMa
 
 SdfLayerRefPtr
 authorScene(const fastgltf::Asset& asset, const std::string& sourcePath,
-            const gltfCore::BufferReader& buffers, std::size_t selectedIndex)
+            const gltfCore::BufferReader& buffers, std::size_t selectedIndex,
+            const XmpPackets& xmp)
 {
     TfErrorMark mark;
     auto layer = SdfLayer::CreateAnonymous("gltf-conversion.usda");
@@ -421,12 +440,19 @@ authorScene(const fastgltf::Asset& asset, const std::string& sourcePath,
     const auto& selected = asset.scenes[selectedIndex];
     const auto scene = defineNode(stage, *map, map->scene);
     if (!scene ||
-        (!selected.name.empty() && !scene.GetPrim().SetDisplayName(std::string(selected.name))))
+        (!selected.name.empty() && !scene.GetPrim().SetDisplayName(std::string(selected.name))) ||
+        !xmp.Author(scene.GetPrim(), gltfCore::XmpPacketOf(xmp.Metadata().scenes, selectedIndex)))
     {
         TF_RUNTIME_ERROR("Could not author glTF scene %zu", selectedIndex);
         return {};
     }
     stage->SetDefaultPrim(root.GetPrim());
+    // The asset's packet is on the default prim, where a stage's own asset metadata is read.
+    if (!xmp.Author(root.GetPrim(), xmp.Metadata().asset))
+    {
+        TF_RUNTIME_ERROR("Could not author the glTF asset's XMP metadata");
+        return {};
+    }
     if (!UsdGeomSetStageUpAxis(stage, UsdGeomTokens->y) ||
         !UsdGeomSetStageMetersPerUnit(stage, 1.0))
     {
@@ -442,22 +468,31 @@ authorScene(const fastgltf::Asset& asset, const std::string& sourcePath,
         stage->SetEndTimeCode(animation.endTimeCode);
     }
 
-    MaterialAuthor materials(asset, sourcePath, buffers, stage, materialScope.GetPath(), animation);
+    MaterialAuthor materials(asset, sourcePath, buffers, stage, materialScope.GetPath(), animation,
+                             xmp);
     DecodedMeshes decodedMeshes;
     VariantBindings variantBindings;
     std::vector<AnimatedCorrection> corrections;
     for (std::size_t position = 0; position < map->nodes.size(); ++position)
     {
         const auto& mapped = map->nodes[position];
+        const auto nodePacket = gltfCore::XmpPacketOf(xmp.Metadata().nodes, mapped.index);
         if (mapped.path.IsEmpty())
         {
+            if (nodePacket)
+            {
+                TF_WARN("glTF node %zu: a skeleton joint without a prim; its KHR_xmp_json_ld "
+                        "packet is not authored",
+                        mapped.index);
+            }
             continue;
         }
         const auto index = mapped.index;
         const auto& node = asset.nodes[index];
         const auto xform = defineNode(stage, *map, mapped.path);
         if (!xform ||
-            (!node.name.empty() && !xform.GetPrim().SetDisplayName(std::string(node.name))))
+            (!node.name.empty() && !xform.GetPrim().SetDisplayName(std::string(node.name))) ||
+            !xmp.Author(xform.GetPrim(), nodePacket))
         {
             TF_RUNTIME_ERROR("Could not author glTF node %zu", index);
             return {};
@@ -480,7 +515,7 @@ authorScene(const fastgltf::Asset& asset, const std::string& sourcePath,
         const bool instanced = !mapped.instancer.IsEmpty();
         if (node.meshIndex && ((instanced && !DefineInstancer(asset, mapped, stage, buffers)) ||
                                !placeMesh(asset, *map, *node.meshIndex, mapped.mesh, stage, buffers,
-                                          materials, decodedMeshes, variantBindings) ||
+                                          materials, decodedMeshes, variantBindings, xmp) ||
                                (instanced && !AuthorInstancerExtent(mapped, stage))))
         {
             return {};
@@ -525,7 +560,7 @@ authorScene(const fastgltf::Asset& asset, const std::string& sourcePath,
         TF_RUNTIME_ERROR("Could not sample glTF material animations: %s", error.c_str());
         return {};
     }
-    if (!authorAnimations(stage, root.GetPath(), *map, animation, corrections, materials) ||
+    if (!authorAnimations(stage, root.GetPath(), *map, animation, corrections, materials, xmp) ||
         !authorMaterialVariants(stage, root.GetPath(), *map, asset, variantBindings))
     {
         return {};
@@ -601,7 +636,7 @@ class AuthoringThread
 
 pxr::SdfLayerRefPtr
 ConvertScene(const fastgltf::Asset& asset, const std::string& sourcePath,
-             const gltfCore::BufferLoader& loadBuffer)
+             const gltfCore::BufferLoader& loadBuffer, const gltfCore::XmpMetadata& xmp)
 {
     using namespace pxr;
     const auto selection = gltfCore::SelectScene(asset);
@@ -640,7 +675,8 @@ ConvertScene(const fastgltf::Asset& asset, const std::string& sourcePath,
                 try
                 {
                     const gltfCore::BufferReader buffers(asset, loadBuffer);
-                    staged = authorScene(asset, sourcePath, buffers, selected->index);
+                    const XmpPackets packets(xmp);
+                    staged = authorScene(asset, sourcePath, buffers, selected->index, packets);
                 }
                 catch (const std::exception& e)
                 {

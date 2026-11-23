@@ -41,13 +41,14 @@ MATERIAL_VARIANTS = "KHR_materials_variants"
 NODE_VISIBILITY = "KHR_node_visibility"
 ANIMATION_POINTER = "KHR_animation_pointer"
 INSTANCING = "EXT_mesh_gpu_instancing"
+XMP = "KHR_xmp_json_ld"
 VISIBILITY_POINTER = re.compile(r"/nodes/(0|[1-9][0-9]*)/extensions/KHR_node_visibility/visible")
 IMPLEMENTED_EXTENSIONS = {
     "EXT_texture_webp", INSTANCING, DRACO, MESHOPT, "KHR_lights_punctual", "KHR_materials_anisotropy",
     "KHR_materials_clearcoat", "KHR_materials_dispersion", EMISSIVE_STRENGTH, "KHR_materials_ior",
     "KHR_materials_iridescence", "KHR_materials_sheen", "KHR_materials_specular", "KHR_materials_transmission",
     "KHR_materials_unlit", "KHR_materials_volume", MATERIAL_VARIANTS, "KHR_mesh_quantization", NODE_VISIBILITY,
-    ANIMATION_POINTER, "KHR_texture_basisu", "KHR_texture_transform",
+    ANIMATION_POINTER, "KHR_texture_basisu", "KHR_texture_transform", XMP,
 }
 PATHS = ("mtlx", "preview")
 CAMERA = "/SampleCheckCamera"
@@ -1839,6 +1840,98 @@ def check_skinning(check, stage, asset, plan, node_paths, placements):
     stage.GetSessionLayer().Clear()
 
 
+def xmp_matches(authored, packet):
+    """Whether an authored dictionary holds a KHR_xmp_json_ld value as ADR 0045 specifies: objects as
+    dictionaries, arrays of strings, booleans or numbers as arrays, and any other array or null as a
+    JSON literal whose text decodes to the value."""
+    if isinstance(packet, dict):
+        return (isinstance(authored, dict) and authored.keys() == packet.keys()
+                and all(xmp_matches(authored[key], value) for key, value in packet.items()))
+    literal = isinstance(authored, dict) and authored.keys() == {"@type", "@value"} and authored["@type"] == "@json"
+    if packet is None:
+        return literal and json.loads(authored["@value"]) is None
+    if isinstance(packet, list):
+        kinds = {bool if isinstance(item, bool) else (int, float) if isinstance(item, (int, float)) else type(item)
+                 for item in packet}
+        if kinds <= {str} or kinds == {bool} or kinds == {(int, float)}:
+            if isinstance(authored, (str, dict)) or len(authored) != len(packet):
+                return False
+            if kinds == {(int, float)} and not all(isinstance(p, int) and -2 ** 63 <= p < 2 ** 63 for p in packet):
+                # An array with a real number or an integer beyond int64 has reals.
+                return all(isinstance(a, float) and a == float(p) for a, p in zip(authored, packet))
+            return all(xmp_matches(a, p) for a, p in zip(authored, packet))
+        return literal and json.loads(authored["@value"]) == packet
+    if isinstance(packet, bool):
+        return authored is packet
+    if isinstance(packet, int) and -2 ** 63 <= packet < 2 ** 63:
+        return isinstance(authored, int) and not isinstance(authored, bool) and authored == packet
+    if isinstance(packet, (int, float)):
+        return isinstance(authored, float) and authored == float(packet)
+    return isinstance(authored, str) and authored == packet
+
+
+def check_xmp(check, stage, asset, node_paths, dropped):
+    """Compares the packets of KHR_xmp_json_ld with assetInfo["xmp"] on the prims of the objects that
+    reference them, and with the animations' customData, and checks that no other prim has one."""
+    from pxr import Usd
+
+    document = asset.json
+    packets = document.get("extensions", {}).get(XMP, {}).get("packets", [])
+
+    def packet_of(item):
+        reference = item.get("extensions", {}).get(XMP)
+        return packets[reference["packet"]] if reference else None
+
+    expected = {}
+
+    def expect_on(path, item):
+        if (packet := packet_of(item)) is not None:
+            expected[path] = packet
+
+    expect_on("/Root", document["asset"])
+    scene = document.get("scene", 0)
+    if document.get("scenes"):
+        expect_on(f"/Root/Scenes/Scene_{scene}", document["scenes"][scene])
+    for index, path in node_paths.items():
+        node = document["nodes"][index]
+        if index not in dropped:
+            expect_on(path, node)
+        if "mesh" in node:
+            expect_on(mesh_group(node, path), document["meshes"][node["mesh"]])
+    for index, material in enumerate(document.get("materials", [])):
+        for copy in material_copies(stage, index):
+            expect_on(str(copy.GetPath()), material)
+    image_packets = [packet for image in document.get("images", []) if (packet := packet_of(image)) is not None]
+    for prim in stage.Traverse():
+        if not prim.HasAuthoredAssetInfoKey("xmp"):
+            continue
+        path = str(prim.GetPath())
+        authored = prim.GetAssetInfoByKey("xmp")
+        if path in expected:
+            check.expect(xmp_matches(authored, expected.pop(path)), f"{path} has other XMP metadata than its source")
+        elif path.startswith("/Root/Materials/") and prim.GetTypeName() == "Shader":
+            check.expect(any(xmp_matches(authored, packet) for packet in image_packets),
+                         f"{path} has XMP metadata of no image")
+        else:
+            check.mismatches.append(f"{path} has XMP metadata that no source object has")
+    for path in sorted(expected):
+        check.mismatches.append(f"{path} has no XMP metadata")
+    root = stage.GetPrimAtPath("/Root")
+    animations = document.get("animations", [])
+    variants = root.GetVariantSet("animation") if animations else None
+    with Usd.EditContext(stage, stage.GetSessionLayer()):
+        for index, animation in enumerate(animations):
+            if not variants.SetVariantSelection(f"Animation_{index}"):
+                check.mismatches.append(f"animation {index} has no variant")
+                continue
+            packet = packet_of(animation)
+            authored = root.GetCustomDataByKey("gltf:xmp")
+            check.expect(authored is None if packet is None else xmp_matches(authored, packet),
+                         f"animation {index} has other XMP metadata than its source")
+        if variants:
+            variants.ClearVariantSelection()
+
+
 def check_meaning(stage, asset):
     """Returns what differs between the stage and the file, walking the selected scene."""
     from pxr import Usd, UsdGeom, UsdLux, UsdSkel
@@ -1932,6 +2025,7 @@ def check_meaning(stage, asset):
 
     for root in roots:
         walk(root, f"/Root/Scenes/Scene_{document.get('scene', 0)}", numpy.identity(4), True)
+    check_xmp(check, stage, asset, node_paths, dropped)
     check_animation(check, stage, asset, node_paths)
     if placements:
         check_skinning(check, stage, asset, plan, node_paths, placements)

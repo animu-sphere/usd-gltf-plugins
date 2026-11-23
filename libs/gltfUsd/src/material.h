@@ -2,6 +2,7 @@
 #pragma once
 
 #include "animation.h"
+#include "xmp.h"
 
 #include "gltfCore/accessor.h"
 
@@ -53,10 +54,12 @@ struct AnimatedMaterial;
 class MaterialAuthor
 {
   public:
-    // `animation` says which material properties animations change, and must outlive this.
+    // `animation` says which material properties animations change, and with `xmp` must outlive
+    // this.
     MaterialAuthor(const fastgltf::Asset& asset, const std::string& sourcePath,
                    const gltfCore::BufferReader& buffers, const pxr::UsdStageRefPtr& stage,
-                   const pxr::SdfPath& scope, const AnimationPlan& animation);
+                   const pxr::SdfPath& scope, const AnimationPlan& animation,
+                   const XmpPackets& xmp);
     ~MaterialAuthor();
     MaterialAuthor(const MaterialAuthor&) = delete;
     MaterialAuthor& operator=(const MaterialAuthor&) = delete;
@@ -92,6 +95,7 @@ class MaterialAuthor
     pxr::UsdStageRefPtr _stage;
     pxr::SdfPath _scope;
     const AnimationPlan& _animation;
+    const XmpPackets& _xmp;
     std::vector<std::unique_ptr<AnimatedMaterial>> _animated;
     // Keyed by material index, or none for the default material, whether the primitive has
     // vertex colors, and the use.

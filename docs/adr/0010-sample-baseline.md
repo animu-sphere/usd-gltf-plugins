@@ -84,7 +84,9 @@ otherwise, that neither is authored. For a [sheen](0021-sheen.md) color other th
 roughness other than 0 and their texture slots in MaterialX, and that Preview has none; otherwise, that
 no sheen is authored. For an [iridescent film](0022-iridescence.md) of strength above 0, its
 strength and raw R texture, uniform film ior, and thickness from its maximum or a range interpolated
-by raw G in MaterialX, and that Preview has none; otherwise, that no film is authored.
+by raw G in MaterialX, and that Preview has none; otherwise, that no film is authored. Each
+[XMP packet](0045-xmp-metadata.md) on the `assetInfo` of every prim made from an object that
+references it and in its animation's variant, and that no other prim has one.
 
 ## Evidence that it can fail
 
@@ -94,6 +96,10 @@ tangent; `doubleSided` changed; a moved node; another binding; a missing mesh an
 modes in each network; base color read as raw and a normal map as sRGB; another image in one or both
 networks; a missing image; another UV set; metallic-roughness and normal scales changed; no MaterialX
 output; other stage metrics; and MaterialX alpha mode and cutoff and Preview's threshold changed.
+
+For XMP metadata, separate session edits on XmpMetadataRoundedCube each produced a mismatch: a
+changed mesh title, an added key and a creator list turned into a string or reordered on `/Root`, and
+a packet on a node that has none.
 
 For an iridescent film, separate session edits to its strength, film ior, thickness maximum,
 thickness minimum and thickness channel each produced a mismatch on a generated textured quad.

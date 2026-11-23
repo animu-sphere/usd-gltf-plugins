@@ -8,6 +8,15 @@ here.
 
 ## [Unreleased]
 
+### Added
+
+- Import `KHR_xmp_json_ld` metadata as the dictionary `assetInfo["xmp"]` on the prims made from the
+  asset, the selected scene, nodes, meshes, materials and the texture nodes that read an image, and as
+  `customData["gltf"]["xmp"]` in an animation's variant. Values keep their JSON-LD form; `null` and
+  arrays that USD cannot hold become JSON literals, with a warning. Malformed packets and references
+  fail with a diagnostic, and the extension cannot be required. See the
+  [XMP metadata decision](docs/adr/0045-xmp-metadata.md).
+
 ## [0.16.0] - 2026-11-23
 
 ### Added
