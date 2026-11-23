@@ -8,6 +8,8 @@ here.
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-11-23
+
 ### Added
 
 - Import `KHR_xmp_json_ld` metadata as the dictionary `assetInfo["xmp"]` on the prims made from the
