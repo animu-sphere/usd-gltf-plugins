@@ -6,14 +6,8 @@ implementation order, which investigation may change. Each feature follows the
 
 ## v0.18.0 — Image-based lighting
 
-- Decide in an ADR how `EXT_lights_image_based` maps to USD, for example as a `UsdLuxDomeLight` below
-  the selected scene. Cover the prefiltered cubemap's faces and their orientation, and the conversion
-  to the latlong texture that a dome light reads. Also cover mip levels beyond the first, RGBD PNG and
-  LDR JPEG decoding, `rotation` against the dome's axis, `intensity` in lux, and the irradiance
-  coefficients that a dome light cannot hold. State what a client without the extension shows, since
-  the extension defines no fallback.
-- Import image-based lighting by that decision, with a display comparison. Verify against
-  EnvironmentTest's glTF-IBL file.
+- Import image-based lighting as [ADR 0046](../adr/0046-image-based-lighting.md) decides, vendoring
+  stb_image for the faces, with a display comparison. Verify against EnvironmentTest's glTF-IBL file.
 
 ### Release criteria
 
