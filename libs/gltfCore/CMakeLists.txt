@@ -28,7 +28,8 @@ add_library(gltfCore STATIC
     src/draco.cpp
     src/localFile.cpp
     src/parse.cpp
-    src/sceneSelection.cpp)
+    src/sceneSelection.cpp
+    src/xmp.cpp)
 add_library(gltfCore::gltfCore ALIAS gltfCore)
 usd_gltf_configure_target(gltfCore)
 target_include_directories(gltfCore PUBLIC

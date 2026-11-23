@@ -395,6 +395,30 @@ samples on that property inside the existing `animation` variants. Default time 
 no visibility channel for that node use its stated visibility. See the decisions on
 [static visibility](../adr/0036-node-visibility.md) and [animated visibility](../adr/0037-animated-node-visibility.md).
 
+## XMP metadata
+
+A `KHR_xmp_json_ld` packet is the dictionary `assetInfo["xmp"]` of each prim made from an object that
+references it. The asset's packet is on `/Root`, the default prim, and applies to the whole asset;
+elsewhere a packet describes only its own object, not the prims below it.
+
+| glTF object | Prim |
+| --- | --- |
+| `asset` | `/Root` |
+| The selected `scene` | `Scene_{index}` |
+| `node` | Its `Xform` or `SkelRoot`; none for a joint without a prim, with a warning |
+| `mesh` | Each placement's `Mesh_{index}`, including an instancer's prototype |
+| `material` | Every USD material made from it |
+| `image` | Each texture node that reads it, `UsdUVTexture` and `ND_image_*` |
+| `animation` | `customData["gltf"]["xmp"]` on `/Root` inside `Animation_{index}` |
+
+The dictionary keeps the packet's JSON-LD keys, such as `"dc:title"`, `@context`, `@list`, `@set` and
+`rdf:Alt` objects. Objects are dictionaries, strings, booleans, 64-bit integers and other numbers are
+`string`, `bool`, `int64` and `double`, and an array of strings, booleans, integers or numbers is a typed
+array (`string[]` when empty). `null` and any other array are the JSON literal
+`{"@type": "@json", "@value": <JSON text>}`, with a warning. Objects that the importer does not author
+keep no packet, and the archived `KHR_xmp` is ignored. See the
+[decision record](../adr/0045-xmp-metadata.md).
+
 ## Scene selection
 
 Select the declared default scene. If no default is declared, select the first

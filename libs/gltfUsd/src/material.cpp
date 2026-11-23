@@ -166,6 +166,19 @@ class Network
         return input && input.ConnectToSource(source.path);
     }
 
+    // A KHR_xmp_json_ld packet, if any, as the prim's assetInfo["xmp"].
+    [[nodiscard]] bool SetXmp(const SdfPath& node, const VtValue* xmp) const
+    {
+        if (!_stage || !xmp)
+        {
+            return true;
+        }
+        static const TfToken key("xmp");
+        const auto prim = _stage->GetPrimAtPath(node);
+        prim.SetAssetInfoByKey(key, *xmp);
+        return prim.HasAuthoredAssetInfoKey(key);
+    }
+
     [[nodiscard]] bool SetColorSpace(const SdfPath& node, const char* name,
                                      const TfToken& colorSpace) const
     {
@@ -543,6 +556,9 @@ struct UvTransform
 struct TextureInput
 {
     std::string file;
+    // The glTF image that `file` is made from, and its KHR_xmp_json_ld packet or null.
+    std::size_t image = 0;
+    const VtValue* xmp = nullptr;
     std::string primvar;
     fastgltf::Wrap wrapS;
     fastgltf::Wrap wrapT;
@@ -700,6 +716,7 @@ authorPreviewTexture(Network& net, const SdfPath& graph, const char* name,
     }
     const auto image = st ? net.Node(graph, name, "UsdUVTexture") : SdfPath();
     if (!net.Connect(image, "st", SdfValueTypeNames->Float2, st) ||
+        !net.SetXmp(image, texture.xmp) ||
         !net.Set(image, "file", SdfValueTypeNames->Asset, SdfAssetPath(texture.file),
                  Variability::Fixed) ||
         !net.Set(image, "sourceColorSpace", SdfValueTypeNames->Token, TfToken(colorSpace),
@@ -897,6 +914,7 @@ authorMtlxImage(Network& net, const SdfPath& graph, const std::string& name,
     const auto image =
         st ? net.Node(graph, name, color ? "ND_image_color4" : "ND_image_vector4") : SdfPath();
     if (!net.Connect(image, "texcoord", SdfValueTypeNames->Float2, st) ||
+        !net.SetXmp(image, texture.xmp) ||
         !net.Set(image, "file", SdfValueTypeNames->Asset, SdfAssetPath(texture.file),
                  Variability::Fixed) ||
         !net.Set(image, "default", type, GfVec4f(0, 0, 0, 1), Variability::Fixed) ||
@@ -1393,7 +1411,8 @@ authorMtlx(Network& net, const SdfPath& material, const PbrFactors& factors, boo
 UsdShadeMaterial
 authorMaterial(const fastgltf::Material& source, const PbrFactors& factors, const std::string& name,
                const UsdStageRefPtr& stage, const SdfPath& scope, bool vertexColor = false,
-               const MaterialTextures& textures = {}, Network::Values* values = nullptr)
+               const MaterialTextures& textures = {}, Network::Values* values = nullptr,
+               const VtValue* xmp = nullptr)
 {
     const auto material = UsdShadeMaterial::Define(stage, scope.AppendChild(TfToken(name)));
     if (!material || (!source.name.empty() && !material.GetPrim().SetDisplayName(source.name)))
@@ -1401,6 +1420,10 @@ authorMaterial(const fastgltf::Material& source, const PbrFactors& factors, cons
         return UsdShadeMaterial();
     }
     Network net(stage);
+    if (!net.SetXmp(material.GetPath(), xmp))
+    {
+        return UsdShadeMaterial();
+    }
     if (!authorPreview(net, material.GetPath(), factors, vertexColor, textures) ||
         !authorMtlx(net, material.GetPath(), factors, vertexColor, textures))
     {
@@ -1512,6 +1535,7 @@ resolveTexture(const fastgltf::Asset& asset, const fastgltf::TextureInfo& info,
     result.file = location.packaged
                       ? ArJoinPackageRelativePath("./" + TfGetBaseName(sourcePath), location.path)
                       : "./" + location.path;
+    result.image = *imageIndex;
     const auto texCoord = texCoordOf(info);
     result.primvar = texCoord == 0 ? "st" : "st" + std::to_string(texCoord);
     if (info.transform)
@@ -1845,9 +1869,9 @@ struct AnimatedMaterial
 MaterialAuthor::MaterialAuthor(const fastgltf::Asset& asset, const std::string& sourcePath,
                                const gltfCore::BufferReader& buffers,
                                const pxr::UsdStageRefPtr& stage, const pxr::SdfPath& scope,
-                               const AnimationPlan& animation)
+                               const AnimationPlan& animation, const XmpPackets& xmp)
     : _asset(asset), _sourcePath(sourcePath), _buffers(buffers), _stage(stage), _scope(scope),
-      _animation(animation)
+      _animation(animation), _xmp(xmp)
 {
 }
 
@@ -2146,8 +2170,17 @@ MaterialAuthor::Prepare(std::optional<std::size_t> materialIndex, std::size_t uv
         const auto resolve = [&](const auto& info, std::optional<TextureInput>& texture,
                                  TextureSlot slot)
         {
-            return !info || resolveTexture(_asset, *info, _sourcePath, _buffers, texture.emplace(),
-                                           error, animated.HasTransform(slot));
+            if (!info)
+            {
+                return true;
+            }
+            if (!resolveTexture(_asset, *info, _sourcePath, _buffers, texture.emplace(), error,
+                                animated.HasTransform(slot)))
+            {
+                return false;
+            }
+            texture->xmp = _xmp.Get(gltfCore::XmpPacketOf(_xmp.Metadata().images, texture->image));
+            return true;
         };
         const auto animates = [&](MaterialField field) { return factors.animates(field); };
         // KHR_materials_unlit defines every other texture as a fallback for clients without it,
@@ -2353,7 +2386,9 @@ MaterialAuthor::Prepare(std::optional<std::size_t> materialIndex, std::size_t uv
         material = authorMaterial(source, factors,
                                   "Material_" + std::to_string(index) +
                                       (colors ? "_VertexColor" : "") + materialUseSuffix(use),
-                                  _stage, _scope, colors != nullptr, textures, &values);
+                                  _stage, _scope, colors != nullptr, textures, &values,
+                                  _xmp.Get(gltfCore::XmpPacketOf(_xmp.Metadata().materials,
+                                                                 index)));
         if (!material)
         {
             error = "could not author USD material";

@@ -254,8 +254,8 @@
     "RiggedSimple/glTF-Draco/RiggedSimple.gltf": {"meaning": "verified", "meshes": 1, "opened": "opened", "rendered": {"mtlx": "drawn", "preview": "drawn"}, "warnings": []},
     "RiggedSimple/glTF-Embedded/RiggedSimple.gltf": {"meaning": "verified", "meshes": 1, "opened": "opened", "rendered": {"mtlx": "drawn", "preview": "drawn"}, "warnings": []},
     "RiggedSimple/glTF/RiggedSimple.gltf": {"meaning": "verified", "meshes": 1, "opened": "opened", "rendered": {"mtlx": "drawn", "preview": "drawn"}, "warnings": []},
-    "ScatteringSkull/glTF-Binary/ScatteringSkull.glb": {"ignored": ["KHR_materials_diffuse_transmission", "KHR_materials_volume_scatter", "KHR_xmp_json_ld"], "meaning": "partial", "meshes": 1, "opened": "opened", "rendered": {"mtlx": "drawn", "preview": "drawn"}, "warnings": []},
-    "ScatteringSkull/glTF/ScatteringSkull.gltf": {"ignored": ["KHR_materials_diffuse_transmission", "KHR_materials_volume_scatter", "KHR_xmp_json_ld"], "meaning": "partial", "meshes": 1, "opened": "opened", "rendered": {"mtlx": "drawn", "preview": "drawn"}, "warnings": []},
+    "ScatteringSkull/glTF-Binary/ScatteringSkull.glb": {"ignored": ["KHR_materials_diffuse_transmission", "KHR_materials_volume_scatter"], "meaning": "partial", "meshes": 1, "opened": "opened", "rendered": {"mtlx": "drawn", "preview": "drawn"}, "warnings": []},
+    "ScatteringSkull/glTF/ScatteringSkull.gltf": {"ignored": ["KHR_materials_diffuse_transmission", "KHR_materials_volume_scatter"], "meaning": "partial", "meshes": 1, "opened": "opened", "rendered": {"mtlx": "drawn", "preview": "drawn"}, "warnings": []},
     "SciFiHelmet/glTF/SciFiHelmet.gltf": {"meaning": "verified", "meshes": 1, "opened": "opened", "rendered": {"mtlx": "drawn", "preview": "drawn"}, "warnings": []},
     "SheenChair/glTF-Binary/SheenChair.glb": {"meaning": "verified", "meshes": 4, "opened": "opened", "rendered": {"mtlx": "drawn", "preview": "drawn"}, "warnings": ["glTF material 0: UsdPreviewSurface has no sheen; its network ignores KHR_materials_sheen", "glTF material 4: UsdPreviewSurface has no sheen; its network ignores KHR_materials_sheen"]},
     "SheenChair/glTF/SheenChair.gltf": {"meaning": "verified", "meshes": 4, "opened": "opened", "rendered": {"mtlx": "drawn", "preview": "drawn"}, "warnings": ["glTF material 0: UsdPreviewSurface has no sheen; its network ignores KHR_materials_sheen", "glTF material 4: UsdPreviewSurface has no sheen; its network ignores KHR_materials_sheen"]},
@@ -338,7 +338,7 @@
     "WaterBottle/glTF-Binary/WaterBottle.glb": {"meaning": "verified", "meshes": 1, "opened": "opened", "rendered": {"mtlx": "drawn", "preview": "drawn"}, "warnings": []},
     "WaterBottle/glTF-Draco/WaterBottle.gltf": {"meaning": "verified", "meshes": 1, "opened": "opened", "rendered": {"mtlx": "drawn", "preview": "drawn"}, "warnings": []},
     "WaterBottle/glTF/WaterBottle.gltf": {"meaning": "verified", "meshes": 1, "opened": "opened", "rendered": {"mtlx": "drawn", "preview": "drawn"}, "warnings": []},
-    "XmpMetadataRoundedCube/glTF-Binary/XmpMetadataRoundedCube.glb": {"ignored": ["KHR_xmp_json_ld"], "meaning": "partial", "meshes": 1, "opened": "opened", "rendered": {"mtlx": "drawn", "preview": "drawn"}, "warnings": []},
-    "XmpMetadataRoundedCube/glTF/XmpMetadataRoundedCube.gltf": {"ignored": ["KHR_xmp_json_ld"], "meaning": "partial", "meshes": 1, "opened": "opened", "rendered": {"mtlx": "drawn", "preview": "drawn"}, "warnings": []}
+    "XmpMetadataRoundedCube/glTF-Binary/XmpMetadataRoundedCube.glb": {"meaning": "verified", "meshes": 1, "opened": "opened", "rendered": {"mtlx": "drawn", "preview": "drawn"}, "warnings": []},
+    "XmpMetadataRoundedCube/glTF/XmpMetadataRoundedCube.gltf": {"meaning": "verified", "meshes": 1, "opened": "opened", "rendered": {"mtlx": "drawn", "preview": "drawn"}, "warnings": []}
   }
 }

@@ -35,7 +35,8 @@ add_library(gltfUsd STATIC
     src/scene.cpp
     src/sceneMap.cpp
     src/skin.cpp
-    src/tangents.cpp)
+    src/tangents.cpp
+    src/xmp.cpp)
 add_library(gltfUsd::gltfUsd ALIAS gltfUsd)
 usd_gltf_configure_target(gltfUsd)
 target_include_directories(gltfUsd

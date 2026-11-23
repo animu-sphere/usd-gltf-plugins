@@ -10,3 +10,7 @@ add_test(NAME scene_selection COMMAND scene_selection_test)
 add_executable(accessor_test accessor.cpp)
 target_link_libraries(accessor_test PRIVATE gltfCore::gltfCore)
 add_test(NAME accessor COMMAND accessor_test)
+
+add_executable(xmp_test xmp.cpp)
+target_link_libraries(xmp_test PRIVATE gltfCore::gltfCore)
+add_test(NAME xmp COMMAND xmp_test)

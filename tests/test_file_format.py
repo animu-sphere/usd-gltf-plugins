@@ -777,6 +777,7 @@ def animation_document(extension, samplers, channels, more_animations=(), nodes=
 
 
 MATERIAL_VARIANTS = "KHR_materials_variants"
+XMP = "KHR_xmp_json_ld"
 
 
 def material_variants_document(extension):
@@ -9097,6 +9098,258 @@ assert layer.ExportToString() == Path(sys.argv[3]).read_text(encoding="utf-8")
                 thread.join()
             self.assertEqual(outcomes.count(Sdf.Path("/Root")), 80)
             self.assertEqual(outcomes.count("failed"), 80)
+
+    def test_xmp_metadata(self):
+        context = {"dc": "http://purl.org/dc/elements/1.1/", "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#"}
+        title = {"@type": "rdf:Alt", "rdf:_1": {"@language": "en-us", "@value": "Asset title"}}
+        packets = [
+            {"@context": context, "@id": "", "dc:title": title, "dc:creator": {"@list": ["A", "B"]},
+             "dc:subject": {"@set": []}},
+            {"@context": context, "dc:title": "Shared"},
+            {"@context": context, "dc:title": "Mesh", "xmp:CreatorTool": "Undeclared prefix"},
+            {"@context": context, "dc:title": "Material"},
+            {"@context": context, "dc:title": "Scene"},
+            {"@context": context, "dc:title": "Unreferenced"},
+        ]
+        expected_asset = {"@context": context, "@id": "", "dc:title": title,
+                          "dc:creator": {"@list": ["A", "B"]}, "dc:subject": {"@set": []}}
+        with tempfile.TemporaryDirectory() as directory:
+            for extension in ("gltf", "glb"):
+                with self.subTest(extension=extension):
+                    document, binary = mesh_document(extension)
+                    document["extensionsUsed"] = [XMP]
+                    document["extensions"] = {XMP: {"packets": packets}}
+                    document["asset"]["extensions"] = {XMP: {"packet": 0}}
+                    document["scenes"][0]["extensions"] = {XMP: {"packet": 4}}
+                    for node in document["nodes"]:
+                        node["extensions"] = {XMP: {"packet": 1}}
+                    document["meshes"][0]["extensions"] = {XMP: {"packet": 2}}
+                    document["materials"] = [{"extensions": {XMP: {"packet": 3}}}]
+                    document["meshes"][0]["primitives"][0]["material"] = 0
+                    path = pathlib.Path(directory) / f"xmp.{extension}"
+                    write_asset(path, document, binary)
+                    result = subprocess.run([sys.executable, "-c", "from pxr import Usd; import sys; "
+                                             "assert Usd.Stage.Open(sys.argv[1])", str(path)],
+                                            capture_output=True, text=True, check=False)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertNotIn("KHR_xmp_json_ld", result.stderr)
+                    stage = Usd.Stage.Open(str(path))
+                    scene = "/Root/Scenes/Scene_0"
+                    expected = {
+                        "/Root": expected_asset,
+                        scene: {"@context": context, "dc:title": "Scene"},
+                        scene + "/Node_0": {"@context": context, "dc:title": "Shared"},
+                        scene + "/Node_1": {"@context": context, "dc:title": "Shared"},
+                        scene + "/Node_0/Mesh_0": packets[2],
+                        scene + "/Node_1/Mesh_0": packets[2],
+                        "/Root/Materials/Material_0": packets[3],
+                    }
+                    found = {str(prim.GetPath()): prim.GetAssetInfoByKey("xmp") for prim in stage.Traverse()
+                             if prim.HasAuthoredAssetInfoKey("xmp")}
+                    self.assertEqual(found, expected)
+                    self.assertEqual(list(stage.GetDefaultPrim().GetAssetInfo()), ["xmp"])
+                    subject = stage.GetDefaultPrim().GetAssetInfoByKey("xmp")["dc:subject"]["@set"]
+                    self.assertIsInstance(subject, Vt.StringArray)
+                    # The metadata survives export to both USD formats.
+                    for suffix in (".usda", ".usdc"):
+                        exported = pathlib.Path(directory) / f"exported-{extension}{suffix}"
+                        self.assertTrue(stage.GetRootLayer().Export(str(exported)))
+                        copy = Usd.Stage.Open(str(exported))
+                        for prim_path, packet in expected.items():
+                            self.assertEqual(copy.GetPrimAtPath(prim_path).GetAssetInfoByKey("xmp"), packet)
+                        # A crate file stays open while its layer exists, and Windows cannot delete it.
+                        del copy
+
+    def test_xmp_metadata_values(self):
+        packet = {
+            "@context": {"ex": "http://example.com/"},
+            "ex:flag": True, "ex:count": -3, "ex:large": 2 ** 63, "ex:real": 0.25, "ex:text": "aé\"b",
+            "ex:strings": {"@list": ["x", "y"]}, "ex:flags": {"@set": [True, False]},
+            "ex:integers": {"@list": [1, -2]}, "ex:numbers": {"@list": [1, 2.5]},
+            "ex:empty": {"@set": []}, "ex:nothing": None, "ex:mixed": {"@list": [1, "two"]},
+            "ex:resources": {"@set": [{"ex:id": "a"}, {"ex:id": "b"}]},
+            "ex:nested": {"ex:inner": {"ex:deeper": [[1], [2]]}},
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            document, binary = mesh_document("gltf")
+            document["extensionsUsed"] = [XMP]
+            document["extensions"] = {XMP: {"packets": [packet]}}
+            document["asset"]["extensions"] = {XMP: {"packet": 0}}
+            path = pathlib.Path(directory) / "values.gltf"
+            write_asset(path, document, binary)
+            result = subprocess.run(
+                [sys.executable, "-c",
+                 "from pxr import Usd; import sys; "
+                 "s = Usd.Stage.Open(sys.argv[1]); assert s.GetDefaultPrim().GetAssetInfoByKey('xmp')",
+                 str(path)],
+                capture_output=True, text=True, check=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(sorted(re.findall(r"glTF KHR_xmp_json_ld packet 0: (\S+) is", result.stderr)),
+                             ["/ex:mixed/@list", "/ex:nested/ex:inner/ex:deeper", "/ex:nothing",
+                              "/ex:resources/@set"])
+            stage = Usd.Stage.Open(str(path))
+            authored = stage.GetDefaultPrim().GetAssetInfoByKey("xmp")
+
+            def literal(text):
+                return {"@type": "@json", "@value": text}
+
+            self.assertEqual(authored, {
+                "@context": {"ex": "http://example.com/"},
+                "ex:flag": True, "ex:count": -3, "ex:large": float(2 ** 63), "ex:real": 0.25,
+                "ex:text": "aé\"b", "ex:strings": {"@list": ["x", "y"]}, "ex:flags": {"@set": [True, False]},
+                "ex:integers": {"@list": [1, -2]}, "ex:numbers": {"@list": [1.0, 2.5]}, "ex:empty": {"@set": []},
+                "ex:nothing": literal("null"), "ex:mixed": {"@list": literal('[1,"two"]')},
+                "ex:resources": {"@set": literal('[{"ex:id":"a"},{"ex:id":"b"}]')},
+                "ex:nested": {"ex:inner": {"ex:deeper": literal("[[1],[2]]")}},
+            })
+            types = {key: type(value) for key, value in authored.items()}
+            self.assertEqual((types["ex:count"], types["ex:large"]), (int, float))
+            self.assertIsInstance(authored["ex:flags"]["@set"], Vt.BoolArray)
+            self.assertIsInstance(authored["ex:integers"]["@list"], Vt.Int64Array)
+            self.assertIsInstance(authored["ex:numbers"]["@list"], Vt.DoubleArray)
+            self.assertEqual(json.loads(authored["ex:resources"]["@set"]["@value"]),
+                             packet["ex:resources"]["@set"])
+
+    def test_xmp_metadata_on_images_and_animations(self):
+        context = {"dc": "http://purl.org/dc/elements/1.1/"}
+        packets = [{"@context": context, "dc:title": "Image"}, {"@context": context, "dc:title": "Animation"}]
+        with tempfile.TemporaryDirectory() as directory:
+            for extension in ("gltf", "glb"):
+                with self.subTest(extension=extension):
+                    document, binary = textured_document(extension, None, PNG)
+                    document["extensionsUsed"] = [XMP]
+                    document["extensions"] = {XMP: {"packets": packets}}
+                    document["images"][0]["extensions"] = {XMP: {"packet": 0}}
+                    path = pathlib.Path(directory) / f"image.{extension}"
+                    write_asset(path, document, binary)
+                    stage = Usd.Stage.Open(str(path))
+                    found = {str(prim.GetPath()): prim.GetAssetInfoByKey("xmp") for prim in stage.Traverse()
+                             if prim.HasAuthoredAssetInfoKey("xmp")}
+                    material = "/Root/Materials/Material_0"
+                    self.assertEqual(found, {material + "/preview/baseColorTexture": packets[0],
+                                             material + "/mtlx/baseColorImage": packets[0]})
+            translation = {"input": [0, 1], "output": [0, 0, 0, 1, 0, 0]}
+            document, binary = animation_document("glb", [translation], [(0, 0, "translation")],
+                                                  more_animations=[([translation], [(0, 1, "translation")])])
+            document["extensionsUsed"] = [XMP]
+            document["extensions"] = {XMP: {"packets": packets}}
+            document["animations"][1]["extensions"] = {XMP: {"packet": 1}}
+            path = pathlib.Path(directory) / "animation.glb"
+            write_asset(path, document, binary)
+            stage = Usd.Stage.Open(str(path))
+            root = stage.GetDefaultPrim()
+            self.assertFalse(root.HasAuthoredAssetInfo())
+            animations = root.GetVariantSet("animation")
+            self.assertIsNone(root.GetCustomDataByKey("gltf:xmp"))
+            self.assertTrue(animations.SetVariantSelection("Animation_1"))
+            self.assertEqual(root.GetCustomDataByKey("gltf:xmp"), packets[1])
+            self.assertEqual(root.GetCustomDataByKey("gltf:endTimeCode"), 24)
+
+    def test_xmp_metadata_on_a_joint_without_a_prim_warns(self):
+        with tempfile.TemporaryDirectory() as directory:
+            document, binary = skin_document(False)
+            document["extensionsUsed"] = [XMP]
+            document["extensions"] = {XMP: {"packets": [{"@context": {}, "ex:joint": True}]}}
+            for node in (1, 2):
+                document["nodes"][node]["extensions"] = {XMP: {"packet": 0}}
+            path = pathlib.Path(directory) / "joints.glb"
+            write_asset(path, document, binary)
+            result = subprocess.run(
+                [sys.executable, "-c",
+                 "from pxr import Usd; import sys; s = Usd.Stage.Open(sys.argv[1]); "
+                 "print(sorted(str(p.GetPath()) for p in s.Traverse() if p.HasAuthoredAssetInfoKey('xmp')))",
+                 str(path)],
+                capture_output=True, text=True, check=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), "['/Root/Scenes/Scene_0/Node_0/Node_1']")
+            self.assertEqual(re.findall(r"glTF node \d+: [^\n]*KHR_xmp_json_ld[^\n]*", result.stderr),
+                             ["glTF node 2: a skeleton joint without a prim; its KHR_xmp_json_ld packet "
+                              "is not authored"])
+
+    def test_xmp_metadata_failures_preserve_layer(self):
+        packet = {"@context": {"dc": "http://purl.org/dc/elements/1.1/"}}
+        cases = [
+            (None, "KHR_xmp_json_ld must be an object with a nonempty packets array"),
+            ({"packets": []}, "KHR_xmp_json_ld must be an object with a nonempty packets array"),
+            ({"packets": packet}, "KHR_xmp_json_ld must be an object with a nonempty packets array"),
+            ({"packets": [packet, "text"]}, "KHR_xmp_json_ld packet 1 is not an object"),
+            ({"packets": [{}]}, "KHR_xmp_json_ld packet 0 has no @context object"),
+            ({"packets": [{"@context": "http://example.com/"}]}, "KHR_xmp_json_ld packet 0 has no @context object"),
+            ({"packets": [{"@context": {"dc": 1}}]},
+             "KHR_xmp_json_ld packet 0 @context maps dc to a value that is not a string"),
+        ]
+        references = [
+            ("asset", None, {"packet": 1}, "glTF asset: KHR_xmp_json_ld packet 1 is out of range"),
+            ("nodes", 1, {"packet": -1}, "glTF node 1: KHR_xmp_json_ld must be an object with a packet index"),
+            ("meshes", 0, {}, "glTF mesh 0: KHR_xmp_json_ld must be an object with a packet index"),
+            ("scenes", 0, 0, "glTF scene 0: KHR_xmp_json_ld must be an object with a packet index"),
+            ("images", 0, {"packet": 2}, "glTF image 0: KHR_xmp_json_ld packet 2 is out of range"),
+            ("animations", 0, {"packet": "0"},
+             "glTF animation 0: KHR_xmp_json_ld must be an object with a packet index"),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            for extension in ("gltf", "glb"):
+                document, binary = mesh_document(extension)
+                document["extensionsUsed"] = [XMP]
+                document["extensions"] = {XMP: {"packets": [packet]}}
+                document["asset"]["extensions"] = {XMP: {"packet": 0}}
+                path = pathlib.Path(directory) / f"xmp.{extension}"
+                write_asset(path, document, binary)
+                layer = Sdf.Layer.FindOrOpen(str(path))
+                before = layer_text(layer)
+                self.assertIn("dictionary xmp", before)
+
+                def expect_failure(changed, message):
+                    write_asset(path, changed, binary)
+                    with self.assertRaisesRegex(Tf.ErrorException, re.escape(message)):
+                        layer.Reload(True)
+                    self.assertEqual(layer_text(layer), before)
+
+                for value, message in cases:
+                    with self.subTest(extension=extension, value=value):
+                        changed = json.loads(json.dumps(document))
+                        changed["extensions"][XMP] = value
+                        expect_failure(changed, message)
+                for kind, index, value, message in references:
+                    with self.subTest(extension=extension, kind=kind, value=value):
+                        changed = json.loads(json.dumps(document))
+                        changed["images"] = [{"uri": "missing.png"}]
+                        changed["animations"] = [{"samplers": [], "channels": []}]
+                        target = changed[kind] if index is None else changed[kind][index]
+                        target.setdefault("extensions", {})[XMP] = value
+                        expect_failure(changed, message)
+                with self.subTest(extension=extension, declared=False):
+                    changed = json.loads(json.dumps(document))
+                    changed["extensionsUsed"] = []
+                    expect_failure(changed, "KHR_xmp_json_ld must be declared in extensionsUsed")
+                with self.subTest(extension=extension, root=False):
+                    changed = json.loads(json.dumps(document))
+                    del changed["extensions"]
+                    expect_failure(changed, "glTF asset: KHR_xmp_json_ld packet 0 is out of range")
+                with self.subTest(extension=extension, required=True):
+                    changed = json.loads(json.dumps(document))
+                    changed["extensionsRequired"] = [XMP]
+                    expect_failure(changed, "unsupported required extensions: KHR_xmp_json_ld")
+                write_asset(path, document, binary)
+                self.assertTrue(layer.Reload(True))
+                self.assertEqual(layer_text(layer), before)
+
+    def test_archived_xmp_stays_ignored(self):
+        with tempfile.TemporaryDirectory() as directory:
+            document, binary = mesh_document("gltf")
+            document["extensionsUsed"] = ["KHR_xmp"]
+            document["extensions"] = {"KHR_xmp": {"@context": {"dc": "http://purl.org/dc/elements/1.1/"},
+                                                  "packets": [{"dc:title": {"en-us": "Archived"}}]}}
+            document["asset"]["extensions"] = {"KHR_xmp": {"packet": 0}}
+            path = pathlib.Path(directory) / "archived.gltf"
+            write_asset(path, document, binary)
+            result = subprocess.run(
+                [sys.executable, "-c",
+                 "from pxr import Usd; import sys; s = Usd.Stage.Open(sys.argv[1]); "
+                 "assert not any(p.HasAuthoredAssetInfo() for p in s.Traverse())", str(path)],
+                capture_output=True, text=True, check=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("glTF optional extension 'KHR_xmp' is not supported", result.stderr)
 
     def test_failed_reload_does_not_publish_partial_stage(self):
         with tempfile.TemporaryDirectory() as directory:
