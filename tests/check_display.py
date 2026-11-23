@@ -1646,6 +1646,117 @@ def check_dispersion(renderer, report):
     qt[2].doneCurrent()
 
 
+IMAGE_BASED_LIGHT = "EXT_lights_image_based"
+# Where a mirror sphere seen from +Z reflects each axis, as fractions of its bounds.
+SPHERE_POINTS = {"center": (0.5, 0.5), "right": (0.85, 0.5), "left": (0.15, 0.5), "top": (0.5, 0.85),
+                 "bottom": (0.5, 0.15)}
+
+
+def sphere_document(material, faces, light):
+    """A unit sphere at the origin with one material, under an EXT_lights_image_based light whose first and only
+    level is `faces`, PNG bytes in the order +X, -X, +Y, -Y, +Z, -Z."""
+    rings, segments = 64, 128
+    positions = []
+    for ring in range(rings + 1):
+        theta = math.pi * ring / rings
+        for segment in range(segments + 1):
+            phi = 2 * math.pi * segment / segments
+            positions += [math.sin(theta) * math.sin(phi), math.cos(theta), math.sin(theta) * math.cos(phi)]
+    indices = []
+    for ring in range(rings):
+        for segment in range(segments):
+            a = ring * (segments + 1) + segment
+            b = a + segments + 1
+            indices += [a, b, a + 1, a + 1, b, b + 1]
+    vertices = len(positions) // 3
+    data = struct.pack(f"<{len(positions)}f", *positions) * 2 + struct.pack(f"<{len(indices)}H", *indices)
+    size = struct.unpack(">I", faces[0][16:20])[0]
+    return {
+        "asset": {"version": "2.0"}, "extensionsUsed": [IMAGE_BASED_LIGHT],
+        "scene": 0, "scenes": [{"nodes": [0], "extensions": {IMAGE_BASED_LIGHT: {"light": 0}}}],
+        "nodes": [{"mesh": 0}],
+        "meshes": [{"primitives": [{"attributes": {"POSITION": 0, "NORMAL": 1}, "indices": 2, "material": 0}]}],
+        "materials": [{**material, "doubleSided": True}],
+        "accessors": [{"bufferView": 0, "componentType": 5126, "count": vertices, "type": "VEC3",
+                       "min": [-1, -1, -1], "max": [1, 1, 1]},
+                      {"bufferView": 1, "componentType": 5126, "count": vertices, "type": "VEC3"},
+                      {"bufferView": 2, "componentType": 5123, "count": len(indices), "type": "SCALAR"}],
+        "bufferViews": [{"buffer": 0, "byteOffset": 0, "byteLength": vertices * 12},
+                        {"buffer": 0, "byteOffset": vertices * 12, "byteLength": vertices * 12},
+                        {"buffer": 0, "byteOffset": vertices * 24, "byteLength": len(indices) * 2}],
+        "buffers": [{"byteLength": len(data),
+                     "uri": "data:application/octet-stream;base64," + base64.b64encode(data).decode()}],
+        "images": [{"uri": "data:image/png;base64," + base64.b64encode(face).decode()} for face in faces],
+        "extensions": {IMAGE_BASED_LIGHT: {"lights": [{
+            "specularImageSize": size, "specularImages": [list(range(6))],
+            "irradianceCoefficients": [[0, 0, 0]] * 9, **light}]}},
+    }
+
+
+def check_image_based_light(renderer, report):
+    """Renders spheres lit only by an EXT_lights_image_based light. A mirror sphere seen from +Z reflects +Z at its
+    center, +X to the right and +Y at the top, so cube faces of one color each show where the dome puts them, and a
+    rotation moves them. A uniform cube compares the intensity, the RGBD and LDR encodings, and a matte sphere."""
+    qt = offscreen_context(report, "image-based light")
+    if not qt:
+        return
+    mirror = pbr(baseColorFactor=[1, 1, 1, 1], metallicFactor=1, roughnessFactor=0)
+    matte = pbr(baseColorFactor=[1, 1, 1, 1], metallicFactor=0, roughnessFactor=1)
+    # +X red, -X green, +Y blue, -Y yellow, +Z white and -Z black.
+    colored = [png(color) for color in ((255, 0, 0, 255), (0, 255, 0, 255), (0, 0, 255, 255), (255, 255, 0, 255),
+                                        (255, 255, 255, 255), (0, 0, 0, 255))]
+    # 0.25 in every channel, as LDR and as RGBD with alpha 128: (c / 255)^2.2 / (128 / 255).
+    quarter = round(255 * 0.25 ** (1 / 2.2))
+    halved = round(255 * (0.25 * 128 / 255) ** (1 / 2.2))
+    uniform = [png((quarter, quarter, quarter, 255))] * 6
+    rgbd = [png((halved, halved, halved, 128))] * 6
+    for path in PATHS:
+
+        def render(name, material, faces, **light):
+            asset = renderer.output / f"ibl_{name}.gltf"
+            asset.write_text(json.dumps(sphere_document(material, faces, light)), encoding="utf-8")
+            _, stage = renderer.session(f"ibl_{name}", asset, path, None)
+            image = engine_image(stage, [], Gf.Vec4f(0, 0, 0, 1))
+            image.save(str(renderer.output / f"ibl_{name}_{path}.png"))
+            result = Render(f"ibl_{name} {path}", image, stage)
+            return {key: result.sample(0, point) for key, point in SPHERE_POINTS.items()}
+
+        def dominant(label, sample, channels):
+            """Whether the named channels each exceed every other by DIFFERENT."""
+            others = [sample[c] for c in range(3) if c not in channels]
+            report.expect(f"{path} {label}", all(sample[c] >= max(others, default=0) + DIFFERENT for c in channels),
+                          f"{sample[:3]}, expected channels {channels} highest")
+
+        plain = render("colored", mirror, colored)
+        dominant("+X reflects to the right", plain["right"], (0,))
+        dominant("-X reflects to the left", plain["left"], (1,))
+        dominant("+Y reflects at the top", plain["top"], (2,))
+        dominant("-Y reflects at the bottom", plain["bottom"], (0, 1))
+        # A quarter turn about +Y: world +Z shows the cube's +X, world +X its -Z and world -X its +Z.
+        turned = render("rotated", mirror, colored, rotation=[0, math.sqrt(0.5), 0, math.sqrt(0.5)])
+        dominant("a rotation shows +X at the center", turned["center"], (0,))
+        report.expect(f"{path} a rotation shows -Z to the right", max(turned["right"][:3]) + DIFFERENT
+                      <= min(turned["left"][:3]), f"{turned['right']} and {turned['left']}")
+        dominant("a rotation keeps +Y at the top", turned["top"], (2,))
+
+        # UsdLux makes the dome's radiance its texture times its intensity, and a pixel of 1 is 1 nit.
+        mirrored = render("uniform", mirror, uniform)
+        diffuse = render("uniform_matte", matte, uniform)
+        doubled = render("uniform_doubled", mirror, uniform, intensity=2)
+        encoded = render("uniform_rgbd", mirror, rgbd)
+        dark = render("uniform_off", mirror, uniform, intensity=0)
+        for key in SPHERE_POINTS:
+            report.same(f"{path} a mirror reflects a uniform dome of 0.25 at the {key}", mirrored[key],
+                        (64, 64, 64, 255))
+            # Lambert's law: a white matte surface under uniform radiance L has radiance L.
+            report.same(f"{path} a white matte sphere shows a uniform dome of 0.25 at the {key}", diffuse[key],
+                        (64, 64, 64, 255))
+            report.same(f"{path} an intensity of 2 doubles the dome at the {key}", doubled[key], (128, 128, 128, 255))
+            report.same(f"{path} RGBD faces of the same value agree at the {key}", encoded[key], mirrored[key])
+            report.same(f"{path} an intensity of 0 is black at the {key}", dark[key], (0, 0, 0, 255))
+    qt[2].doneCurrent()
+
+
 def compare_paths(report, name, renders, samples, tolerance):
     if not all(renders.values()):
         return
@@ -1669,8 +1780,8 @@ def main():
 
     report = Report(arguments.verbose)
     renderer = Renderer(output, plugin, report)
-    for check in (check_reflections, check_lights, check_node_visibility, check_material_animation,
-                  check_material_variants,
+    for check in (check_reflections, check_lights, check_image_based_light, check_node_visibility,
+                  check_material_animation, check_material_variants,
                   check_unlit, check_points_and_lines, check_gpu_instancing, check_emissive_strength, check_ior,
                   check_specular, check_anisotropy, check_iridescence, check_sheen, check_clearcoat,
                   check_transmission, check_volume, check_dispersion, check_alpha_modes, check_base_color_textures,

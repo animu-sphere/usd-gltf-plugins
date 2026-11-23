@@ -8,6 +8,16 @@ here.
 
 ## [Unreleased]
 
+### Added
+
+- Import the selected scene's `EXT_lights_image_based` light as a `DomeLight` whose latlong the
+  package resolver converts on request from the first level's PNG or JPEG faces, decoding RGBD and LDR
+  faces, with the light's rotation and intensity. Later levels and the irradiance coefficients are
+  checked and not authored. Malformed values and faces fail with a diagnostic, and the extension
+  cannot be required. A derived USDZ carries the latlong as a Radiance image. stb_image 2.34 is
+  vendored to decode the faces. See the
+  [image-based lighting decision](docs/adr/0046-image-based-lighting.md).
+
 ## [0.17.0] - 2026-11-23
 
 ### Added

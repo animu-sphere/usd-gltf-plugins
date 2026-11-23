@@ -1,5 +1,5 @@
-# The OpenStrata descriptor of gltfTexture: image resolution and KTX2 and WebP decoding
-# (docs/architecture/WORKSPACE.md). A static library with no OpenUSD dependency. Its installed
+# The OpenStrata descriptor of gltfTexture: image resolution, KTX2 and WebP decoding, and the
+# latlong of image-based lights (docs/architecture/WORKSPACE.md). A static library with no OpenUSD dependency. Its installed
 # package carries the vendored Basis Universal and libwebp archives it links.
 schema: openstrata.library/v1alpha1
 library:

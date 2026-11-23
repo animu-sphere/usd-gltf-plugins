@@ -5,6 +5,9 @@
   RGBA to PNG, then to texture nodes. See [ADR 0005](../adr/0005-ktx2-decoder.md).
 - For `EXT_texture_webp`, provide the same path from WebP to PNG. See
   [ADR 0014](../adr/0014-webp-decoder.md).
+- For `EXT_lights_image_based`, decode the first level's PNG or JPEG faces with stb_image only when
+  the resolver serves them, and serve their latlong as a Radiance image. See
+  [ADR 0046](../adr/0046-image-based-lighting.md).
 - Avoid unnecessary degradation and incorrect color-space interpretation.
   Color and non-color inputs must be handled distinctly as described in
   [MATERIALS](MATERIALS.md).
@@ -27,7 +30,8 @@ when the detected format and exact input bytes match. The hash only locates cand
 Conversion settings and the decoder version are fixed by the loaded plugin, and the
 cache lives only as long as its scope. An external image file is read again on each
 open, so a changed or damaged file is still checked. Embedded images follow the
-parsed package's lifetime described in [ADR 0001](../adr/0001-image-assets.md#lifetime-cache-and-concurrency).
+parsed package's lifetime described in [ADR 0001](../adr/0001-image-assets.md#lifetime-cache-and-concurrency). The latlong of
+an image-based light is converted again on each open and is not cached.
 
 The cache retains up to 64 MiB of source and PNG payloads per scope. A conversion
 that exceeds the remaining budget is served directly. Returned assets own their

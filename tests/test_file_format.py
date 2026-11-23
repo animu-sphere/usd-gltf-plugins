@@ -994,6 +994,109 @@ def light_document(extension):
     return document, binary
 
 
+IBL = "EXT_lights_image_based"
+# The color of each face of the cube, in the order +X, -X, +Y, -Y, +Z, -Z.
+FACE_COLORS = ((255, 0, 0), (0, 255, 255), (0, 255, 0), (255, 0, 255), (0, 0, 255), (255, 255, 0))
+FACE_JPEG = (pathlib.Path(__file__).parent / "fixtures" / "textures" / "face.jpg").read_bytes()
+
+
+def uniform_png(size, pixel, depth=8):
+    """A PNG of `size` square in one color: gray, gray and alpha, RGB or RGBA by the pixel's length."""
+    color = {1: 0, 2: 4, 3: 2, 4: 6}[len(pixel)]
+    sample = b"".join(struct.pack(">H" if depth == 16 else ">B", value) for value in pixel)
+    rows = (b"\0" + sample * size) * size
+    return (b"\x89PNG\r\n\x1a\n" + png_chunk(b"IHDR", struct.pack(">IIBBBBB", size, size, depth, color, 0, 0, 0))
+            + png_chunk(b"IDAT", zlib.compress(rows)) + png_chunk(b"IEND", b""))
+
+
+def png_with_damaged_data(size):
+    """A PNG whose chunks are valid but whose compressed data is not, so only decoding finds it."""
+    return (b"\x89PNG\r\n\x1a\n" + png_chunk(b"IHDR", struct.pack(">IIBBBBB", size, size, 8, 2, 0, 0, 0))
+            + png_chunk(b"IDAT", b"\x78\x01" + b"\xff" * 16) + png_chunk(b"IEND", b""))
+
+
+def ibl_document(extension, source="bufferView", directory=None, size=4, levels=2, faces=None, **values):
+    """A mesh document whose scene references an EXT_lights_image_based light, with `levels` levels of uniform
+    faces in FACE_COLORS, or `faces` as the first level's. `source` is bufferView, data or file; files are written
+    to `directory`. `values` are the light's other properties."""
+    document, binary = mesh_document(extension)
+    if binary is None:
+        binary = base64.b64decode(document["buffers"][0]["uri"].split(",", 1)[1])
+    document["extensionsUsed"] = [IBL]
+    document["images"] = []
+    for level in range(levels):
+        for face in range(6):
+            data = faces[face] if faces and level == 0 else uniform_png(size >> level, FACE_COLORS[face])
+            mime = "image/jpeg" if data.startswith(b"\xff\xd8") else "image/png"
+            if source == "bufferView":
+                binary = append_view(document, binary, extension, data)
+                image = {"bufferView": len(document["bufferViews"]) - 1, "mimeType": mime}
+            elif source == "data":
+                image = {"uri": f"data:{mime};base64," + base64.b64encode(data).decode()}
+            else:
+                name = f"face_{level}_{face}" + (".jpg" if mime == "image/jpeg" else ".png")
+                (directory / name).write_bytes(data)
+                image = {"uri": name}
+            document["images"].append(image)
+    light = {"specularImageSize": size, "irradianceCoefficients": [[0.5, 0.25, 0.125]] * 9,
+             "specularImages": [[level * 6 + face for face in range(6)] for level in range(levels)], **values}
+    document["extensions"] = {IBL: {"lights": [light]}}
+    document["scenes"][0]["extensions"] = {IBL: {"light": 0}}
+    return document, binary if extension == "glb" else None
+
+
+def read_rgbe(data):
+    """Returns the rows of a Radiance image as (r, g, b) values."""
+    header_end = data.index(b"\n\n") + 2
+    line_end = data.index(b"\n", header_end)
+    assert data[:header_end] == b"#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n"
+    height, width = map(int, re.fullmatch(rb"-Y (\d+) \+X (\d+)", data[header_end:line_end]).groups())
+    position = line_end + 1
+    rows = []
+    for _ in range(height):
+        channels = [[0] * width for _ in range(4)]
+        if 8 <= width <= 32767:
+            assert data[position:position + 4] == bytes((2, 2, width >> 8, width & 0xFF))
+            position += 4
+            for channel in channels:
+                x = 0
+                while x < width:
+                    count = data[position]
+                    if count > 128:
+                        channel[x:x + count - 128] = [data[position + 1]] * (count - 128)
+                        position += 2
+                        x += count - 128
+                    else:
+                        channel[x:x + count] = data[position + 1:position + 1 + count]
+                        position += 1 + count
+                        x += count
+        else:
+            for x in range(width):
+                for channel in range(4):
+                    channels[channel][x] = data[position + x * 4 + channel]
+            position += width * 4
+        row = []
+        for r, g, b, e in zip(*channels):
+            scale = math.ldexp(1.0, e - 136) if e else 0.0
+            row.append((r * scale, g * scale, b * scale))
+        rows.append(row)
+    assert position == len(data)
+    return rows
+
+
+def latlong_toward(rows, direction):
+    """The latlong's pixel in a direction, by OpenEXR's latlong: +Z in the middle, +X a quarter across, +Y on top."""
+    x, y, z = Gf.Vec3d(*direction).GetNormalized()
+    u = (1 - math.atan2(x, z) / math.pi) / 2
+    v = 0.5 - math.asin(y) / math.pi
+    return rows[min(int(v * len(rows)), len(rows) - 1)][min(int(u * len(rows[0])), len(rows[0]) - 1)]
+
+
+def decoded_face(code, alpha=255, maximum=255):
+    """A face's value as ADR 0046 decodes it."""
+    return (code / maximum) ** 2.2 / (alpha / maximum)
+
+
 def gltf_projection(camera):
     """Returns a camera's projection from the glTF specification, in USD's row-vector convention.
 
@@ -4588,6 +4691,7 @@ class FileFormatTest(unittest.TestCase):
                     extension, {"uri": "data:image/png;base64," + base64.b64encode(PNG).decode()}, PNG)
                 sources[f"external-image.{extension}"] = textured_document(
                     extension, {"uri": "tex.png"}, PNG)
+                sources[f"image-based-light.{extension}"] = ibl_document(extension)
             package = root / "package.usdz"
             writer = Sdf.ZipFileWriter.CreateNew(str(package))
             for name in ("root.usda", "tex.png", "mesh.bin"):
@@ -4644,7 +4748,7 @@ for prim in stage.Traverse():
         images.add(asset.path[2:])
 assert set(entries[1:]) == images, entries
 assert len(images) == int(sys.argv[2]), images
-assert all(Path(name).suffix in {".png", ".jpg", ".jpeg"} for name in images), images
+assert all(Path(name).suffix in {".png", ".jpg", ".jpeg", ".hdr"} for name in images), images
 
 # Compare the authored scene, including unselected variants, after normalizing asset paths.
 layer = Sdf.Layer.CreateAnonymous(".usda")
@@ -4666,10 +4770,12 @@ assert layer.ExportToString() == Path(sys.argv[3]).read_text(encoding="utf-8")
                     ("ktx2_textures.gltf", 6),
                     ("webp.glb", 1),
                     ("animated.glb", 0),
+                    ("image_based_light.glb", 1),
                 ]
                 for name, _ in assets[:2]:
                     shutil.copyfile(fixtures / name, sources / name)
                 write_asset(sources / "webp.glb", *webp_document("glb", None, webp_fixture("lossy")))
+                write_asset(sources / "image_based_light.glb", *ibl_document("glb"))
                 translation = [{"input": [0, 1], "output": [0, 0, 0, 1, 0, 0]}]
                 rotation = [{"input": [0, 1], "output": [0, 0, 0, 1, 0, 0, 1, 0],
                              "type": "VEC4"}]
@@ -4714,10 +4820,17 @@ assert layer.ExportToString() == Path(sys.argv[3]).read_text(encoding="utf-8")
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
             source = root / "damaged.glb"
-            write_asset(source, *webp_document("glb", None, webp_without_tokens()))
             destination = root / "output.usdz"
-            for existing in (False, True):
-                with self.subTest(existing=existing):
+            lighting, lighting_binary = ibl_document("glb")
+            lighting_binary = append_view(lighting, lighting_binary, "glb", png_with_damaged_data(4))
+            lighting["images"][0] = {"bufferView": len(lighting["bufferViews"]) - 1, "mimeType": "image/png"}
+            for kind, existing in itertools.product(("WebP", "image-based light"), (False, True)):
+                with self.subTest(kind=kind, existing=existing):
+                    if kind == "WebP":
+                        write_asset(source, *webp_document("glb", None, webp_without_tokens()))
+                    else:
+                        write_asset(source, lighting, lighting_binary)
+                    destination.unlink(missing_ok=True)
                     if existing:
                         destination.write_bytes(b"previous output")
                     result = subprocess.run(
@@ -8199,6 +8312,260 @@ assert layer.ExportToString() == Path(sys.argv[3]).read_text(encoding="utf-8")
                     stage = Usd.Stage.Open(str(path))
                     authored = [str(prim.GetPath()) for prim in stage.Traverse() if prim.HasAPI(UsdLux.LightAPI)]
                     self.assertEqual(authored, ["/Root/Scenes/Scene_0/Node_0/Light_0"])
+
+    def assert_face_color(self, actual, expected, label):
+        """RGBE keeps each channel within about 1/256 of the largest."""
+        largest = max(expected)
+        for a, e in zip(actual, expected):
+            self.assertAlmostEqual(a, e, delta=largest * 0.01 + 1e-9, msg=f"{label}: {actual}, expected {expected}")
+
+    def test_image_based_light(self):
+        # A quarter turn about +Y, unnormalized: the environment seen toward world +Z is the cube's +X face.
+        rotation = [0, 0.5, 0, 0.5]
+        seen = {(0, 0, 1): 0, (1, 0, 0): 5, (-1, 0, 0): 4, (0, 0, -1): 1, (0, 1, 0): 2, (0, -1, 0): 3}
+        path_of = "/Root/Scenes/Scene_0/ImageBasedLight_0"
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            for extension, source in itertools.product(("gltf", "glb"), ("bufferView", "data", "file")):
+                with self.subTest(extension=extension, source=source):
+                    path = root / f"ibl_{source}.{extension}"
+                    document, binary = ibl_document(extension, source, root, rotation=rotation, intensity=2.5,
+                                                    name="Sky / light")
+                    write_asset(path, document, binary)
+                    stage = Usd.Stage.Open(str(path))
+                    lights = [prim for prim in stage.Traverse() if prim.HasAPI(UsdLux.LightAPI)]
+                    self.assertEqual([str(prim.GetPath()) for prim in lights], [path_of])
+                    prim = lights[0]
+                    self.assertEqual(prim.GetTypeName(), "DomeLight")
+                    self.assertEqual(prim.GetDisplayName(), "Sky / light")
+                    dome = UsdLux.DomeLight(prim)
+                    self.assertEqual(dome.GetTextureFormatAttr().Get(), UsdLux.Tokens.latlong)
+                    self.assertAlmostEqual(dome.GetIntensityAttr().Get(), 2.5)
+                    self.assertEqual(dome.GetColorAttr().Get(), Gf.Vec3f(1))
+                    self.assertEqual(dome.GetExposureAttr().Get(), 0)
+                    ops = dome.GetOrderedXformOps()
+                    self.assertEqual([op.GetOpName() for op in ops], ["xformOp:orient"])
+                    half = math.sqrt(0.5)
+                    self.assertTrue(Gf.IsClose(ops[0].Get().GetImaginary(), Gf.Vec3f(0, -half, 0), 1e-6))
+                    self.assertAlmostEqual(ops[0].Get().GetReal(), half, places=6)
+                    asset = dome.GetTextureFileAttr().Get()
+                    self.assertEqual(asset.path, f"./{path.name}[lights/0.hdr]")
+                    served = asset_bytes(asset.resolvedPath)
+                    rows = read_rgbe(served)
+                    self.assertEqual((len(rows[0]), len(rows)), (16, 8))
+                    # The texture is in the dome's frame, which the renderer places by its transform.
+                    to_dome = UsdGeom.XformCache().GetLocalToWorldTransform(prim).GetInverse()
+                    for world, face in seen.items():
+                        local = to_dome.TransformDir(Gf.Vec3d(*world))
+                        self.assert_face_color(latlong_toward(rows, local),
+                                               [decoded_face(c) for c in FACE_COLORS[face]], f"toward {world}")
+                    for suffix in ("usda", "usdc"):
+                        copy = root / f"ibl_{source}_{extension}.{suffix}"
+                        self.assertTrue(stage.GetRootLayer().Export(str(copy)))
+                        reopened = Usd.Stage.Open(str(copy))
+                        copied = UsdLux.DomeLight(reopened.GetPrimAtPath(path_of))
+                        self.assertEqual(copied.GetTextureFileAttr().Get().resolvedPath, asset.resolvedPath)
+                        self.assertEqual(asset_bytes(copied.GetTextureFileAttr().Get().resolvedPath), served)
+                        self.assertEqual(copied.GetOrderedXformOps()[0].Get(), ops[0].Get())
+                        del copied, reopened
+
+    def test_image_based_light_values(self):
+        stages = []
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+
+            def open_dome(name, document, binary=None, extension="gltf"):
+                path = root / f"{name}.{extension}"
+                write_asset(path, document, binary)
+                stage = Usd.Stage.Open(str(path))
+                # A prim is valid only while its stage is open.
+                stages.append(stage)
+                prims = [prim for prim in stage.Traverse() if prim.IsA(UsdLux.DomeLight)]
+                return UsdLux.DomeLight(prims[0]) if prims else None
+
+            def latlong(dome):
+                return read_rgbe(asset_bytes(dome.GetTextureFileAttr().Get().resolvedPath))
+
+            with self.subTest("defaults"):
+                dome = open_dome("defaults", ibl_document("gltf")[0])
+                self.assertEqual(dome.GetPrim().GetDisplayName(), "")
+                self.assertEqual(dome.GetIntensityAttr().Get(), 1)
+                self.assertEqual(dome.GetOrderedXformOps()[0].Get(), Gf.Quatf(1, 0, 0, 0))
+            with self.subTest("zero intensity"):
+                self.assertEqual(open_dome("zero", ibl_document("gltf", intensity=0)[0]).GetIntensityAttr().Get(), 0)
+            for size, levels in ((1, 1), (4, 3), (16, 1)):
+                with self.subTest(size=size, levels=levels):
+                    dome = open_dome(f"levels_{size}_{levels}", ibl_document("gltf", size=size, levels=levels)[0])
+                    rows = latlong(dome)
+                    self.assertEqual((len(rows[0]), len(rows)), (4 * size, 2 * size))
+                    self.assert_face_color(latlong_toward(rows, (0, 1, 0)), [decoded_face(c) for c in FACE_COLORS[2]],
+                                           "toward +Y")
+            with self.subTest("encodings"):
+                faces = [uniform_png(4, (255, 128, 64, 64)), uniform_png(4, (65535, 32768, 0, 16384), 16),
+                         uniform_png(4, (128,)), uniform_png(4, (255, 128)), uniform_png(4, (255, 255, 255, 0)),
+                         uniform_png(4, (10, 20, 30))]
+                expected = [[decoded_face(c, 64) for c in (255, 128, 64)],
+                            [decoded_face(c, 16384, 65535) for c in (65535, 32768, 0)],
+                            [decoded_face(128)] * 3, [decoded_face(255, 128)] * 3, [0, 0, 0],
+                            [decoded_face(c) for c in (10, 20, 30)]]
+                rows = latlong(open_dome("encodings", ibl_document("gltf", "data", levels=1, faces=faces)[0]))
+                axes = ((1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1))
+                for axis, wanted in zip(axes, expected):
+                    self.assert_face_color(latlong_toward(rows, axis), wanted, f"toward {axis}")
+            for extension, source in itertools.product(("gltf", "glb"), ("bufferView", "file")):
+                with self.subTest("JPEG", extension=extension, source=source):
+                    document, binary = ibl_document(extension, source, root, size=16, levels=1, faces=[FACE_JPEG] * 6)
+                    rows = latlong(open_dome(f"jpeg_{source}", document, binary, extension))
+                    for row in rows:
+                        for pixel in row:
+                            for value, code in zip(pixel, (200, 100, 50)):
+                                self.assertTrue(decoded_face(code - 2) * 0.99 <= value <= decoded_face(code + 2) * 1.01,
+                                                pixel)
+            with self.subTest("without a reference"):
+                document = ibl_document("gltf")[0]
+                del document["scenes"][0]["extensions"]
+                self.assertIsNone(open_dome("unreferenced", document))
+            with self.subTest("light of another scene"):
+                # Light 0 is invalid, but only scene 1, which is not selected, references it.
+                document = ibl_document("gltf")[0]
+                document["extensions"][IBL]["lights"].insert(0, {"specularImageSize": 3})
+                document["scenes"][0]["extensions"][IBL]["light"] = 1
+                document["scenes"].append({"nodes": [], "extensions": {IBL: {"light": 0}}})
+                dome = open_dome("other_scene", document)
+                self.assertEqual(dome.GetPath(), "/Root/Scenes/Scene_0/ImageBasedLight_1")
+                self.assertEqual(dome.GetTextureFileAttr().Get().path, "./other_scene.gltf[lights/1.hdr]")
+                self.assertTrue(latlong(dome))
+            with self.subTest("entries"):
+                dome = open_dome("entries", ibl_document("gltf")[0])
+                base = dome.GetTextureFileAttr().Get().resolvedPath.split("[")[0]
+                self.assertTrue(Ar.GetResolver().Resolve(f"{base}[lights/0.hdr]"))
+                for entry in ("lights/1.hdr", "lights/00.hdr", "lights/0.png", "images/0.hdr", "lights/0.hdr.hdr"):
+                    self.assertFalse(Ar.GetResolver().Resolve(f"{base}[{entry}]"), entry)
+            with self.subTest("no warning"):
+                path = root / "warning.gltf"
+                write_asset(path, ibl_document("gltf")[0])
+                result = subprocess.run(
+                    [sys.executable, "-c", "from pxr import Usd; import sys; assert Usd.Stage.Open(sys.argv[1])",
+                     str(path)], capture_output=True, text=True, check=False)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertNotIn(IBL, result.stderr)
+
+    def test_damaged_image_based_light_face_fails_when_read(self):
+        # Only the structure is checked at import, so the resolver's decoding finds the damage.
+        with tempfile.TemporaryDirectory() as directory:
+            for level in (0, 1):
+                with self.subTest(level=level):
+                    path = pathlib.Path(directory) / f"damaged_{level}.glb"
+                    document, binary = ibl_document("glb")
+                    binary = append_view(document, binary, "glb", png_with_damaged_data(4 >> level))
+                    document["images"][level * 6 + 3] = {"bufferView": len(document["bufferViews"]) - 1,
+                                                         "mimeType": "image/png"}
+                    write_asset(path, document, binary)
+                    stage = Usd.Stage.Open(str(path))
+                    dome = UsdLux.DomeLight(stage.GetPrimAtPath("/Root/Scenes/Scene_0/ImageBasedLight_0"))
+                    asset = dome.GetTextureFileAttr().Get()
+                    self.assertTrue(asset.resolvedPath)
+                    opened = Ar.GetResolver().OpenAsset(Ar.ResolvedPath(asset.resolvedPath))
+                    # Only the first level is decoded.
+                    self.assertEqual(opened is None, level == 0)
+
+    def test_image_based_light_failures_preserve_layer(self):
+        def light(document):
+            return document["extensions"][IBL]["lights"][0]
+
+        def root_extension(document):
+            return document["extensions"]
+
+        def light_list(document):
+            return document["extensions"][IBL]
+
+        def scene(document):
+            return document["scenes"][0]["extensions"]
+
+        def setter(target, key, value):
+            def change(document):
+                target(document)[key] = value
+            return change
+
+        def remover(key):
+            def change(document):
+                del light(document)[key]
+            return change
+
+        def face(index, data):
+            def change(document):
+                document["images"][index] = {"uri": "data:image/png;base64," + base64.b64encode(data).decode()}
+            return change
+
+        prefix = "EXT_lights_image_based light 0: "
+        rotation = prefix + "rotation must be four numbers from -1 to 1 with a nonzero length"
+        intensity = prefix + "intensity must be a finite number of at least 0"
+        coefficients = prefix + "irradianceCoefficients must be nine arrays of three finite numbers"
+        size = prefix + "specularImageSize must be a power of two from 1 to 16384"
+        images = prefix + "specularImages must be a nonempty array of at most 3 arrays of six image indices"
+        cases = [
+            (setter(root_extension, IBL, []), "EXT_lights_image_based must be an object with a lights array"),
+            (setter(light_list, "lights", {}), "EXT_lights_image_based must be an object with a lights array"),
+            (setter(scene, IBL, 0), "glTF scene 0: EXT_lights_image_based must be an object with a light index"),
+            (setter(scene, IBL, {"light": -1}),
+             "glTF scene 0: EXT_lights_image_based must be an object with a light index"),
+            (setter(scene, IBL, {"light": 1}), "glTF scene 0: EXT_lights_image_based light 1 is out of range"),
+            (lambda d: d.pop("extensions"), "glTF scene 0: EXT_lights_image_based light 0 is out of range"),
+            (lambda d: d.__setitem__("extensionsUsed", []),
+             "EXT_lights_image_based must be declared in extensionsUsed"),
+            (setter(light_list, "lights", [1]), "EXT_lights_image_based light 0 is not an object"),
+            (setter(light, "name", 1), prefix + "name must be a string"),
+            (setter(light, "rotation", [0, 0, 1]), rotation),
+            (setter(light, "rotation", [0, 0, 0, 0]), rotation),
+            (setter(light, "rotation", [0, 0, 1.5, 0]), rotation),
+            (setter(light, "rotation", [0, 0, "1", 0]), rotation),
+            (setter(light, "intensity", -0.5), intensity),
+            (setter(light, "intensity", "1"), intensity),
+            (setter(light, "intensity", 1e39), prefix + "its intensity is beyond a float"),
+            (remover("irradianceCoefficients"), coefficients),
+            (setter(light, "irradianceCoefficients", [[0, 0, 0]] * 8), coefficients),
+            (setter(light, "irradianceCoefficients", [[0, 0]] * 9), coefficients),
+            (setter(light, "irradianceCoefficients", [[0, 0, "0"]] * 9), coefficients),
+            (remover("specularImageSize"), size),
+            (setter(light, "specularImageSize", 0), size),
+            (setter(light, "specularImageSize", 3), size),
+            (setter(light, "specularImageSize", 32768), size),
+            (setter(light, "specularImageSize", 4.5), size),
+            (remover("specularImages"), images),
+            (setter(light, "specularImages", []), images),
+            (setter(light, "specularImages", [list(range(6))] * 4), images),
+            (setter(light, "specularImages", [list(range(5))]), images),
+            (setter(light, "specularImages", [[0, 1, 2, 3, 4, "5"]]), images),
+            (setter(light, "specularImages", [[0, 1, 2, 3, 4, 12]]),
+             prefix + "specularImages level 0 face 5 image 12 is out of range"),
+            (face(7, uniform_png(4, (0, 0, 0))),
+             prefix + "specularImages level 1 face -X (image 7): image is 4 by 4 pixels, not 2 square"),
+            (face(0, webp_fixture("lossless")), "specularImages level 0 face +X (image 0): image is not PNG or JPEG"),
+            (face(0, PNG[:-12]), "specularImages level 0 face +X (image 0): PNG image is damaged"),
+            (face(0, b"not an image"), "embedded image is not PNG, JPEG, KTX2 or WebP"),
+            (face(0, png_declaring(16385, 16385)), "image is wider or taller than 16384 pixels"),
+            (lambda d: d.__setitem__("extensionsRequired", [IBL]),
+             "unsupported required extensions: EXT_lights_image_based"),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            for extension in ("gltf", "glb"):
+                document, binary = ibl_document(extension, "data")
+                path = pathlib.Path(directory) / f"ibl.{extension}"
+                write_asset(path, document, binary)
+                layer = Sdf.Layer.FindOrOpen(str(path))
+                before = layer_text(layer)
+                self.assertIn("ImageBasedLight_0", before)
+                for change, message in cases:
+                    with self.subTest(extension=extension, message=message):
+                        changed = json.loads(json.dumps(document))
+                        change(changed)
+                        write_asset(path, changed, binary)
+                        with self.assertRaisesRegex(Tf.ErrorException, re.escape(message)):
+                            layer.Reload(True)
+                        self.assertEqual(layer_text(layer), before)
+                write_asset(path, document, binary)
+                self.assertTrue(layer.Reload(True))
+                self.assertEqual(layer_text(layer), before)
 
     def test_node_visibility(self):
         name = "KHR_node_visibility"

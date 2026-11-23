@@ -162,7 +162,7 @@
     "Duck/glTF/Duck.gltf": {"meaning": "verified", "meshes": 1, "opened": "opened", "rendered": {"mtlx": "drawn", "preview": "drawn"}, "warnings": []},
     "EmissiveStrengthTest/glTF-Binary/EmissiveStrengthTest.glb": {"meaning": "verified", "meshes": 6, "opened": "opened", "rendered": {"mtlx": "drawn", "preview": "drawn"}, "warnings": []},
     "EmissiveStrengthTest/glTF/EmissiveStrengthTest.gltf": {"meaning": "verified", "meshes": 6, "opened": "opened", "rendered": {"mtlx": "drawn", "preview": "drawn"}, "warnings": []},
-    "EnvironmentTest/glTF-IBL/EnvironmentTest.gltf": {"ignored": ["EXT_lights_image_based"], "meaning": "partial", "meshes": 3, "opened": "opened", "rendered": {"mtlx": "drawn", "preview": "drawn"}, "warnings": []},
+    "EnvironmentTest/glTF-IBL/EnvironmentTest.gltf": {"meaning": "verified", "meshes": 3, "opened": "opened", "rendered": {"mtlx": "drawn", "preview": "drawn"}, "warnings": []},
     "EnvironmentTest/glTF/EnvironmentTest.gltf": {"meaning": "verified", "meshes": 3, "opened": "opened", "rendered": {"mtlx": "drawn", "preview": "drawn"}, "warnings": []},
     "FlightHelmet/glTF-KTX-BasisU/FlightHelmet.gltf": {"meaning": "verified", "meshes": 6, "opened": "opened", "rendered": {"mtlx": "drawn", "preview": "drawn"}, "warnings": ["glTF material 5: UsdPreviewSurface has no transmission; its network ignores KHR_materials_transmission"]},
     "FlightHelmet/glTF/FlightHelmet.gltf": {"meaning": "verified", "meshes": 6, "opened": "opened", "rendered": {"mtlx": "drawn", "preview": "drawn"}, "warnings": ["glTF material 5: UsdPreviewSurface has no transmission; its network ignores KHR_materials_transmission"]},

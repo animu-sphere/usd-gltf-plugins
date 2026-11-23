@@ -86,7 +86,9 @@ no sheen is authored. For an [iridescent film](0022-iridescence.md) of strength 
 strength and raw R texture, uniform film ior, and thickness from its maximum or a range interpolated
 by raw G in MaterialX, and that Preview has none; otherwise, that no film is authored. Each
 [XMP packet](0045-xmp-metadata.md) on the `assetInfo` of every prim made from an object that
-references it and in its animation's variant, and that no other prim has one.
+references it and in its animation's variant, and that no other prim has one. The selected scene's
+[image-based light](0046-image-based-lighting.md) as a dome light, its name, format, intensity, color,
+exposure and rotation, and the latlong the resolver serves against one computed from the PNG faces.
 
 ## Evidence that it can fail
 
@@ -100,6 +102,11 @@ output; other stage metrics; and MaterialX alpha mode and cutoff and Preview's t
 For XMP metadata, separate session edits on XmpMetadataRoundedCube each produced a mismatch: a
 changed mesh title, an added key and a creator list turned into a string or reordered on `/Root`, and
 a packet on a node that has none.
+
+For an image-based light, separate session edits on EnvironmentTest's glTF-IBL file each produced a
+mismatch: the dome's intensity, color, display name and texture format, its orientation set to the
+identity or turned the other way, its texture pointed at a face, and the dome deactivated. A latlong
+turned upside down differed at almost every pixel.
 
 For an iridescent film, separate session edits to its strength, film ior, thickness maximum,
 thickness minimum and thickness channel each produced a mismatch on a generated textured quad.

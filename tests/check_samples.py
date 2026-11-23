@@ -26,9 +26,11 @@ import os
 import pathlib
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import urllib.parse
+import zlib
 
 import numpy
 
@@ -42,9 +44,13 @@ NODE_VISIBILITY = "KHR_node_visibility"
 ANIMATION_POINTER = "KHR_animation_pointer"
 INSTANCING = "EXT_mesh_gpu_instancing"
 XMP = "KHR_xmp_json_ld"
+IMAGE_BASED_LIGHT = "EXT_lights_image_based"
+# The widest latlong of an image-based light, as ADR 0046 decides.
+LATLONG_WIDTH = 8192
 VISIBILITY_POINTER = re.compile(r"/nodes/(0|[1-9][0-9]*)/extensions/KHR_node_visibility/visible")
 IMPLEMENTED_EXTENSIONS = {
-    "EXT_texture_webp", INSTANCING, DRACO, MESHOPT, "KHR_lights_punctual", "KHR_materials_anisotropy",
+    IMAGE_BASED_LIGHT, "EXT_texture_webp", INSTANCING, DRACO, MESHOPT, "KHR_lights_punctual",
+    "KHR_materials_anisotropy",
     "KHR_materials_clearcoat", "KHR_materials_dispersion", EMISSIVE_STRENGTH, "KHR_materials_ior",
     "KHR_materials_iridescence", "KHR_materials_sheen", "KHR_materials_specular", "KHR_materials_transmission",
     "KHR_materials_unlit", "KHR_materials_volume", MATERIAL_VARIANTS, "KHR_mesh_quantization", NODE_VISIBILITY,
@@ -1932,6 +1938,203 @@ def check_xmp(check, stage, asset, node_paths, dropped):
             variants.ClearVariantSelection()
 
 
+def unfilter_png(raw, height, stride, step):
+    """Undoes a PNG's row filters, returning its rows of bytes."""
+    rows = numpy.zeros((height, stride), numpy.uint8)
+    previous = numpy.zeros(stride, numpy.int32)
+    for y in range(height):
+        start = y * (stride + 1)
+        kind = raw[start]
+        line = numpy.frombuffer(raw[start + 1:start + 1 + stride], numpy.uint8).astype(numpy.int32)
+        if kind == 0:
+            current = line
+        elif kind == 2:
+            current = (line + previous) & 0xFF
+        elif kind in (1, 3, 4):
+            current = [0] * stride
+            above = previous.tolist()
+            values = line.tolist()
+            for i in range(stride):
+                left = current[i - step] if i >= step else 0
+                if kind == 1:
+                    predicted = left
+                elif kind == 3:
+                    predicted = (left + above[i]) // 2
+                else:
+                    corner = above[i - step] if i >= step else 0
+                    estimate = left + above[i] - corner
+                    distances = (abs(estimate - left), abs(estimate - above[i]), abs(estimate - corner))
+                    predicted = (left, above[i], corner)[distances.index(min(distances))]
+                current[i] = (values[i] + predicted) & 0xFF
+            current = numpy.array(current, numpy.int32)
+        else:
+            raise ValueError(f"PNG row filter {kind}")
+        rows[y] = current
+        previous = current
+    return rows
+
+
+def decode_png(data):
+    """Returns a PNG's pixels as RGBA samples and the largest sample, with alpha at its largest where the image has
+    none. Only 8-bit and 16-bit images that are not interlaced and have no transparency chunk are read."""
+    if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise ValueError("a face that is not PNG is not compared")
+    offset = 8
+    compressed = b""
+    while offset < len(data):
+        length, kind = struct.unpack_from(">I4s", data, offset)
+        chunk = data[offset + 8:offset + 8 + length]
+        if kind == b"IHDR":
+            width, height, depth, color, _, _, interlace = struct.unpack(">IIBBBBB", chunk)
+        elif kind == b"IDAT":
+            compressed += chunk
+        elif kind in (b"tRNS", b"PLTE"):
+            raise ValueError("a PNG face with a palette or transparency chunk is not compared")
+        offset += 12 + length
+    channels = {0: 1, 2: 3, 4: 2, 6: 4}.get(color)
+    if channels is None or depth not in (8, 16) or interlace:
+        raise ValueError(f"a PNG face of color type {color}, depth {depth} or interlaced is not compared")
+    step = channels * depth // 8
+    rows = unfilter_png(zlib.decompress(compressed), height, width * step, step)
+    samples = rows.reshape(height, width, channels * depth // 8).astype(numpy.float64)
+    if depth == 16:
+        samples = samples[..., 0::2] * 256 + samples[..., 1::2]
+    maximum = 255.0 if depth == 8 else 65535.0
+    gray = samples[..., :1] if channels <= 2 else samples[..., :3]
+    color_samples = numpy.repeat(gray, 3, axis=2) if channels <= 2 else gray
+    alpha = samples[..., -1:] if channels in (2, 4) else numpy.full((height, width, 1), maximum)
+    return numpy.concatenate([color_samples, alpha], axis=2), maximum
+
+
+def decode_rgbe(data):
+    """Returns a Radiance image's values as rows, pixels and RGB."""
+    header_end = data.index(b"\n\n") + 2
+    line_end = data.index(b"\n", header_end)
+    if not data.startswith(b"#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n"):
+        raise ValueError("not a Radiance RGBE image")
+    height, width = map(int, re.fullmatch(rb"-Y (\d+) \+X (\d+)", data[header_end:line_end]).groups())
+    position = line_end + 1
+    pixels = numpy.zeros((height, width, 4), numpy.uint8)
+    for row in range(height):
+        if 8 <= width <= 32767:
+            position += 4
+            for channel in range(4):
+                x = 0
+                while x < width:
+                    count = data[position]
+                    if count > 128:
+                        pixels[row, x:x + count - 128, channel] = data[position + 1]
+                        position += 2
+                        x += count - 128
+                    else:
+                        pixels[row, x:x + count, channel] = numpy.frombuffer(data[position + 1:position + 1 + count],
+                                                                             numpy.uint8)
+                        position += 1 + count
+                        x += count
+        else:
+            pixels[row] = numpy.frombuffer(data[position:position + width * 4], numpy.uint8).reshape(width, 4)
+            position += width * 4
+    exponent = pixels[..., 3].astype(numpy.int32)
+    scale = numpy.where(exponent > 0, numpy.ldexp(1.0, exponent - 136), 0.0)
+    return pixels[..., :3] * scale[..., None]
+
+
+def expected_latlong(faces, size):
+    """The latlong of a cube's first level as ADR 0046 decides, computed here from the faces: each pixel's center by
+    OpenEXR's latlong, the face and point OpenGL's cube maps give that direction, and bilinear sampling within the
+    face, with its rows reversed and its values decoded as (c / max)^2.2 / (a / max)."""
+    stack = []
+    for data in faces:
+        samples, maximum = decode_png(data)
+        alpha = samples[..., 3:] / maximum
+        with numpy.errstate(divide="ignore", invalid="ignore"):
+            stack.append(numpy.where(alpha > 0, (samples[..., :3] / maximum) ** 2.2 / alpha, 0.0))
+    stack = numpy.stack(stack)
+    width = min(4 * size, LATLONG_WIDTH)
+    height = width // 2
+    latitude, longitude = numpy.meshgrid(numpy.pi * (0.5 - (numpy.arange(height) + 0.5) / height),
+                                         numpy.pi * (1 - 2 * (numpy.arange(width) + 0.5) / width), indexing="ij")
+    x = numpy.sin(longitude) * numpy.cos(latitude)
+    y = numpy.sin(latitude)
+    z = numpy.cos(longitude) * numpy.cos(latitude)
+    ax, ay, az = numpy.abs(x), numpy.abs(y), numpy.abs(z)
+    along_x = (ax >= ay) & (ax >= az)
+    along_y = ~along_x & (ay >= az)
+    face = numpy.select([along_x & (x >= 0), along_x, along_y & (y >= 0), along_y, z >= 0], [0, 1, 2, 3, 4], 5)
+    major = numpy.select([along_x, along_y], [ax, ay], az)
+    sc = numpy.select([face == 0, face == 1, face == 5], [-z, z, -x], x)
+    tc = numpy.select([face == 2, face == 3], [z, -z], -y)
+    column = numpy.clip((sc / major + 1) / 2 * size - 0.5, 0, size - 1)
+    row = numpy.clip((1 - (tc / major + 1) / 2) * size - 0.5, 0, size - 1)
+    c0, r0 = column.astype(int), row.astype(int)
+    c1, r1 = numpy.minimum(c0 + 1, size - 1), numpy.minimum(r0 + 1, size - 1)
+    fc, fr = (column - c0)[..., None], (row - r0)[..., None]
+    top = stack[face, r0, c0] * (1 - fc) + stack[face, r0, c1] * fc
+    bottom = stack[face, r1, c0] * (1 - fc) + stack[face, r1, c1] * fc
+    return top * (1 - fr) + bottom * fr
+
+
+def rotation_matrix(q):
+    """The matrix that rotates column vectors by the unit quaternion (x, y, z, w)."""
+    x, y, z, w = q
+    return numpy.array([[1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+                        [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+                        [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)]])
+
+
+def check_image_based_light(check, stage, asset):
+    """Compares the selected scene's EXT_lights_image_based light with its dome light, and the latlong the resolver
+    serves with one computed from the faces. Returns the dome's path, or None."""
+    from pxr import Ar, Usd, UsdGeom, UsdLux
+
+    document = asset.json
+    scenes = document.get("scenes", [])
+    selected = document.get("scene", 0)
+    reference = scenes[selected].get("extensions", {}).get(IMAGE_BASED_LIGHT) if scenes else None
+    if not reference:
+        return None
+    index = reference["light"]
+    light = document["extensions"][IMAGE_BASED_LIGHT]["lights"][index]
+    path = f"/Root/Scenes/Scene_{selected}/ImageBasedLight_{index}"
+    prim = stage.GetPrimAtPath(path)
+    if not check.expect(prim and prim.IsA(UsdLux.DomeLight), f"{path} is not a DomeLight"):
+        return path
+    dome = UsdLux.DomeLight(prim)
+    check.expect(prim.GetDisplayName() == light.get("name", ""), f"{path} display name")
+    check.expect(dome.GetTextureFormatAttr().Get() == UsdLux.Tokens.latlong, f"{path} texture format")
+    check.close(dome.GetIntensityAttr().Get(), light.get("intensity", 1.0), f"{path} intensity")
+    check.close(dome.GetColorAttr().Get(), (1, 1, 1), f"{path} color")
+    check.close(dome.GetExposureAttr().Get(), 0, f"{path} exposure")
+    # The dome shows the cube's value at q w in world direction w: a world row vector times the inverse of the
+    # dome's transform is the direction in the latlong's frame.
+    q = numpy.array(light.get("rotation", (0, 0, 0, 1)), numpy.float64)
+    to_dome = numpy.linalg.inv(numpy.array(UsdGeom.XformCache(Usd.TimeCode.Default()).GetLocalToWorldTransform(prim)))
+    check.close(to_dome[:3, :3], rotation_matrix(q / numpy.linalg.norm(q)).T, f"{path} rotation", absolute=1e-6)
+    texture = dome.GetTextureFileAttr().Get()
+    check.expect(texture.path == f"./{asset.path.name}[lights/{index}.hdr]", f"{path} texture {texture.path}")
+    served = Ar.GetResolver().OpenAsset(Ar.ResolvedPath(texture.resolvedPath)) if texture.resolvedPath else None
+    if not check.expect(served is not None, f"{path} texture does not open"):
+        return path
+    try:
+        actual = decode_rgbe(bytes(served.GetBuffer()))
+    except (AttributeError, ValueError) as error:
+        check.expect(False, f"{path} texture is not a Radiance image: {error}")
+        return path
+    try:
+        faces = [asset.image_bytes(image) for image in light["specularImages"][0]]
+        expected = expected_latlong(faces, light["specularImageSize"])
+    except (TypeError, ValueError) as error:
+        check.expect(False, f"{path} faces are not compared: {error}")
+        return path
+    if check.expect(actual.shape == expected.shape, f"{path} latlong is {actual.shape}, expected {expected.shape}"):
+        # RGBE keeps each channel within about 1/256 of the pixel's largest.
+        limit = 0.01 * expected.max(axis=2, keepdims=True) + 1e-6
+        worst = numpy.abs(actual - expected) - limit
+        check.expect(bool(numpy.all(worst <= 0)),
+                     f"{path} latlong differs at {numpy.count_nonzero(numpy.any(worst > 0, axis=2))} pixels")
+    return path
+
+
 def check_meaning(stage, asset):
     """Returns what differs between the stage and the file, walking the selected scene."""
     from pxr import Usd, UsdGeom, UsdLux, UsdSkel
@@ -2026,6 +2229,9 @@ def check_meaning(stage, asset):
     for root in roots:
         walk(root, f"/Root/Scenes/Scene_{document.get('scene', 0)}", numpy.identity(4), True)
     check_xmp(check, stage, asset, node_paths, dropped)
+    dome = check_image_based_light(check, stage, asset)
+    if dome:
+        expected_lights.add(dome)
     check_animation(check, stage, asset, node_paths)
     if placements:
         check_skinning(check, stage, asset, plan, node_paths, placements)

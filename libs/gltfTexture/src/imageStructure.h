@@ -17,11 +17,20 @@ inline constexpr std::uint32_t kMaxImageDimension = 16384;
 // decoding it, so that damage is found before the image loader reads the file. See
 // docs/adr/0006-image-failures.md for what they cannot find.
 
+// The width and height an image declares.
+struct ImageSize
+{
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+};
+
 // Requires a valid IHDR, at least one IDAT and an IEND, and every chunk checksum.
-[[nodiscard]] bool CheckPng(std::span<const std::byte> bytes, std::string& error);
+[[nodiscard]] bool CheckPng(std::span<const std::byte> bytes, std::string& error,
+                            ImageSize* size = nullptr);
 
 // Requires 8-bit Huffman baseline or progressive coding, the tables and frame header
 // before the first scan, and an end marker after it.
-[[nodiscard]] bool CheckJpeg(std::span<const std::byte> bytes, std::string& error);
+[[nodiscard]] bool CheckJpeg(std::span<const std::byte> bytes, std::string& error,
+                             ImageSize* size = nullptr);
 
 } // namespace gltfTexture

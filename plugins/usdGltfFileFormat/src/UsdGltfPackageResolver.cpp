@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "externalBuffer.h"
 #include "gltfTexture/image.h"
+#include "gltfTexture/imageBasedLight.h"
+#include "gltfCore/imageBasedLight.h"
 #include "gltfCore/parse.h"
 
 #include "pxr/pxr.h"
@@ -23,6 +25,7 @@
 #include <memory>
 #include <mutex>
 #include <new>
+#include <optional>
 #include <span>
 #include <string>
 #include <unordered_map>
@@ -37,8 +40,10 @@ namespace
 // Keeps the asset and its loaded buffers alive for the image bytes they own.
 struct Package
 {
-    Package(const std::string& sourcePath, fastgltf::Asset&& parsed)
+    Package(const std::string& sourcePath, fastgltf::Asset&& parsed,
+            std::optional<gltfCore::ImageBasedLight>&& imageBasedLight)
         : path(sourcePath), loader(sourcePath), asset(std::move(parsed)),
+          light(std::move(imageBasedLight)),
           buffers(asset, [this](const fastgltf::Buffer& buffer, std::span<const std::byte>& data,
                                 std::string& error) { return loader.Load(buffer, data, error); })
     {
@@ -48,6 +53,8 @@ struct Package
     std::mutex buffersMutex;
     ExternalBufferLoader loader;
     fastgltf::Asset asset;
+    // The selected scene's EXT_lights_image_based light, if any.
+    std::optional<gltfCore::ImageBasedLight> light;
     gltfCore::BufferReader buffers;
 };
 
@@ -62,13 +69,16 @@ openPackage(const std::string& resolvedPackagePath)
     }
     // The file format has already reported why the source cannot be read.
     std::string error;
-    auto parsed =
-        gltfCore::Parse(reinterpret_cast<const std::byte*>(bytes.get()), input->GetSize(), error);
-    if (parsed.error() != fastgltf::Error::None)
+    const auto* data = reinterpret_cast<const std::byte*>(bytes.get());
+    auto parsed = gltfCore::Parse(data, input->GetSize(), error);
+    std::optional<gltfCore::ImageBasedLight> light;
+    if (parsed.error() != fastgltf::Error::None ||
+        !gltfCore::ReadImageBasedLight(data, input->GetSize(), light, error))
     {
         return {};
     }
-    return std::make_shared<Package>(resolvedPackagePath, std::move(parsed.get()));
+    return std::make_shared<Package>(resolvedPackagePath, std::move(parsed.get()),
+                                     std::move(light));
 }
 
 // `bytes` refers to the package, or to `owned` for a KTX2 or WebP file.
@@ -154,6 +164,19 @@ findImage(const std::shared_ptr<Package>& package, const std::string& entry, Pac
            requested == gltfTexture::ServedFormat(image.format);
 }
 
+// The package's light if `entry` names its latlong.
+const gltfCore::ImageBasedLight*
+findLight(const std::shared_ptr<Package>& package, const std::string& entry)
+{
+    std::size_t index = 0;
+    if (!package || !gltfTexture::ParseLightEntry(entry, index) || !package->light ||
+        package->light->index != index)
+    {
+        return nullptr;
+    }
+    return &*package->light;
+}
+
 bool
 convertToPng(const PackagedImage& image, std::vector<std::byte>& png, std::string& error)
 {
@@ -167,18 +190,28 @@ convertToPng(const PackagedImage& image, std::vector<std::byte>& png, std::strin
 
 } // namespace
 
-// Serves embedded images from the source file, and KTX2 and WebP images converted to PNG, so
-// an imported stage needs no extracted files. See docs/adr/0001-image-assets.md.
+// Serves embedded images from the source file, KTX2 and WebP images converted to PNG, and the
+// latlong of an image-based light, so an imported stage needs no extracted files. See
+// docs/adr/0001-image-assets.md and docs/adr/0046-image-based-lighting.md.
 class UsdGltfPackageResolver final : public ArPackageResolver
 {
   public:
     std::string
     Resolve(const std::string& resolvedPackagePath, const std::string& packagedPath) override
     {
+        const auto package = findPackage(_caches.GetCurrentCache(), resolvedPackagePath);
         PackagedImage image;
         std::string error;
-        if (!findImage(findPackage(_caches.GetCurrentCache(), resolvedPackagePath), packagedPath,
-                       image) ||
+        if (const auto* light = findLight(package, packagedPath))
+        {
+            // Its faces are checked, not decoded.
+            const std::lock_guard lock(package->buffersMutex);
+            return gltfTexture::CheckImageBasedLight(package->asset, *light, package->path,
+                                                     package->buffers, error)
+                       ? packagedPath
+                       : std::string();
+        }
+        if (!findImage(package, packagedPath, image) ||
             !gltfTexture::CheckImage(image.bytes, image.format, error))
         {
             return {};
@@ -193,6 +226,10 @@ class UsdGltfPackageResolver final : public ArPackageResolver
         TRACE_SCOPE("UsdGltfFileFormat image open");
         const auto cache = _caches.GetCurrentCache();
         const auto package = findPackage(cache, resolvedPackagePath);
+        if (const auto* light = findLight(package, resolvedPackagedPath))
+        {
+            return openLight(*package, *light, resolvedPackagePath, resolvedPackagedPath);
+        }
         PackagedImage image;
         if (!findImage(package, resolvedPackagedPath, image))
         {
@@ -255,6 +292,34 @@ class UsdGltfPackageResolver final : public ArPackageResolver
     }
 
   private:
+    // Decodes the faces, which can have changed since import, as a KTX2 image is. See
+    // docs/adr/0006-image-failures.md.
+    static std::shared_ptr<ArAsset>
+    openLight(Package& package, const gltfCore::ImageBasedLight& light,
+              const std::string& resolvedPackagePath, const std::string& resolvedPackagedPath)
+    {
+        TRACE_SCOPE("UsdGltfFileFormat image-based light to latlong");
+        std::vector<std::byte> hdr;
+        std::string error;
+        bool converted = false;
+        {
+            const std::lock_guard lock(package.buffersMutex);
+            converted = gltfTexture::ConvertImageBasedLight(package.asset, light, package.path,
+                                                            package.buffers, hdr, error);
+        }
+        if (!converted)
+        {
+            TF_WARN("Cannot read '%s' in '%s': %s", resolvedPackagedPath.c_str(),
+                    resolvedPackagePath.c_str(), error.c_str());
+            return nullptr;
+        }
+        auto bytes = std::make_shared<const std::vector<std::byte>>(std::move(hdr));
+        const auto* data = reinterpret_cast<const char*>(bytes->data());
+        const auto size = bytes->size();
+        return ArInMemoryAsset::FromBuffer(std::shared_ptr<const char>(std::move(bytes), data),
+                                           size);
+    }
+
     static std::shared_ptr<Package>
     findPackage(const std::shared_ptr<ResolverCache>& cache, const std::string& resolvedPackagePath)
     {

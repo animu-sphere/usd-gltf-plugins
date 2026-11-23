@@ -3,6 +3,7 @@
 
 #include "animation.h"
 #include "camera.h"
+#include "imageBasedLight.h"
 #include "instancing.h"
 #include "light.h"
 #include "material.h"
@@ -400,8 +401,8 @@ authorAnimations(const UsdStageRefPtr& stage, const SdfPath& root, const SceneMa
 
 SdfLayerRefPtr
 authorScene(const fastgltf::Asset& asset, const std::string& sourcePath,
-            const gltfCore::BufferReader& buffers, std::size_t selectedIndex,
-            const XmpPackets& xmp)
+            const gltfCore::BufferReader& buffers, std::size_t selectedIndex, const XmpPackets& xmp,
+            const std::optional<gltfCore::ImageBasedLight>& imageBasedLight)
 {
     TfErrorMark mark;
     auto layer = SdfLayer::CreateAnonymous("gltf-conversion.usda");
@@ -444,6 +445,11 @@ authorScene(const fastgltf::Asset& asset, const std::string& sourcePath,
         !xmp.Author(scene.GetPrim(), gltfCore::XmpPacketOf(xmp.Metadata().scenes, selectedIndex)))
     {
         TF_RUNTIME_ERROR("Could not author glTF scene %zu", selectedIndex);
+        return {};
+    }
+    if (imageBasedLight &&
+        !AuthorImageBasedLight(asset, *imageBasedLight, sourcePath, buffers, scene.GetPrim()))
+    {
         return {};
     }
     stage->SetDefaultPrim(root.GetPrim());
@@ -636,7 +642,8 @@ class AuthoringThread
 
 pxr::SdfLayerRefPtr
 ConvertScene(const fastgltf::Asset& asset, const std::string& sourcePath,
-             const gltfCore::BufferLoader& loadBuffer, const gltfCore::XmpMetadata& xmp)
+             const gltfCore::BufferLoader& loadBuffer, const gltfCore::XmpMetadata& xmp,
+             const std::optional<gltfCore::ImageBasedLight>& imageBasedLight)
 {
     using namespace pxr;
     const auto selection = gltfCore::SelectScene(asset);
@@ -676,7 +683,8 @@ ConvertScene(const fastgltf::Asset& asset, const std::string& sourcePath,
                 {
                     const gltfCore::BufferReader buffers(asset, loadBuffer);
                     const XmpPackets packets(xmp);
-                    staged = authorScene(asset, sourcePath, buffers, selected->index, packets);
+                    staged = authorScene(asset, sourcePath, buffers, selected->index, packets,
+                                         imageBasedLight);
                 }
                 catch (const std::exception& e)
                 {

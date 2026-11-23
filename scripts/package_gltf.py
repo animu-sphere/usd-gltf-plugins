@@ -31,7 +31,9 @@ def stage_layer(source, directory):
             if Ar.IsPackageRelativePath(path):
                 _, image_path = Ar.SplitPackageRelativePathInner(path)
             suffix = Path(image_path).suffix.lower()
-            if suffix not in {".png", ".jpg", ".jpeg"}:
+            # A Radiance image is the latlong of an image-based light; see
+            # docs/adr/0046-image-based-lighting.md.
+            if suffix not in {".png", ".jpg", ".jpeg", ".hdr"}:
                 raise RuntimeError(f"unexpected asset path {path!r} in the imported layer")
 
             resolved = resolver.Resolve(imported.ComputeAbsolutePath(path))

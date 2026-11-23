@@ -16,4 +16,7 @@ namespace gltfCore::detail
 // What is malformed in the file's KHR_xmp_json_ld, or an empty string.
 [[nodiscard]] std::string DescribeMalformedXmp(const simdjson::dom::element& root);
 
+// What is malformed in the file's EXT_lights_image_based, or an empty string.
+[[nodiscard]] std::string DescribeMalformedImageBasedLight(const simdjson::dom::element& root);
+
 } // namespace gltfCore::detail

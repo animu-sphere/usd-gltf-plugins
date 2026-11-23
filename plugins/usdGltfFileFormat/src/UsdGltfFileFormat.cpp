@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+#include "gltfCore/imageBasedLight.h"
 #include "gltfCore/parse.h"
 #include "gltfCore/xmp.h"
 #include "gltfUsd/scene.h"
@@ -16,6 +17,7 @@
 #include "pxr/usd/sdf/layer.h"
 
 #include <cstddef>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -76,12 +78,20 @@ class UsdGltfFileFormat : public SdfFileFormat
                              error.c_str());
             return false;
         }
+        std::optional<gltfCore::ImageBasedLight> imageBasedLight;
+        if (!gltfCore::ReadImageBasedLight(reinterpret_cast<const std::byte*>(bytes.get()),
+                                           input->GetSize(), imageBasedLight, error))
+        {
+            TF_RUNTIME_ERROR("usdGltfFileFormat: cannot parse '%s': %s", path.c_str(),
+                             error.c_str());
+            return false;
+        }
         ExternalBufferLoader loader(path);
         auto converted = gltfUsd::ConvertScene(
             asset.get(), path,
             [&loader](const fastgltf::Buffer& buffer, std::span<const std::byte>& data,
                       std::string& error) { return loader.Load(buffer, data, error); },
-            xmp);
+            xmp, imageBasedLight);
         if (!converted)
         {
             return false;

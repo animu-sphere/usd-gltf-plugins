@@ -10,6 +10,7 @@ implemented.
 /Root                          Xform, defaultPrim
   /Scenes                      Scope
     /Scene_0                   Xform, or SkelRoot; the selected scene
+      /ImageBasedLight_0       DomeLight, the scene's image-based light
       /Node_0                  Xform
         /Mesh_0                Xform
           /Primitive_0         Mesh, or Points or BasisCurves for points and lines
@@ -50,6 +51,7 @@ conversion order, and copied below the others. See the [mesh sharing decision](.
 | Instances of a node's mesh | `Instances`, with the mesh below it |
 | Camera | `Camera_{cameraIndex}` |
 | Light | `Light_{lightIndex}` |
+| Image-based light | `ImageBasedLight_{lightIndex}`, below the scene |
 | Material | `Material_{materialIndex}` |
 | Skin | `Skeleton_{skinIndex}` |
 | Animation | `Animation_{animationIndex}` |
@@ -381,6 +383,29 @@ intensity, a range that is not positive, and cone angles other than
 which the parser would otherwise read as 1 or as absent, and an intensity beyond a float once divided
 by the area. A light that no
 selected node uses is not checked.
+
+## Image-based lighting
+
+The selected scene's `EXT_lights_image_based` light is a `DomeLight` below the scene's prim, named
+after the light's index. Like other UsdLux lights, it lights the whole stage, including a stage that
+references the asset. Its pole is +Y in its own frame, as in glTF, and its frame follows the
+reference's transform. See the [decision record](../adr/0046-image-based-lighting.md).
+
+| glTF | USD |
+| --- | --- |
+| The first level of `specularImages` | `inputs:texture:file = ./<source>[lights/<lightIndex>.hdr]`, a Radiance latlong that the package resolver converts on request, with `inputs:texture:format = latlong` |
+| `specularImageSize`, N | The latlong's size, 4N by 2N, but at most 8192 by 4096 |
+| A face's pixels | `(c / max)^2.2 / (a / max)` per channel, with `a = max` without alpha: RGBD with alpha, LDR without. Rows are reversed, so the side faces have +Y at the top. |
+| `rotation`, q | `xformOp:orient`, the inverse of q normalized: the dome shows the cube's value at q w in world direction w |
+| `intensity` | `inputs:intensity`, unchanged, with white `inputs:color` and no exposure. A mirror reflects a texel of 1 as 1 nit. |
+| Later levels | Checked, not authored: the renderer prefilters the latlong for roughness |
+| `irradianceCoefficients` | Checked, not authored: no USD schema takes them |
+| `name` | The prim's display name |
+
+Values the specification or the decision forbids are rejected, as are faces that are not PNG or
+JPEG, fail the structure check or have the wrong size, and a source inside a package. A light that
+the selected scene does not reference is not checked. A face that decodes badly despite its structure
+is found only when the latlong is opened: the resolver serves nothing and warns.
 
 ## Node visibility
 
