@@ -76,6 +76,7 @@ available when the decision was made; they are not progress reports:
 - [0043: GPU instancing](adr/0043-gpu-instancing.md)
 - [0044: Animated material properties](adr/0044-animated-material-properties.md)
 - [0045: XMP metadata](adr/0045-xmp-metadata.md)
+- [0046: Image-based lighting](adr/0046-image-based-lighting.md)
 
 New decisions go in `docs/adr/NNNN-title.md`.
 
