@@ -102,8 +102,9 @@ be imported from directories writable by an untrusted concurrent actor.
 [The packaging command](../DEVELOPMENT.md#package-a-converted-asset) uses the normal
 file format to read a local `.gltf` or `.glb`. It copies the imported layer specs,
 including animation variants, to a native USD layer. It resolves each authored
-image against the source layer, copies its PNG or JPEG bytes and rewrites the
-asset path to point to the copy. This reads KTX2 and WebP through the same
+image against the source layer, copies its PNG or JPEG bytes, or the Radiance
+latlong of an [image-based light](../adr/0046-image-based-lighting.md#derived-usdz),
+and rewrites the asset path to point to the copy. This reads KTX2 and WebP through the same
 [resolver cache scope](../design/TEXTURES.md#cache-and-asset-lifetime) for the entire
 asset. Each resolved image path produces one package entry.
 

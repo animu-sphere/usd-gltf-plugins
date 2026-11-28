@@ -43,6 +43,7 @@ def check_inside_session(package):
     notices = (resources / "NOTICES.txt").read_text(encoding="utf-8")
     assert "Draco mesh decoder" in notices
     assert "meshoptimizer 0.25" in notices and "2016-2025 Arseny Kapoulkine" in notices
+    assert "stb_image 2.34" in notices and "2017 Sean Barrett" in notices
 
     stage = Usd.Stage.Open(str(FIXTURES / "reflections.gltf"))
     assert stage and stage.GetDefaultPrim().GetPath() == "/Root", "a .gltf file did not open"

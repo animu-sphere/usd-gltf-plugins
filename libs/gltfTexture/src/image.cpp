@@ -240,10 +240,9 @@ ParsePackageEntry(std::string_view entry, std::size_t& imageIndex, ImageFormat& 
 }
 
 bool
-GetPackagedImage(const fastgltf::Asset& asset, std::size_t imageIndex,
-                 const std::string& sourcePath, const gltfCore::BufferReader& buffers,
-                 std::vector<std::byte>& owned, std::span<const std::byte>& bytes,
-                 ImageFormat& format, std::string& error)
+ReadImageBytes(const fastgltf::Asset& asset, std::size_t imageIndex, const std::string& sourcePath,
+               const gltfCore::BufferReader& buffers, std::vector<std::byte>& owned,
+               std::span<const std::byte>& bytes, ImageFormat& format, std::string& error)
 {
     if (imageIndex >= asset.images.size())
     {
@@ -277,9 +276,9 @@ GetPackagedImage(const fastgltf::Asset& asset, std::size_t imageIndex,
             return false;
         }
         bytes = owned;
-        if (!DetectImageFormat(bytes, format) || ServedFormat(format) == format)
+        if (!DetectImageFormat(bytes, format))
         {
-            error = "external image is read directly, not through the package";
+            error = "external image is not PNG, JPEG, KTX2 or WebP";
             return false;
         }
         return true;
@@ -292,6 +291,25 @@ GetPackagedImage(const fastgltf::Asset& asset, std::size_t imageIndex,
     if (!DetectImageFormat(bytes, format))
     {
         error = "embedded image is not PNG, JPEG, KTX2 or WebP";
+        return false;
+    }
+    return true;
+}
+
+bool
+GetPackagedImage(const fastgltf::Asset& asset, std::size_t imageIndex,
+                 const std::string& sourcePath, const gltfCore::BufferReader& buffers,
+                 std::vector<std::byte>& owned, std::span<const std::byte>& bytes,
+                 ImageFormat& format, std::string& error)
+{
+    if (!ReadImageBytes(asset, imageIndex, sourcePath, buffers, owned, bytes, format, error))
+    {
+        return false;
+    }
+    if (std::holds_alternative<fastgltf::sources::URI>(asset.images[imageIndex].data) &&
+        ServedFormat(format) == format)
+    {
+        error = "external image is read directly, not through the package";
         return false;
     }
     return true;

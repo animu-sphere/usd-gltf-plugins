@@ -26,6 +26,7 @@ add_library(gltfCore STATIC
     src/accessor.cpp
     src/buffer.cpp
     src/draco.cpp
+    src/imageBasedLight.cpp
     src/localFile.cpp
     src/parse.cpp
     src/sceneSelection.cpp

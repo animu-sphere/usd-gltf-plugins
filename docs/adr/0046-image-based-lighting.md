@@ -1,8 +1,8 @@
 # 0046: Image-based lighting
 
-Decision record, 2026-11-23. The import it decides is not implemented yet: the
-[current plan](../roadmap/current.md) tracks it, and the
-[capability matrix](../reference/CAPABILITY_MATRIX.md) will record its evidence.
+Decision record, 2026-11-23. It extends the
+[scene conventions](../design/SCENE_CONVENTIONS.md#image-based-lighting). The
+[capability matrix](../reference/CAPABILITY_MATRIX.md) records current evidence.
 
 ## Context
 
@@ -160,21 +160,34 @@ layer, when:
 - The extension is not in `extensionsUsed`, the root's `lights` is not an array, or the selected
   scene's `light` is not an index into it.
 - The selected light's `rotation` is not four numbers from -1 to 1 with a nonzero length, its
-  `intensity` is not a finite number of at least 0, or its `irradianceCoefficients` are not nine
-  arrays of three finite numbers.
+  `intensity` is not a finite number of at least 0 or is beyond a float, its `name` is not a string,
+  or its `irradianceCoefficients` are not nine arrays of three finite numbers.
 - `specularImageSize` is not a power of two, from 1 to 16384, or `specularImages` is not a nonempty
   array of at most `log2(specularImageSize) + 1` arrays of six image indices.
 - A face is not PNG or JPEG, fails the [structure check](0006-image-failures.md), or is not a square
-  of `specularImageSize` halved once for each level before it.
+  of `specularImageSize` halved once for each level before it. A face in a file follows the
+  [external resource policy](../architecture/IMPORT_PIPELINE.md#external-resource-policy).
+- The source is inside a package, whose images Ar would not route to the package resolver, as for a
+  material's images in [ADR 0025](0025-packaged-sources.md).
 
 A face that decodes badly despite its structure makes the request fail. The resolver resolves the
 latlong to nothing and warns, and the renderer uses its fallback, as with a damaged KTX2 image.
+
+### Derived USDZ
+
+[Packaging](../architecture/IMPORT_PIPELINE.md#derived-usdz) copies the latlong as it copies the
+images, as `textures/<n>.hdr`. OpenUSD's Hio reads it, so the package keeps its lighting. The
+[usdz specification](https://openusd.org/release/spec_usdz.html) does not list Radiance images, so a
+strict usdz consumer may reject the package; converting to OpenEXR would need the encoder dependency
+rejected below.
 
 ### Dependencies
 
 stb_image 2.34 decodes the faces, built with only PNG and JPEG and with `STBI_MAX_DIMENSIONS` at 16384,
 the [image limit](0006-image-failures.md#decision). It runs only in the resolver, after the structure
-check, and never at import. The importer writes RGBE itself, in a few lines.
+check, and never at import. The importer writes RGBE itself, in a few lines, with run-length encoded
+scanlines where the format allows them. The latlong is converted again on each open, without the
+[scoped cache](../design/TEXTURES.md#cache-and-asset-lifetime) of KTX2 and WebP conversions.
 
 - [Wuffs](https://github.com/google/wuffs) is memory-safe by construction, and stb_image's header
   recommends it where security is a priority. Its JPEG decoder is not in a released version yet. Use

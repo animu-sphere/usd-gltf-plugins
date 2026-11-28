@@ -42,6 +42,14 @@ enum class ImageFormat
 [[nodiscard]] bool ParsePackageEntry(std::string_view entry, std::size_t& imageIndex,
                                      ImageFormat& format);
 
+// Bytes of a bufferView or data URI image, or of a local file of any format. They are owned by the
+// asset, by the buffer loader or, for a file, by `owned`.
+[[nodiscard]] bool ReadImageBytes(const fastgltf::Asset& asset, std::size_t imageIndex,
+                                  const std::string& sourcePath,
+                                  const gltfCore::BufferReader& buffers,
+                                  std::vector<std::byte>& owned, std::span<const std::byte>& bytes,
+                                  ImageFormat& format, std::string& error);
+
 // Bytes of a bufferView or data URI image, or of a local KTX2 or WebP file. They are owned
 // by the asset, by the buffer loader or, for a file, by `owned`.
 [[nodiscard]] bool GetPackagedImage(const fastgltf::Asset& asset, std::size_t imageIndex,

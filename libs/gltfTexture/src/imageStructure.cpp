@@ -72,7 +72,7 @@ validPngFormat(std::uint32_t depth, std::uint32_t color)
 } // namespace
 
 bool
-CheckPng(std::span<const std::byte> bytes, std::string& error)
+CheckPng(std::span<const std::byte> bytes, std::string& error, ImageSize* size)
 {
     static constexpr const char* kPng = "PNG";
     static constexpr std::size_t kSignature = 8;
@@ -124,6 +124,10 @@ CheckPng(std::span<const std::byte> bytes, std::string& error)
             }
             needsPalette = color == 3;
             header = true;
+            if (size)
+            {
+                *size = {width, height};
+            }
         }
         else if (isChunk(type, "PLTE"))
         {
@@ -151,7 +155,7 @@ CheckPng(std::span<const std::byte> bytes, std::string& error)
 }
 
 bool
-CheckJpeg(std::span<const std::byte> bytes, std::string& error)
+CheckJpeg(std::span<const std::byte> bytes, std::string& error, ImageSize* size)
 {
     static constexpr const char* kJpeg = "JPEG";
     static constexpr const char* kBeforeScan = "it ends or breaks before its first scan";
@@ -219,6 +223,11 @@ CheckJpeg(std::span<const std::byte> bytes, std::string& error)
                 return tooLarge(kJpeg, error);
             }
             frame = true;
+            if (size)
+            {
+                // The frame header gives the height first.
+                *size = {readBigEndian16(body, 3), readBigEndian16(body, 1)};
+            }
         }
         else if (marker >= 0xC3 && marker <= 0xCF && marker != 0xC8 && marker != 0xCC)
         {

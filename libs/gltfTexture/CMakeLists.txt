@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
-# gltfTexture: resolving glTF images from buffer views, data URIs and external files, and decoding
-# KTX2 and WebP into PNG. It depends on gltfCore and not on OpenUSD.
+# gltfTexture: resolving glTF images from buffer views, data URIs and external files, decoding
+# KTX2 and WebP into PNG, and decoding the faces of image-based lights into a latlong. It depends
+# on gltfCore and not on OpenUSD.
 #
 # Its own CMake project, so that `ost library build libs/gltfTexture` can build it alone, and
 # added with add_subdirectory() by the repository root and by the plugin.
@@ -25,6 +26,7 @@ usd_gltf_add_webp()
 
 add_library(gltfTexture STATIC
     src/image.cpp
+    src/imageBasedLight.cpp
     src/imageStructure.cpp
     src/ktx2.cpp
     src/webp.cpp)
@@ -35,7 +37,8 @@ target_include_directories(gltfTexture
         "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
         "$<INSTALL_INTERFACE:include>"
     PRIVATE
-        "${CMAKE_CURRENT_SOURCE_DIR}/src")
+        "${CMAKE_CURRENT_SOURCE_DIR}/src"
+        "${USD_GLTF_THIRD_PARTY_DIR}/stb")
 target_link_libraries(gltfTexture PUBLIC gltfCore::gltfCore PRIVATE usd_gltf_basisu usd_gltf_webp)
 
 usd_gltf_library_installs(_usd_gltf_install)

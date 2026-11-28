@@ -13,6 +13,7 @@ sources, upstream README and license; its examples, tests and docs are omitted.
 | [libwebp](https://github.com/webmproject/libwebp) | v1.6.0 | [Tag](https://github.com/webmproject/libwebp/releases/tag/v1.6.0), commit `4fa21912338357f89e4fd51cf2368325b59e9bd9`; the decoder subset below |
 | [Draco](https://github.com/google/draco) | 1.5.9 | [Release](https://github.com/google/draco/releases/tag/1.5.9), commit `554628821c3448319d7d4ae48db170b8c63e1aaf`; the glTF mesh decoder subset below |
 | [meshoptimizer](https://github.com/zeux/meshoptimizer) | 0.25 | [Release](https://github.com/zeux/meshoptimizer/releases/tag/v0.25), commit `6daea4695c48338363b08022d2fb15deaef6ac09`; the buffer view codecs below |
+| [stb_image](https://github.com/nothings/stb) | 2.34 | [Commit](https://github.com/nothings/stb/blob/1da9ade1e66195252114f5da497f244704a6c58d/stb_image.h) `1da9ade1e66195252114f5da497f244704a6c58d`, unmodified `stb_image.h` and `LICENSE` |
 | [MikkTSpace](https://github.com/mmikk/MikkTSpace) | 1.0 | [Commit](https://github.com/mmikk/MikkTSpace/tree/3e895b49d05ea07e4c2133156cfa94369e19e409) `3e895b49d05ea07e4c2133156cfa94369e19e409`, unmodified `mikktspace.c` and `mikktspace.h` with their zlib license notices |
 
 libwebp keeps only the files upstream's `libwebpdecoder` is built from, unedited:
@@ -32,6 +33,12 @@ The encoder API, point-cloud codecs, command-line tools, transcoder and Wasm are
 meshoptimizer keeps the unedited `src/meshoptimizer.h`, `src/indexcodec.cpp`,
 `src/vertexcodec.cpp`, `src/vertexfilter.cpp`, and `LICENSE.md` (MIT). The tag's
 source archive has SHA-256 `68b2fef4e4eaad98e00c657c1e7f8982a7176e61dd7efdeaec67a025b8519be9`.
+
+stb_image keeps the unedited `stb_image.h`, with SHA-256
+`dfc2aadda6295f67f677587773f25e5bf8c8ad427ed0db7c518525c91e72e020`, and the repository's `LICENSE`.
+It is used under its MIT alternative. The repository has no tags; the commit sets the header's
+version to 2.34. `gltfTexture` compiles it into one file with only the PNG and JPEG decoders and
+its functions static, as [ADR 0046](../docs/adr/0046-image-based-lighting.md#dependencies) decides.
 
 The amalgamations match the SHA-256 hashes in fastgltf 1.0.1's
 `cmake/dependencies.cmake`. When upgrading, update the source files, versions,

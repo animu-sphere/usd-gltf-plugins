@@ -2,6 +2,7 @@
 #include "gltfCore/parse.h"
 
 #include "json.h"
+#include "gltfCore/imageBasedLight.h"
 
 #include <simdjson.h>
 
@@ -22,7 +23,7 @@ namespace
 constexpr std::size_t kGlbHeaderSize = 12;
 constexpr std::size_t kChunkHeaderSize = 8;
 constexpr std::size_t kGlbJsonOffset = kGlbHeaderSize + kChunkHeaderSize;
-// Read by xmp.cpp, since fastgltf does not know it.
+// Read by xmp.cpp and imageBasedLight.cpp, since fastgltf does not know them.
 constexpr std::string_view kXmpExtension = "KHR_xmp_json_ld";
 
 std::uint32_t
@@ -91,7 +92,8 @@ using detail::JsonOf;
 bool
 isRequirable(std::string_view extension)
 {
-    return IsImplementedExtension(extension) && extension != kXmpExtension;
+    return IsImplementedExtension(extension) && extension != kXmpExtension &&
+           extension != kImageBasedLightExtension;
 }
 
 // fastgltf stops at the first such extension without naming it, so this reads them from the JSON.
@@ -725,6 +727,10 @@ describeMalformedCheckedExtensions(const std::byte* bytes, std::size_t size)
     {
         return description;
     }
+    if (auto description = detail::DescribeMalformedImageBasedLight(root); !description.empty())
+    {
+        return description;
+    }
     if (root["materials"].get_array().get(materials) != simdjson::SUCCESS)
     {
         return {};
@@ -823,7 +829,8 @@ describeMalformedMaterial(const std::byte* bytes, std::size_t size)
 bool
 IsImplementedExtension(std::string_view extension)
 {
-    return extension == fastgltf::extensions::EXT_mesh_gpu_instancing ||
+    return extension == kImageBasedLightExtension ||
+           extension == fastgltf::extensions::EXT_mesh_gpu_instancing ||
            extension == fastgltf::extensions::EXT_meshopt_compression ||
            extension == fastgltf::extensions::EXT_texture_webp ||
            extension == fastgltf::extensions::KHR_animation_pointer ||
